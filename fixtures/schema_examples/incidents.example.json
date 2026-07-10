@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "is_chtr": true,
+  "document": {
+    "title_quote": {"text": "Campus Hazing Transparency Report", "page": 1},
+    "reporting_period_quote": {"text": "January 1 – December 31, 2025", "page": 1},
+    "reporting_period_start": "2025-01-01",
+    "reporting_period_end": "2025-12-31",
+    "publication_date": "2026-01-15",
+    "zero_incidents_quote": null
+  },
+  "incidents": [
+    {
+      "organization_quote": {"text": "Zeta Psi Fraternity", "page": 2},
+      "description_quote": {"text": "Members required new pledges to consume alcohol during an initiation ceremony.", "page": 2},
+      "findings_quote": {"text": "The investigation substantiated violations of the anti-hazing policy.", "page": 2},
+      "sanction_quotes": [{"text": "The chapter's recognition was suspended for two years.", "page": 3}],
+      "alcohol_involved": true,
+      "drugs_involved": null,
+      "dates": {
+        "incident_quote": {"text": "Fall 2025", "page": 2},
+        "incident_start": "2025-09-01",
+        "incident_end": "2025-12-15",
+        "investigation_initiated": "2025-11-02",
+        "resolved": "2026-01-10"
+      }
+    }
+  ]
+}

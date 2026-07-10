@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "source_url": "https://example.edu/reports/chtr-2025.pdf",
+  "fetched_at": "2026-02-01T14:32:00Z",
+  "sha256": "3b1e1d5a4a2f9c6e8d0b7a5c4f2e1d0c9b8a7f6e5d4c3b2a1908f7e6d5c4b3a2",
+  "content_type": "application/pdf",
+  "size_bytes": 184320,
+  "unitid": "123456",
+  "scrape_year": 2026
+}

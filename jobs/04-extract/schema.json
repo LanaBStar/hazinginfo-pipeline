@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hazinginfo.org/schemas/jobs/04-extract/incidents.schema.json",
+  "title": "incidents.json (v1)",
+  "description": "04-extract agent output. Per IMPLEMENTATION_PLAN.md §8. Quotes are verbatim substrings of text.txt; validate.py computes offsets, never the AI. Everything nullable except description_quote. Fields are exactly those the Act defines — do not add hazing-type taxonomy, sanction severity, location, is_aggravated, date_reported, or org_type.",
+  "$defs": {
+    "quote": {
+      "type": "object",
+      "properties": {
+        "text": {"type": "string"},
+        "page": {"type": ["integer", "null"], "minimum": 1}
+      },
+      "required": ["text", "page"],
+      "additionalProperties": false
+    },
+    "nullable_quote": {
+      "anyOf": [
+        {"$ref": "#/$defs/quote"},
+        {"type": "null"}
+      ]
+    },
+    "date": {"type": ["string", "null"], "format": "date"}
+  },
+  "type": "object",
+  "properties": {
+    "schema_version": {"const": 1},
+    "is_chtr": {"type": "boolean"},
+    "document": {
+      "type": "object",
+      "properties": {
+        "title_quote": {"$ref": "#/$defs/nullable_quote"},
+        "reporting_period_quote": {"$ref": "#/$defs/nullable_quote"},
+        "reporting_period_start": {"$ref": "#/$defs/date"},
+        "reporting_period_end": {"$ref": "#/$defs/date"},
+        "publication_date": {"$ref": "#/$defs/date"},
+        "zero_incidents_quote": {"$ref": "#/$defs/nullable_quote"}
+      },
+      "required": [
+        "title_quote",
+        "reporting_period_quote",
+        "reporting_period_start",
+        "reporting_period_end",
+        "publication_date",
+        "zero_incidents_quote"
+      ],
+      "additionalProperties": false
+    },
+    "incidents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "organization_quote": {"$ref": "#/$defs/nullable_quote"},
+          "description_quote": {"$ref": "#/$defs/quote"},
+          "findings_quote": {"$ref": "#/$defs/nullable_quote"},
+          "sanction_quotes": {
+            "type": "array",
+            "items": {"$ref": "#/$defs/quote"}
+          },
+          "alcohol_involved": {"type": ["boolean", "null"]},
+          "drugs_involved": {"type": ["boolean", "null"]},
+          "dates": {
+            "type": "object",
+            "properties": {
+              "incident_quote": {"$ref": "#/$defs/nullable_quote"},
+              "incident_start": {"$ref": "#/$defs/date"},
+              "incident_end": {"$ref": "#/$defs/date"},
+              "investigation_initiated": {"$ref": "#/$defs/date"},
+              "resolved": {"$ref": "#/$defs/date"}
+            },
+            "required": [
+              "incident_quote",
+              "incident_start",
+              "incident_end",
+              "investigation_initiated",
+              "resolved"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "organization_quote",
+          "description_quote",
+          "findings_quote",
+          "sanction_quotes",
+          "alcohol_involved",
+          "drugs_involved",
+          "dates"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["schema_version", "is_chtr", "document", "incidents"],
+  "additionalProperties": false
+}

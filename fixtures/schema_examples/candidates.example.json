@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "batch": "0001",
+  "candidates": [
+    {
+      "unitid": "123456",
+      "proposed_url": "https://example.edu/reports/chtr-2025.pdf",
+      "confidence": 0.92,
+      "evidence_quote": "Campus Hazing Transparency Report — Annual Report 2025"
+    }
+  ]
+}

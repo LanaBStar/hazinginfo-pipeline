@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hazinginfo.org/schemas/status.schema.json",
+  "title": "status.json",
+  "description": "Per institution-year status, written by 02-archive. Always written, even when nothing found. Per IMPLEMENTATION_PLAN.md §6.",
+  "type": "object",
+  "properties": {
+    "schema_version": {"const": 1},
+    "unitid": {"type": "string"},
+    "scrape_year": {"type": "integer"},
+    "status": {
+      "type": "string",
+      "enum": ["published", "published_zero", "not_found", "no_url"]
+    },
+    "source_url": {
+      "type": ["string", "null"],
+      "format": "uri"
+    },
+    "documents": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    },
+    "fetched_at": {"type": "string", "format": "date-time"}
+  },
+  "required": [
+    "schema_version",
+    "unitid",
+    "scrape_year",
+    "status",
+    "source_url",
+    "documents",
+    "fetched_at"
+  ],
+  "additionalProperties": false
+}

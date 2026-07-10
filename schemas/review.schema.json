@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hazinginfo.org/schemas/review.schema.json",
+  "title": "review.json",
+  "description": "Human review decision, written synchronously at decision time via the review Worker's ingest.py. Per IMPLEMENTATION_PLAN.md §10.",
+  "type": "object",
+  "properties": {
+    "schema_version": {"const": 1},
+    "extraction_ref": {
+      "type": "object",
+      "properties": {
+        "file_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "incident_index": {"type": "integer", "minimum": 0}
+      },
+      "required": ["file_hash", "incident_index"],
+      "additionalProperties": false
+    },
+    "tier": {"type": "string", "enum": ["fast", "standard", "flagged"]},
+    "decision": {"type": "string", "enum": ["approved", "rejected", "corrected"]},
+    "rejection_reason": {
+      "type": ["string", "null"],
+      "enum": ["not_hazing", "duplicate", "segmentation_error", "extraction_error", null]
+    },
+    "corrections": {
+      "type": ["object", "null"],
+      "additionalProperties": {"type": "string"}
+    },
+    "reviewer": {"type": "string"},
+    "reviewed_at": {"type": "string", "format": "date-time"},
+    "second_review": {
+      "type": ["object", "null"],
+      "properties": {
+        "decision": {"type": "string", "enum": ["approved", "rejected", "corrected"]},
+        "rejection_reason": {
+          "type": ["string", "null"],
+          "enum": ["not_hazing", "duplicate", "segmentation_error", "extraction_error", null]
+        },
+        "corrections": {
+          "type": ["object", "null"],
+          "additionalProperties": {"type": "string"}
+        },
+        "reviewer": {"type": "string"},
+        "reviewed_at": {"type": "string", "format": "date-time"}
+      },
+      "required": ["decision", "rejection_reason", "corrections", "reviewer", "reviewed_at"],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "extraction_ref",
+    "tier",
+    "decision",
+    "rejection_reason",
+    "corrections",
+    "reviewer",
+    "reviewed_at",
+    "second_review"
+  ],
+  "additionalProperties": false
+}

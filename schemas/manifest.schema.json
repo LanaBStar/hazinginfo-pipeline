@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hazinginfo.org/schemas/manifest.schema.json",
+  "title": "manifest.json",
+  "description": "Per-document manifest, written by 02-archive. Per IMPLEMENTATION_PLAN.md §6.",
+  "type": "object",
+  "properties": {
+    "schema_version": {"const": 1},
+    "source_url": {"type": "string", "format": "uri"},
+    "fetched_at": {"type": "string", "format": "date-time"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "content_type": {"type": "string"},
+    "size_bytes": {"type": "integer", "minimum": 0},
+    "unitid": {"type": "string"},
+    "scrape_year": {"type": "integer"}
+  },
+  "required": [
+    "schema_version",
+    "source_url",
+    "fetched_at",
+    "sha256",
+    "content_type",
+    "size_bytes",
+    "unitid",
+    "scrape_year"
+  ],
+  "additionalProperties": false
+}

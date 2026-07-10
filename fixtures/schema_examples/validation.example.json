@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "valid": true,
+  "schema_errors": [],
+  "document": {
+    "zero_incidents_quote": null
+  },
+  "incidents": [
+    {
+      "index": 0,
+      "tier": "standard",
+      "flagged_reasons": [],
+      "quotes": {
+        "organization_quote": {"anchored": true, "similarity": 1.0, "offset": [412, 431], "page_match": true},
+        "description_quote": {"anchored": true, "similarity": 0.98, "offset": [512, 594], "page_match": true},
+        "findings_quote": {"anchored": true, "similarity": 1.0, "offset": [1203, 1272], "page_match": true},
+        "sanction_quotes": [
+          {"anchored": true, "similarity": 0.97, "offset": [1830, 1885], "page_match": true}
+        ],
+        "incident_quote": {"anchored": true, "similarity": 1.0, "offset": [498, 507], "page_match": true}
+      },
+      "crosscheck": {"agrees": true, "notes": "All fields confirmed on second pass."}
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hazinginfo.org/schemas/extract_metadata.schema.json",
+  "title": "ai/extract_vN/metadata.json",
+  "description": "Metadata sidecar for an extraction attempt, written alongside incidents.json by 04-extract. Per IMPLEMENTATION_PLAN.md §6.",
+  "type": "object",
+  "properties": {
+    "schema_version": {"const": 1},
+    "model": {"type": "string"},
+    "prompt_version": {"type": "string"},
+    "created": {"type": "string", "format": "date-time"}
+  },
+  "required": ["schema_version", "model", "prompt_version", "created"],
+  "additionalProperties": false
+}
