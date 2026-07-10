@@ -1,0 +1,6 @@
+unitid,name,state,chtr_url,url_status,evidence
+200001,North Ridge College,ZZ,{BASE_URL}/north-ridge/index.html,confirmed,found via search
+200002,Eastview University,ZZ,{BASE_URL}/eastview/index.html,confirmed,found via search
+200003,Westfield Institute,ZZ,{BASE_URL}/westfield/chtr-2025-scanned.pdf,confirmed,found via search
+200004,Centerville Tech,ZZ,{BASE_URL}/centerville/index.html,confirmed,found via search
+200005,No Report Academy,ZZ,,no_url,no CHTR found after search

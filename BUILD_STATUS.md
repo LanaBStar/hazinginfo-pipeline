@@ -8,7 +8,7 @@ conversational context.
 |---|---|---|---|
 | 0 | Repo scaffold, CLAUDE.md/AGENTS.md, OPERATIONS.md, all JSON schemas, BUILD_STATUS.md, fixtures/ | done | Smoke check passes (`.venv/bin/python tests/test_phase0_schemas.py`) |
 | 1 | `status.py` + `lib/` (r2, hashing, fetch, text) | done | Smoke check passes (`.venv/bin/python tests/test_phase1_status.py`) |
-| 2 | 02-archive: crawler ported from old repo + manifests + status.json | not_started | |
+| 2 | 02-archive: crawler ported from old repo + manifests + status.json | done | Smoke check passes (`.venv/bin/python tests/test_phase2_archive.py`) |
 | 3 | 03-normalize + `lib/quotes.py` (anchoring) | not_started | |
 | 4 | 04-extract: make_packets.py, prompt.md, crosscheck_prompt.md, validate.py + tiers | not_started | |
 | 5 | 06-publish: catalog_schema.sql + rebuild.py | not_started | |
@@ -110,9 +110,72 @@ conversational context.
   `validation.json`'s per-incident array (there's no worked example of this yet) is still
   open.
 
+## Phase 2 — done
+
+- [x] `jobs/02-archive/run.py` — crawl core ported nearly 1:1 from `reference/scrape.py` +
+      `reference/helpers.py` (keyword heuristics, BFS, depth <= 2, ~30-fetch budget,
+      same-domain priority, all PDFs on hazing-signal pages followed). Storage layer
+      replaced: writes `manifest.json` (per document, validated against
+      `schemas/manifest.schema.json`) and `status.json` (per institution-year, validated
+      against `schemas/status.schema.json`) via `lib/r2.py` instead of Postgres rows.
+      Reads `sources/schools.csv` (unitid, name, state, chtr_url, url_status, evidence);
+      warns and returns cleanly if that file doesn't exist yet (01-discover/Phase 6 hasn't
+      run). Resumable: skips any institution whose current-year `status.json` already
+      exists. A single institution's fetch/crawl exception is caught and recorded as
+      `not_found` rather than aborting the whole run.
+- [x] `jobs/02-archive/RUNBOOK.md` — purpose, preconditions, steps, postconditions,
+      failure modes.
+- [x] `fixtures/crawl_pages/` — new fixture set (distinct unitids from Phase 1's
+      `fixtures/mini_archive/`, which is a separate already-processed archive snapshot):
+      North Ridge College (HTML CHTR, 2 incidents, direct hazing signal on the source
+      page), Eastview University (HTML index page with hazing signal linking to a real
+      CHTR PDF **and** a non-CHTR decoy PDF — both get archived, since 02-archive follows
+      every PDF on a hazing-signal page and defers relevance judgment to 04-extract's
+      `is_chtr`), Westfield Institute (a PDF source URL with no extractable text layer —
+      the "scanned" case), Centerville Tech (no hazing signal anywhere — exercises
+      `not_found`), and No Report Academy (`url_status=no_url` — exercises `no_url` with
+      no fetch at all). `schools_template.csv` uses a `{BASE_URL}` placeholder the test
+      fills in with the local test server's actual port. PDFs are minimal hand-built
+      single-page PDFs (no PDF-writing library is in `requirements.txt`); verified against
+      `lib/text.pdf_to_text` before use (real text extracts; the scanned one yields `""`).
+- [x] Smoke check: `tests/test_phase2_archive.py` — starts a local HTTP server over
+      `fixtures/crawl_pages/`, runs `run.py` against a generated `schools.csv`, and
+      asserts: correct archive layout + absence recorded (3 published / 1 not_found / 1
+      no_url); every written `manifest.json`/`status.json` validates against its schema;
+      a second run against the same year is fully resumable with **zero** HTTP fetches
+      (verified via a call-counting wrapper, not just a results check); a third run
+      against a new scrape year re-crawls (network happens) but dedupes unchanged
+      documents — same content hashes, no new `docs/` directory created under the new
+      year.
+
+### Decisions made during Phase 2 (asked the user, since the plan was silent/ambiguous here)
+
+- **status.json's 4-way enum, and what triggers each value**: §7/§6 don't say how
+  `no_url` vs. `not_found` are distinguished, or when (if ever) 02-archive writes
+  `published_zero`. Confirmed with the user: `run.py` only ever writes three of the four
+  values — `no_url` (institution's `schools.csv` row has `url_status=no_url`, no fetch
+  attempted at all), `not_found` (a confirmed URL existed but the crawl stored zero
+  documents — folds the old repo's single `published_empty` outcome, covering both fetch
+  failure and no-hazing-signal-anywhere, into one status), and `published` (>=1 document
+  archived, whether newly stored or deduped from a prior year). `published_zero` is never
+  written by 02-archive: it requires reading document content for an explicit
+  zero-incident statement, which is only knowable at 04-extract time, and rewriting
+  `status.json` later would violate the archive's append-once/immutable invariant — so
+  this status value is reserved for future derivation elsewhere, not touched by this job.
+- **Same-origin asset fetching for HTML pages (§7's "best-effort" clause)**: confirmed
+  with the user to defer this to a later phase rather than implement it now — the plan
+  gives no detail on scope/depth (which tags count as "assets needed to render", how deep
+  to follow, whether to rewrite the stored HTML), and Phase 2's archived `index.html`
+  files currently have no `assets/` sibling directory. Revisit before relying on the
+  review app (`05-review`) to render archived HTML with full fidelity.
+
 ## Next session should
 
-Start Phase 2: 02-archive — port the crawler core from `reference/scrape.py` +
-`reference/helpers.py` (frozen, read-only) using `lib/fetch.py`/`lib/hashing.py`, writing
-manifests + status.json via `lib/r2.py`. Per IMPLEMENTATION_PLAN.md §16, smoke check:
-fixtures crawl produces the correct archive layout with absence recorded.
+Start Phase 3: 03-normalize + `lib/quotes.py` (anchoring). Produce `extracted/text.txt`
+for every document in the archive (HTML/DOCX/PDF text-layer extraction using `lib/text.py`,
+already built in Phase 1). Per IMPLEMENTATION_PLAN.md §16, smoke check: page markers
+correct; known quotes anchor; a scanned/no-text-layer PDF yields empty `text.txt`. Note:
+`fixtures/crawl_pages/` (Phase 2) holds *source* pages/PDFs to be crawled, not an archived
+tree — 03-normalize's smoke check will need either a real archive produced by running
+02-archive against those fixtures (see `tests/test_phase2_archive.py` for the pattern) or
+its own hand-made archive fixture, the way Phase 1's `fixtures/mini_archive/` was built.
