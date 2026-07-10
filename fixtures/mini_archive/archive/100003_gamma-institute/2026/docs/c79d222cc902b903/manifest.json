@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "source_url": "https://gamma.edu/reports/chtr-2025-scanned.pdf",
+  "fetched_at": "2026-02-01T14:10:00Z",
+  "sha256": "c79d222cc902b903d5a6518581e881068acdf242b7ae7ac8e4b0fa9ce31307cf",
+  "content_type": "application/pdf",
+  "size_bytes": 902144,
+  "unitid": "100003",
+  "scrape_year": 2026
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "extraction_ref": {
+    "file_hash": "c7491a3024ff9ff32bc1226a035a80d7370ec57b754b1adedd41ea087de252f5",
+    "incident_index": 0
+  },
+  "tier": "standard",
+  "decision": "approved",
+  "rejection_reason": null,
+  "corrections": null,
+  "reviewer": "jane-reviewer",
+  "reviewed_at": "2026-02-10T18:04:00Z",
+  "second_review": null
+}

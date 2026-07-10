@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "is_chtr": true,
+  "document": {
+    "title_quote": null,
+    "reporting_period_quote": null,
+    "reporting_period_start": null,
+    "reporting_period_end": null,
+    "publication_date": null,
+    "zero_incidents_quote": null
+  },
+  "incidents": [
+    {
+      "organization_quote": null,
+      "description_quote": {"text": "Unable to confirm text against a scanned page image.", "page": 1},
+      "findings_quote": null,
+      "sanction_quotes": [],
+      "alcohol_involved": null,
+      "drugs_involved": null,
+      "dates": {
+        "incident_quote": null,
+        "incident_start": null,
+        "incident_end": null,
+        "investigation_initiated": null,
+        "resolved": null
+      }
+    }
+  ]
+}

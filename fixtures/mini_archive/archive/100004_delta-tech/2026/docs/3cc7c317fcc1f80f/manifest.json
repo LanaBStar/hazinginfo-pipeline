@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "source_url": "https://delta.edu/reports/chtr-2025.html",
+  "fetched_at": "2026-02-01T14:20:00Z",
+  "sha256": "3cc7c317fcc1f80ff682d0dd47c8533ac596f218ec9a3925b42fd6fb5a689c84",
+  "content_type": "text/html",
+  "size_bytes": 20481,
+  "unitid": "100004",
+  "scrape_year": 2026
+}

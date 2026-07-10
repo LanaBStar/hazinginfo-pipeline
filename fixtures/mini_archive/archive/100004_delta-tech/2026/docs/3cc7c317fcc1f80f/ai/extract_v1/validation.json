@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "valid": true,
+  "schema_errors": [],
+  "document": {
+    "zero_incidents_quote": null
+  },
+  "incidents": [
+    {
+      "index": 0,
+      "tier": "flagged",
+      "flagged_reasons": ["sanction_quote_contains_expulsion"],
+      "quotes": {
+        "organization_quote": {"anchored": true, "similarity": 1.0, "offset": [60, 81], "page_match": null},
+        "description_quote": {"anchored": true, "similarity": 1.0, "offset": [95, 167], "page_match": null},
+        "findings_quote": {"anchored": true, "similarity": 1.0, "offset": [177, 191], "page_match": null},
+        "sanction_quotes": [
+          {"anchored": true, "similarity": 1.0, "offset": [201, 235], "page_match": null}
+        ],
+        "incident_quote": null
+      },
+      "crosscheck": {"agrees": true, "notes": "Confirmed on second pass."}
+    },
+    {
+      "index": 1,
+      "tier": "fast",
+      "flagged_reasons": [],
+      "quotes": {
+        "organization_quote": null,
+        "description_quote": {"anchored": true, "similarity": 1.0, "offset": [237, 300], "page_match": null},
+        "findings_quote": null,
+        "sanction_quotes": [],
+        "incident_quote": null
+      },
+      "crosscheck": null
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "source_url": "https://alpha.edu/reports/chtr-2025.pdf",
+  "fetched_at": "2026-02-01T14:00:00Z",
+  "sha256": "2656d1b721673c9d1acadad90d5018a070a165072826f12b513d37b41fb62d63",
+  "content_type": "application/pdf",
+  "size_bytes": 154032,
+  "unitid": "100001",
+  "scrape_year": 2026
+}

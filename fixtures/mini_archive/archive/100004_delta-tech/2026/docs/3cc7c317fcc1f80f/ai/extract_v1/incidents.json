@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "is_chtr": true,
+  "document": {
+    "title_quote": {"text": "Delta Tech Campus Hazing Transparency Report", "page": null},
+    "reporting_period_quote": {"text": "January 1 - December 31, 2025", "page": null},
+    "reporting_period_start": "2025-01-01",
+    "reporting_period_end": "2025-12-31",
+    "publication_date": "2026-01-20",
+    "zero_incidents_quote": null
+  },
+  "incidents": [
+    {
+      "organization_quote": {"text": "Sigma Chi Fraternity", "page": null},
+      "description_quote": {"text": "New members were subjected to a physically demanding overnight ritual.", "page": null},
+      "findings_quote": {"text": "Substantiated.", "page": null},
+      "sanction_quotes": [
+        {"text": "Organization expelled from campus.", "page": null}
+      ],
+      "alcohol_involved": null,
+      "drugs_involved": null,
+      "dates": {
+        "incident_quote": null,
+        "incident_start": null,
+        "incident_end": null,
+        "investigation_initiated": null,
+        "resolved": null
+      }
+    },
+    {
+      "organization_quote": null,
+      "description_quote": {"text": "The institution reports zero additional incidents this period.", "page": null},
+      "findings_quote": null,
+      "sanction_quotes": [],
+      "alcohol_involved": null,
+      "drugs_involved": null,
+      "dates": {
+        "incident_quote": null,
+        "incident_start": null,
+        "incident_end": null,
+        "investigation_initiated": null,
+        "resolved": null
+      }
+    }
+  ]
+}
