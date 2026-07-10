@@ -11,7 +11,7 @@ conversational context.
 | 2 | 02-archive: crawler ported from old repo + manifests + status.json | done | Smoke check passes (`.venv/bin/python tests/test_phase2_archive.py`) |
 | 3 | 03-normalize + `lib/quotes.py` (anchoring) | done | Smoke check passes (`.venv/bin/python tests/test_phase3_normalize.py`) |
 | 4 | 04-extract: make_packets.py, prompt.md, crosscheck_prompt.md, validate.py + tiers | done | Smoke check passes (`.venv/bin/python tests/test_phase4_extract.py`) |
-| 5 | 06-publish: catalog_schema.sql + rebuild.py | not_started | |
+| 5 | 06-publish: catalog_schema.sql + rebuild.py | done | Smoke check passes (`.venv/bin/python tests/test_phase5_publish.py`) |
 | 6 | 01-discover: prompt.md, packets, merge.py | not_started | |
 | 7a | Review Worker + ingest.py (review.json write path) | not_started | |
 | 7b | Review UI (Pages + PDF.js + highlights + Access) | not_started | |
@@ -298,13 +298,90 @@ selection) was a test-authoring bug, not a plan gap.
   than the literal nouns, so real-world phrasing isn't missed; not asked separately
   since it's a direct, low-judgment reading of the same rule, not a gap in the plan.
 
+## Phase 5 — done
+
+- [x] `jobs/06-publish/catalog_schema.sql` — the six tables from §12, columns exactly
+      as named there (no invented fields — for `institutions`, whose §12 entry ends in
+      an ellipsis, this means literally just `unitid, name, state`, populated from
+      three of `schools.csv`'s six columns). Fully constrained per the user's choice:
+      `NOT NULL` wherever the source artifact schema requires the field, foreign keys
+      wherever §12 implies a relationship, and indexes on every FK column. `incident_id`
+      / `report_id` are `short_hash(sha256(...))` (16 hex chars), matching the archive's
+      own doc-hash precedent rather than inventing a new ID length.
+- [x] `jobs/06-publish/rebuild.py` — `DROP SCHEMA public CASCADE` → recreate → walk the
+      *entire* archive → repopulate every table, per invariant 2. `institutions` from
+      `sources/schools.csv`, `documents` from every `manifest.json`, `reporting_status`
+      from every `status.json`. `reports`/`incidents`/`incident_sanctions` only from
+      incidents with an `approved`/`corrected` `review.json`, matched to
+      `ai/extract_v{N}/incidents.json` via `extraction_ref.file_hash` (sha256 of that
+      file) + `incident_index` — the same hash-matching invariant `status.py` already
+      uses. `incident_id`/`report_id` are computed from the *original, uncorrected*
+      extraction so a reviewer fixing a typo never changes an incident's public ID.
+      A `corrections` dict overrides the field(s) it names before the row is written;
+      a present `second_review`'s `decision`/`corrections` apply after the first
+      review's and win on any field both name. A single incident's correction failing
+      to apply is logged and that incident skipped, not an abort of the whole rebuild
+      (Phase 2/3 precedent); the whole populate step runs in one transaction, so any
+      earlier failure (e.g. a DB error) rolls back cleanly with nothing half-written.
+- [x] `jobs/06-publish/RUNBOOK.md`.
+- [x] Smoke check: `tests/test_phase5_publish.py` — builds a real archive the same way
+      `test_phase4_extract.py` does (crawl + normalize `fixtures/crawl_pages/`,
+      `make_packets.py` + hand-authored `incidents.json` standing in for the agent,
+      then `validate.py`), then hand-writes `review.json` files covering every path:
+      an `approved` incident with no corrections, a `rejected` incident (must never
+      enter the catalog), an incident with no review at all (must never enter the
+      catalog), and an incident `corrected` twice — first review and second_review
+      both correcting the same field to different values, proving second_review wins.
+      Runs `rebuild.py` twice against a scratch local Postgres database (this machine
+      already runs a local `postgres` server on 5432 with trust auth — the test
+      creates/drops a throwaway database around itself, no Neon credentials needed)
+      and asserts the row counts, which incidents landed (and which didn't), the
+      winning correction, and that every row and ID is byte-identical between the two
+      runs (invariant 9).
+
+### Decisions made during Phase 5 (asked the user, since the plan was silent/ambiguous here)
+
+- **Which fixture archive the smoke check rebuilds against**: reusing Phase 1's
+  `fixtures/mini_archive/` was considered, but its `validation.json` files predate
+  Phase 4's schema extension (no `document.tier`/`flagged_reasons`) and wouldn't
+  validate against the current schema. Confirmed with the user: build a fresh archive
+  via the real pipeline (02/03/04 against `fixtures/crawl_pages/`), matching
+  `test_phase4_extract.py`'s approach, then hand-write `review.json` files onto the
+  result — this is what `test_phase5_publish.py` does. `fixtures/mini_archive/` is
+  untouched.
+- **`corrections` field-path vocabulary and first-vs-second-review conflicts**:
+  confirmed with the user a flat dot-path vocabulary scoped to catalog columns
+  (`rebuild.py`'s `CORRECTION_FIELDS`: `organization_quote.text/.page`,
+  `description_quote.text/.page`, `findings_quote.text/.page`, `alcohol_involved`,
+  `drugs_involved`, `dates.incident_quote.text`, `dates.incident_start/.end`,
+  `dates.investigation_initiated`, `dates.resolved`) — `sanction_quotes` (a list) and
+  any document-level field are deliberately not correctable this way, since
+  `review.json`'s `extraction_ref` scopes a review to one incident, never a document.
+  A present `second_review`'s corrections are applied after the first review's and
+  win on any field both name; the same last-write-wins rule extends to
+  `decision`/`rejection_reason` (not explicitly asked, but a direct extension of the
+  rule the user did confirm, not a separate judgment call).
+- **Column types/constraints**: §12 names columns, not types. Confirmed with the user:
+  fully constrained (`NOT NULL` per the source schema's own required fields, FKs
+  between every table §12 implies a relationship for, indexes on FK columns).
+- **Zero-incident ("fast" tier) reports and `review.json`**: `extraction_ref.incident_index`
+  is a required non-null integer, but a zero-incident report has no `incidents[]` to
+  index — there's no way yet to represent "a reviewer approved this zero-incident
+  report" in `review.json` as shipped. Confirmed with the user: out of scope for this
+  phase. `rebuild.py` only ever populates `reports`/`incidents`/`incident_sanctions`
+  for documents with ≥1 incident that has an approved/corrected review; a
+  zero-incident document still gets a `documents` row (from its `manifest.json`) but
+  never a `reports` row, and `reports.is_zero_incident` — present per §12's schema —
+  is never written `true` yet. Revisit once Phase 7a/7b's review app defines what it
+  actually writes for this case.
+
 ## Next session should
 
-Start Phase 5: 06-publish (`catalog_schema.sql` + `rebuild.py`), per
-IMPLEMENTATION_PLAN.md §12/§16. Smoke check per §16: rebuild twice against the fixtures
-archive → byte-identical ids both times; the fixture incidents from Phase 4's smoke
-archive appear in the catalog. Note Phase 4 left the cross-check second pass
-unwired — `rebuild.py` should not assume any incident will ever be `standard` yet, and
-should read `document.tier`/`document.flagged_reasons` (new in Phase 4) for the
-zero-incident-report case rather than expecting every reviewable unit to live in
-`incidents[]`.
+Start Phase 6: 01-discover (`prompt.md`, packets, `merge.py`), per
+IMPLEMENTATION_PLAN.md §7/§16. Smoke check per §16: candidate → confirm → merge
+round-trip on a `schools.csv` copy. Note `sources/schools.csv` still doesn't exist in
+the real repo — every prior phase's smoke checks build their own throwaway copy
+(`schools_template.csv` / hand-written CSVs); Phase 6 is what actually creates the
+real one for the first time, so pick its columns/header to match what 02-archive,
+`status.py`, and Phase 5's `rebuild.py` already assume (`unitid, name, state, chtr_url,
+url_status, evidence`) rather than re-deriving them.
