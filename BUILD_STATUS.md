@@ -9,7 +9,7 @@ conversational context.
 | 0 | Repo scaffold, CLAUDE.md/AGENTS.md, OPERATIONS.md, all JSON schemas, BUILD_STATUS.md, fixtures/ | done | Smoke check passes (`.venv/bin/python tests/test_phase0_schemas.py`) |
 | 1 | `status.py` + `lib/` (r2, hashing, fetch, text) | done | Smoke check passes (`.venv/bin/python tests/test_phase1_status.py`) |
 | 2 | 02-archive: crawler ported from old repo + manifests + status.json | done | Smoke check passes (`.venv/bin/python tests/test_phase2_archive.py`) |
-| 3 | 03-normalize + `lib/quotes.py` (anchoring) | not_started | |
+| 3 | 03-normalize + `lib/quotes.py` (anchoring) | done | Smoke check passes (`.venv/bin/python tests/test_phase3_normalize.py`) |
 | 4 | 04-extract: make_packets.py, prompt.md, crosscheck_prompt.md, validate.py + tiers | not_started | |
 | 5 | 06-publish: catalog_schema.sql + rebuild.py | not_started | |
 | 6 | 01-discover: prompt.md, packets, merge.py | not_started | |
@@ -169,13 +169,55 @@ conversational context.
   files currently have no `assets/` sibling directory. Revisit before relying on the
   review app (`05-review`) to render archived HTML with full fidelity.
 
+## Phase 3 — done
+
+- [x] `lib/quotes.py` — `anchor_quote(quote_text, page_hint, document_text)`: whitespace-
+      normalizes both sides, tries an exact substring match first, falls back to a
+      `SequenceMatcher`-based fuzzy window search, applies the ~95% similarity threshold
+      (§9). Returns `{anchored, similarity, offset, page_match}` matching
+      `validation.schema.json`'s `anchor_result` exactly — `offset` is a `[start, end]`
+      char-range pair into the whitespace-normalized text, `null` when unanchored;
+      `page_match` is `null` when `page_hint` is `null` (HTML/DOCX quotes have no page to
+      check).
+- [x] `jobs/03-normalize/run.py` — walks the archive for doc dirs with a `manifest.json`
+      lacking `extracted/text.txt`, dispatches on `manifest.json`'s `content_type` to
+      `lib/text.py`'s `pdf_to_text`/`html_to_text`/`docx_to_text`, writes `text.txt`
+      unconditionally (empty is valid — no text layer). Resumable: skips docs that already
+      have `extracted/text.txt`; a single document's extraction failure is caught, logged,
+      and does not abort the run.
+- [x] `jobs/03-normalize/RUNBOOK.md`
+- [x] Smoke check: `tests/test_phase3_normalize.py` — crawls `fixtures/crawl_pages/` via
+      `jobs/02-archive/run.py` (real archive, local HTTP server, same pattern as
+      `tests/test_phase2_archive.py`), normalizes it, and checks: PDF page markers correct;
+      known-quote anchoring (verbatim, whitespace-reflowed, wrong page hint, unrelated
+      quote, null page hint); the Westfield scanned-PDF fixture yields empty `text.txt`;
+      empty text never anchors; a second normalize run is idempotent (writes nothing new).
+
+### Bug found and fixed during Phase 3 verification
+
+The drafted `lib/quotes.py` and `jobs/03-normalize/run.py` were both correct as written —
+`anchor_quote` and the content-type dispatch matched §7/§9 and the schema on first run
+against the fixtures. The one real bug was in the drafted **test**: `tests/
+test_phase3_normalize.py` collected Eastview's document texts into a Python `set` and
+picked "the PDF" via `next(t for t in ev_texts if "[[page 1]]" in t)`. Both Eastview's real
+CHTR PDF and its non-CHTR decoy PDF (`decoy-menu.pdf`, a dining-services fixture) are
+single-page, so both get a `[[page 1]]` marker — the `next()` over an unordered set
+non-deterministically could return either one, and it was returning the decoy. Fixed by
+selecting on the expected incident text (`"Zeta Psi Fraternity"`) instead of the page
+marker, then asserting the marker is present on that selected text. No production code
+changed as a result of this bug.
+
+No new design decisions were needed from the user this phase — the drafted files matched
+the plan's anchoring/dispatch spec exactly; the only ambiguity (the eastview text
+selection) was a test-authoring bug, not a plan gap.
+
 ## Next session should
 
-Start Phase 3: 03-normalize + `lib/quotes.py` (anchoring). Produce `extracted/text.txt`
-for every document in the archive (HTML/DOCX/PDF text-layer extraction using `lib/text.py`,
-already built in Phase 1). Per IMPLEMENTATION_PLAN.md §16, smoke check: page markers
-correct; known quotes anchor; a scanned/no-text-layer PDF yields empty `text.txt`. Note:
-`fixtures/crawl_pages/` (Phase 2) holds *source* pages/PDFs to be crawled, not an archived
-tree — 03-normalize's smoke check will need either a real archive produced by running
-02-archive against those fixtures (see `tests/test_phase2_archive.py` for the pattern) or
-its own hand-made archive fixture, the way Phase 1's `fixtures/mini_archive/` was built.
+Start Phase 4: 04-extract (`make_packets.py`, `prompt.md`, `crosscheck_prompt.md`,
+`validate.py` + tiers), per IMPLEMENTATION_PLAN.md §7/§9/§16. `validate.py` will be the
+first real caller of `lib/quotes.anchor_quote` outside tests — wire up strict JSON-schema
+validation (unknown fields rejected), anchoring every quote in an `incidents.json` against
+its document's `extracted/text.txt`, tier assignment, and writing
+`incidents.json`/`metadata.json`/`validation.json` (valid or not — invalid output is still
+archived, never silently discarded, per §7). Smoke check per §16: an agent-run packet on
+fixtures → validated, tiered, archived.
