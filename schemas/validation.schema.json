@@ -32,9 +32,14 @@
     "document": {
       "type": "object",
       "properties": {
-        "zero_incidents_quote": {"$ref": "#/$defs/anchor_result"}
+        "zero_incidents_quote": {"$ref": "#/$defs/anchor_result"},
+        "tier": {"type": ["string", "null"], "enum": ["fast", "flagged", null]},
+        "flagged_reasons": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
       },
-      "required": ["zero_incidents_quote"],
+      "required": ["zero_incidents_quote", "tier", "flagged_reasons"],
       "additionalProperties": false
     },
     "incidents": {

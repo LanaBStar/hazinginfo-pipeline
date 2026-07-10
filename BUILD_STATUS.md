@@ -10,7 +10,7 @@ conversational context.
 | 1 | `status.py` + `lib/` (r2, hashing, fetch, text) | done | Smoke check passes (`.venv/bin/python tests/test_phase1_status.py`) |
 | 2 | 02-archive: crawler ported from old repo + manifests + status.json | done | Smoke check passes (`.venv/bin/python tests/test_phase2_archive.py`) |
 | 3 | 03-normalize + `lib/quotes.py` (anchoring) | done | Smoke check passes (`.venv/bin/python tests/test_phase3_normalize.py`) |
-| 4 | 04-extract: make_packets.py, prompt.md, crosscheck_prompt.md, validate.py + tiers | not_started | |
+| 4 | 04-extract: make_packets.py, prompt.md, crosscheck_prompt.md, validate.py + tiers | done | Smoke check passes (`.venv/bin/python tests/test_phase4_extract.py`) |
 | 5 | 06-publish: catalog_schema.sql + rebuild.py | not_started | |
 | 6 | 01-discover: prompt.md, packets, merge.py | not_started | |
 | 7a | Review Worker + ingest.py (review.json write path) | not_started | |
@@ -211,13 +211,100 @@ No new design decisions were needed from the user this phase — the drafted fil
 the plan's anchoring/dispatch spec exactly; the only ambiguity (the eastview text
 selection) was a test-authoring bug, not a plan gap.
 
+## Phase 4 — done
+
+- [x] `jobs/04-extract/make_packets.py` — walks the archive for doc dirs with
+      `extracted/text.txt` but no existing `ai/extract_v*/incidents.json`, writes one
+      packet per document under `tasks/extract/{unitid}_{hash16}/` containing
+      `prompt.md`, `original.pdf`/`original.html`, `text.txt`, `schema.json`, and a
+      `metadata.json` stub. Resumable: a document with any existing extraction is
+      skipped (re-extraction under a new prompt is a deliberate future action, not
+      something this scan triggers).
+- [x] `jobs/04-extract/prompt.md` — extraction instructions per §8: verbatim
+      page-anchored quotes, everything nullable except `description_quote`, missing
+      `organization_quote` is meaningful (not a placeholder to avoid), `is_chtr`
+      classification is part of this pass, and the excluded-fields list (hazing-type
+      taxonomy, sanction severity, `location`, `is_aggravated`, `date_reported`,
+      `org_type`) called out explicitly as never to be added.
+- [x] `jobs/04-extract/crosscheck_prompt.md` — the §9 second-pass prompt: verify a
+      prior extraction against the original, field by field, citing pages, producing
+      `{agrees, notes}` per incident index. Its header states plainly that this phase
+      does not wire it into `validate.py` (no packet-creation script or archived
+      crosscheck-output convention exists yet) — it is a deliverable prompt, not yet a
+      running second pass.
+- [x] `jobs/04-extract/validate.py` — (a) strict JSON-schema validation of
+      `incidents.json` against `schema.json` (unknown fields rejected); invalid output
+      is archived too, marked invalid, never discarded; (b) anchors every quote and
+      `document.zero_incidents_quote` against `extracted/text.txt` via
+      `lib/quotes.anchor_quote`; (c) assigns tier per §9's table — per incident, plus a
+      document-level tier for the zero-incident-report case (see schema decision
+      below); (d) archives `incidents.json` + a schema-compliant `metadata.json` +
+      `validation.json` to `{doc_dir}/ai/extract_v{N}/`, where `doc_dir`/`N` come from
+      the packet's `metadata.json` stub (never re-derived from the packet dirname).
+      Idempotent/resumable: skips a packet whose target `extract_v{N}/incidents.json`
+      already exists.
+- [x] `jobs/04-extract/RUNBOOK.md`.
+- [x] Smoke check: `tests/test_phase4_extract.py` — crawls + normalizes
+      `fixtures/crawl_pages/` via 02/03 (same pattern as Phase 3's test; reused rather
+      than building new Phase-4-specific fixtures, since it already covers an HTML
+      CHTR, a real CHTR PDF + non-CHTR decoy PDF, and a scanned/no-text-layer PDF —
+      exactly §14's three synthetic-institution shapes), then hand-adds one more
+      document straight to the archive (a genuine anchorable zero-incident report) for
+      the "fast" tier case, since no existing fixture covers it and adding one to
+      `crawl_pages` would have changed the exact document counts Phase 2/3's tests
+      assert on. Runs `make_packets.py`, hand-writes `incidents.json` into each packet
+      (standing in for the agent) covering both tiers reachable this phase, runs
+      `validate.py`, and asserts: north-ridge's two incidents anchor cleanly but land
+      `flagged` (not `standard` — no crosscheck wired up); eastview's real CHTR PDF is
+      `flagged` for a suspension sanction while its decoy PDF and index page are
+      correctly non-CHTR; westfield's scanned PDF is `flagged` at the document level
+      (`empty_text_layer`, zero-incident quote can't anchor against empty text); the
+      hand-added document reaches `fast`. Both scripts are idempotent on a second run.
+
+### Decisions made during Phase 4 (asked the user, since the plan was silent/ambiguous here)
+
+- **Packet-to-archive link**: the plan's packet dirname
+  (`tasks/extract/{unitid}_{hash16}/`) doesn't carry the institution slug, scrape_year,
+  or which `extract_v{N}` a packet targets — nothing to reconstruct the archive
+  write-back path from the dirname alone. Confirmed with the user: `make_packets.py`
+  snapshots `doc_dir` (the full archive path) and `target_version` into the packet's
+  `metadata.json` stub at packet-creation time; the agent copies that stub into its
+  final metadata, adding only `model`/`created`; `validate.py` reads `doc_dir`/`target_version`
+  straight from the stub and strips them back out before writing the final,
+  schema-compliant `metadata.json` (which still has exactly the 4 fields
+  `schemas/extract_metadata.schema.json` requires — that schema itself is unchanged).
+- **Cross-check wiring**: Phase 4's task list included `crosscheck_prompt.md` but not a
+  crosscheck packet-maker or an archived crosscheck-output convention. Confirmed with
+  the user: `validate.py` always writes `crosscheck: null` this phase. Per §9's table
+  this means no incident can reach the `standard` tier yet (its condition requires
+  cross-check agreement) — only `fast` (zero-incident reports) and `flagged` are
+  reachable from this job until a later phase adds the second-pass packet flow.
+- **Zero-incident report tier has no home in `validation.schema.json` as shipped in
+  Phase 0** (flagged as open in Phase 1's notes): the `fast` tier applies to a whole
+  zero-incident report (`incidents: []`), not to any entry in the per-incident
+  `incidents[]` array, and the schema had no document-level tier field. Confirmed with
+  the user: extended `validation.schema.json`'s `document` object with `tier`
+  (`"fast" | "flagged" | null`) and `flagged_reasons` (mirroring the per-incident
+  shape), rather than overloading `incidents[]` with a synthetic whole-document entry.
+  Updated `fixtures/schema_examples/validation.example.json` and the one mini_archive
+  fixture with a `validation.json` (`100001_alpha-college`) to match — both were
+  non-zero-incident cases, so both just get `tier: null, flagged_reasons: []`.
+- **Sanction-wording match for the "suspension/expulsion" flagged condition**: §9 says
+  "sanction quote containing suspension/expulsion" verbatim, but real sanction text
+  uses inflections ("suspended", "expelled") rather than those exact nouns — e.g. this
+  phase's own eastview fixture ("Sanction: suspension through Spring 2027.") and the
+  pre-existing `100004_delta-tech` fixture ("Organization expelled from campus.") use
+  different stems. Matched by stem (`suspen|expel|expuls`, case-insensitive) rather
+  than the literal nouns, so real-world phrasing isn't missed; not asked separately
+  since it's a direct, low-judgment reading of the same rule, not a gap in the plan.
+
 ## Next session should
 
-Start Phase 4: 04-extract (`make_packets.py`, `prompt.md`, `crosscheck_prompt.md`,
-`validate.py` + tiers), per IMPLEMENTATION_PLAN.md §7/§9/§16. `validate.py` will be the
-first real caller of `lib/quotes.anchor_quote` outside tests — wire up strict JSON-schema
-validation (unknown fields rejected), anchoring every quote in an `incidents.json` against
-its document's `extracted/text.txt`, tier assignment, and writing
-`incidents.json`/`metadata.json`/`validation.json` (valid or not — invalid output is still
-archived, never silently discarded, per §7). Smoke check per §16: an agent-run packet on
-fixtures → validated, tiered, archived.
+Start Phase 5: 06-publish (`catalog_schema.sql` + `rebuild.py`), per
+IMPLEMENTATION_PLAN.md §12/§16. Smoke check per §16: rebuild twice against the fixtures
+archive → byte-identical ids both times; the fixture incidents from Phase 4's smoke
+archive appear in the catalog. Note Phase 4 left the cross-check second pass
+unwired — `rebuild.py` should not assume any incident will ever be `standard` yet, and
+should read `document.tier`/`document.flagged_reasons` (new in Phase 4) for the
+zero-incident-report case rather than expecting every reviewable unit to live in
+`incidents[]`.

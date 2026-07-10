@@ -3,7 +3,9 @@
   "valid": true,
   "schema_errors": [],
   "document": {
-    "zero_incidents_quote": null
+    "zero_incidents_quote": null,
+    "tier": null,
+    "flagged_reasons": []
   },
   "incidents": [
     {
