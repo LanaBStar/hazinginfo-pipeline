@@ -12,7 +12,7 @@ conversational context.
 | 3 | 03-normalize + `lib/quotes.py` (anchoring) | done | Smoke check passes (`.venv/bin/python tests/test_phase3_normalize.py`) |
 | 4 | 04-extract: make_packets.py, prompt.md, crosscheck_prompt.md, validate.py + tiers | done | Smoke check passes (`.venv/bin/python tests/test_phase4_extract.py`) |
 | 5 | 06-publish: catalog_schema.sql + rebuild.py | done | Smoke check passes (`.venv/bin/python tests/test_phase5_publish.py`) |
-| 6 | 01-discover: prompt.md, packets, merge.py | not_started | |
+| 6 | 01-discover: prompt.md, packets, merge.py | done | Smoke check passes (`.venv/bin/python tests/test_phase6_discover.py`) |
 | 7a | Review Worker + ingest.py (review.json write path) | not_started | |
 | 7b | Review UI (Pages + PDF.js + highlights + Access) | not_started | |
 | 8 | migration/: backfill_manifests.py + export_legacy.py | not_started | |
@@ -375,13 +375,99 @@ selection) was a test-authoring bug, not a plan gap.
   is never written `true` yet. Revisit once Phase 7a/7b's review app defines what it
   actually writes for this case.
 
+## Phase 6 — done
+
+- [x] `sources/schools.csv` — **created for real for the first time.** The user
+      supplied the source list (`~/Downloads/listofschools.csv`: `row_order, unitid,
+      institution, chtr_url, status, evidence`, 1,484 rows, no duplicate unitids, every
+      status/chtr_url/evidence blank). Mapped to schools.csv's columns 1:1
+      (`institution` → `name`); see the `state` decision below for why `state` is a
+      blank column rather than populated. `sources/` did not exist as a directory
+      before this phase (Phase 0's scaffold didn't create it, since Phase 6 is what
+      first populates it) — created it here.
+- [x] `jobs/01-discover/prompt.md` — search instructions per §7: one candidate per
+      school actually found (never a placeholder for "not found" — that school is
+      just omitted and retried next pass), verbatim evidence quotes, confidence as
+      the agent's own calibrated estimate (informational only — see decision below),
+      never edits `schools.csv`, never fetches/archives documents (that's 02-archive's
+      job after confirmation).
+- [x] `jobs/01-discover/make_batches.py` — slices every school with a blank
+      `url_status` in `sources/schools.csv` into `tasks/discover/batch_{NNN}/`
+      directories (~25–50 schools each, default 40, `--batch-size` to override), each
+      containing `prompt.md` + `schema.json` + `schools_slice.csv`. Resumability is
+      driven entirely by `schools.csv`'s own `url_status` column (no scanning of
+      `tasks/` needed): batching marks batched rows `url_status=pending` so a second
+      run never re-batches them; `confirmed`/`no_url` rows (from a prior merge) are
+      likewise never re-batched; a *rejected* candidate reverts to blank `url_status`
+      (see `merge.py` below) so it becomes eligible again on the next annual pass.
+      Batch numbering continues from the highest existing `batch_NNN` dir, so a
+      crash/interrupted session never collides with or reuses a prior batch number.
+- [x] `jobs/01-discover/decisions.schema.json` — new schema (not named in the plan's
+      §4 schema inventory, but a direct extension of the same "any file a script reads
+      to make a decision should be schema-validated" pattern the plan uses everywhere
+      else): `{schema_version, batch, decisions: [{unitid, decision: "confirmed"|
+      "rejected", proposed_url}]}`. Lives in the job dir (like `candidates.schema.json`)
+      since it's specific to this job's packets, not a cross-job artifact.
+- [x] `jobs/01-discover/merge.py` — for every `tasks/discover/batch_{NNN}/` with a
+      `candidates.json` **and** a `decisions.json` that covers every candidate in the
+      batch (a partial `decisions.json` — operator still working through it — is left
+      untouched, not an error), validates: unitid exists in `schools.csv`, the
+      decision's `proposed_url` matches the corresponding candidate's exactly (an
+      operator confirms *this* candidate, not an arbitrary URL), URL is well-formed
+      (http/https + non-empty netloc). Merges confirmed → `chtr_url`/
+      `url_status=confirmed`/`evidence`; rejected → those three fields cleared back to
+      blank (re-eligible for batching). Asserts `schools.csv`'s row count and unitid
+      set are unchanged before writing it back — no row deletion, ever. Marks each
+      merged batch with a `merged.json` sentinel so a later batch that recycles the
+      same unitid (a rejected school gets re-batched under a new batch number) never
+      causes this batch's now-stale `decisions.json` to be reapplied.
+- [x] `jobs/01-discover/RUNBOOK.md`.
+- [x] Smoke check: `tests/test_phase6_discover.py` — a synthetic 5-school
+      `schools.csv` copy (not the real one): batches into 2 batches of size 3/2;
+      hand-writes `candidates.json` + `decisions.json` for batch_001 (2 confirmed, 1
+      rejected) and a `candidates.json` with an *incomplete* `decisions.json` for
+      batch_002; runs `merge.py` and asserts batch_001 merges (confirmed rows get
+      `chtr_url`/`evidence`, rejected row reverts to blank, row count/unitid set
+      unchanged, `merged.json` written) while batch_002 is skipped untouched; a second
+      `merge.py` run is a full no-op (idempotent); a second `make_batches.py` run
+      re-batches the rejected school into a new `batch_003` while confirmed/still-
+      pending schools are never re-batched. All prior phases' smoke checks re-run
+      clean afterward (`sources/schools.csv` now existing for real doesn't perturb
+      them — they all build their own throwaway CSVs, same as before).
+
+### Decisions made during Phase 6 (asked the user, since the plan was silent/ambiguous here)
+
+- **Where the real ~1,484-institution list comes from**: confirmed with the user —
+  they supplied `~/Downloads/listofschools.csv` directly this session rather than
+  deferring population to a follow-up task.
+- **Missing `state` column**: the user's source list has no `state` column (just
+  `row_order, unitid, institution, chtr_url, status, evidence`), unlike the six-column
+  shape (`unitid, name, state, chtr_url, url_status, evidence`) every prior phase
+  assumed for `schools.csv`. Confirmed with the user: keep the six-column shape with
+  `state` always blank for now, rather than dropping the column (which would have
+  required touching Phase 5's `catalog_schema.sql`/`rebuild.py`). `state` can be
+  backfilled later from an IPEDS unitid lookup without any schema change. **Anyone
+  relying on `institutions.state` in the catalog (Phase 5) should know it is empty
+  for every row until that backfill happens.**
+- **Decisions file shape/filename**: confirmed with the user —
+  `tasks/discover/{batch}/decisions.json`, mirroring `candidates.json`'s shape
+  (`{schema_version, batch, decisions: [{unitid, decision, proposed_url}]}`), with a
+  new `decisions.schema.json` in the job dir to validate it (see above).
+- **Confidence field semantics**: confirmed with the user — `confidence` is shown to
+  the operator alongside each candidate as one input to their own judgment, but
+  `merge.py` never gates or auto-decides anything on it (invariant 6: only an operator
+  decision, written to a file, moves a candidate to `confirmed`/`rejected`).
+- **Rejected candidates and re-eligibility** (not asked separately, but a judgment call
+  worth recording): a rejected decision resets `url_status` to blank rather than a
+  fourth status value like `"rejected"`, so the school is picked up again by the next
+  `make_batches.py` pass without any change to `status.py`'s existing 3-value
+  `discover_stats` enum (`confirmed`/`pending`/`no_url`) from Phase 1.
+
 ## Next session should
 
-Start Phase 6: 01-discover (`prompt.md`, packets, `merge.py`), per
-IMPLEMENTATION_PLAN.md §7/§16. Smoke check per §16: candidate → confirm → merge
-round-trip on a `schools.csv` copy. Note `sources/schools.csv` still doesn't exist in
-the real repo — every prior phase's smoke checks build their own throwaway copy
-(`schools_template.csv` / hand-written CSVs); Phase 6 is what actually creates the
-real one for the first time, so pick its columns/header to match what 02-archive,
-`status.py`, and Phase 5's `rebuild.py` already assume (`unitid, name, state, chtr_url,
-url_status, evidence`) rather than re-deriving them.
+Start Phase 7a: Review Worker + `ingest.py` (review.json write path), per
+IMPLEMENTATION_PLAN.md §7a/§16. Smoke check per §16: review.json lands in R2,
+validated, pinned to the extraction hash. Note: real R2/Neon credentials are still not
+configured in `.env` (every smoke check so far runs against `ARCHIVE_LOCAL_ROOT` or a
+scratch local Postgres) — ask the user before this phase needs a live Cloudflare
+Worker deploy target.

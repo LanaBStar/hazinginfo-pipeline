@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hazinginfo.org/schemas/jobs/01-discover/decisions.schema.json",
+  "title": "decisions.json",
+  "description": "Operator confirmation/rejection of one batch's candidates.json, written by the console (never by the agent) per IMPLEMENTATION_PLAN.md §7 invariant 6. merge.py reads this alongside the batch's candidates.json and merges confirmed URLs into sources/schools.csv.",
+  "type": "object",
+  "properties": {
+    "schema_version": {"const": 1},
+    "batch": {"type": "string"},
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "unitid": {"type": "string"},
+          "decision": {"enum": ["confirmed", "rejected"]},
+          "proposed_url": {"type": "string", "format": "uri"}
+        },
+        "required": ["unitid", "decision", "proposed_url"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["schema_version", "batch", "decisions"],
+  "additionalProperties": false
+}
