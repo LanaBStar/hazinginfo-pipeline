@@ -2,6 +2,7 @@
 .venv/
 __pycache__/
 *.pyc
+.DS_Store
 
 # Frozen reference copy of the old repo (~/Documents/hazing-incidents/) — read-only
 # source material for the Phase 2 crawler port, not part of this repo's deliverables.
