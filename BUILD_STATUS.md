@@ -13,7 +13,7 @@ conversational context.
 | 4 | 04-extract: make_packets.py, prompt.md, crosscheck_prompt.md, validate.py + tiers | done | Smoke check passes (`.venv/bin/python tests/test_phase4_extract.py`) |
 | 5 | 06-publish: catalog_schema.sql + rebuild.py | done | Smoke check passes (`.venv/bin/python tests/test_phase5_publish.py`) |
 | 6 | 01-discover: prompt.md, packets, merge.py | done | Smoke check passes (`.venv/bin/python tests/test_phase6_discover.py`) |
-| 7a | Review Worker + ingest.py (review.json write path) | not_started | |
+| 7a | Review Worker + ingest.py (review.json write path) | done | Smoke check passes (`.venv/bin/python tests/test_phase7a_review.py`) |
 | 7b | Review UI (Pages + PDF.js + highlights + Access) | not_started | |
 | 8 | migration/: backfill_manifests.py + export_legacy.py | not_started | |
 
@@ -463,11 +463,100 @@ selection) was a test-authoring bug, not a plan gap.
   `make_batches.py` pass without any change to `status.py`'s existing 3-value
   `discover_stats` enum (`confirmed`/`pending`/`no_url`) from Phase 1.
 
+## Phase 7a — done
+
+- [x] `jobs/05-review/ingest.py` — `ingest_review(doc_dir, review_json) -> key`, the
+      validating write path for a human review decision, per §10/§11/§16. In order,
+      never partially writing: (a) validates `review_json` against
+      `schemas/review.schema.json`; (b) confirms `extraction_ref.file_hash` matches
+      the sha256 of some `{doc_dir}/ai/extract_v{N}/incidents.json` — searches every
+      version under `doc_dir`, not just the current one, so a review submitted
+      against an older extraction still pins correctly (invariant 9); (c) confirms
+      `extraction_ref.incident_index` is in range; (d) if the *resolved* decision
+      (second_review's decision overrides the first's, same last-write-wins rule
+      `jobs/06-publish/rebuild.py` already applies at read time — factored out here
+      as `_resolved_decision`, mirrored not imported, since it's a few lines) is
+      `"corrected"`: re-anchors every quote-bearing field a correction touches
+      (`organization_quote`, `description_quote`, `findings_quote`,
+      `dates.incident_quote`) via `lib.quotes.anchor_quote` against
+      `extracted/text.txt` — a corrected quote that no longer anchors rejects the
+      whole review, nothing written; (e) writes to
+      `{doc_dir}/reviews/{incident_index}_{reviewer-slug}_{ts}.review.json`. Raises
+      `IngestError` (never a partial write) on any failure. Also runnable as a CLI
+      (`python jobs/05-review/ingest.py --doc-dir … --review …`) for manual use.
+- [x] `jobs/05-review/RUNBOOK.md`.
+- [x] Smoke check: `tests/test_phase7a_review.py` — builds a real archive the same
+      way test_phase4/5 do (crawl + normalize `fixtures/crawl_pages/`, `make_packets`
+      + hand-authored `incidents.json` standing in for the agent, then `validate.py`
+      against north-ridge's HTML + eastview's real CHTR PDF), then calls
+      `ingest_review()` directly and asserts: a valid `approved` review lands at the
+      exact expected key with byte-identical content and the confirmed
+      slug/timestamp filename derivation; a `file_hash` matching no extraction under
+      `doc_dir` is rejected with nothing written; an out-of-range `incident_index` is
+      rejected; schema-invalid input (bad `decision` enum, an unknown field) is
+      rejected; a `corrected` review with a still-anchorable corrected quote
+      succeeds; one with an unanchorable corrected quote is rejected, nothing
+      written; a `second_review` overriding `corrected` → `approved` skips
+      re-anchoring the first review's (bad) correction entirely; and when both first
+      and second `_review` correct the *same* quote field to different values, the
+      second's — not the first's — is the one actually re-anchored (proving
+      last-write-wins is applied before anchoring runs, not just at rebuild time).
+      All 7 prior phases' smoke checks re-run clean afterward.
+
+### Decisions made during Phase 7a (asked the user, since the plan was silent/ambiguous here)
+
+- **Worker scope**: the plan's Phase 7a deliverable is literally "Review Worker +
+  ingest.py", but a Cloudflare Worker runs JS/TS and cannot call Python directly, and
+  no live Cloudflare/R2 credentials exist in `.env` yet. Confirmed with the user:
+  build `ingest.py` as pure, locally-testable Python this phase (tested against
+  `ARCHIVE_LOCAL_ROOT`, same pattern as every prior phase) and defer writing the
+  actual Cloudflare Worker (TypeScript, wrangler config, R2 binding, Access
+  middleware) to a separate follow-up phase once real credentials exist. That future
+  Worker is expected to port `ingest_review()`'s logic to TypeScript (or call out to
+  it) — `ingest.py` has no side effects beyond `lib/r2.py` and raises cleanly on
+  every rejection path specifically so that port is mechanical.
+- **`doc_dir` is not part of review.json**: `review.schema.json` (fixed in Phase 0,
+  `additionalProperties: false`) only carries `extraction_ref.file_hash` +
+  `incident_index`, not which document that extraction belongs to. Not explicitly
+  asked (a direct consequence of not touching the existing schema), but recorded as
+  a real design decision: `ingest_review(doc_dir, review_json)` takes `doc_dir` as a
+  separate argument, supplied by the caller — in the real app this is
+  `documents.storage_key` from the catalog's queue view (§12), which the review UI
+  already has open. The eventual Worker's request shape (e.g. a route parameter)
+  needs to carry it alongside the review.json body.
+- **Reviewer identity**: §11 says `reviewer` comes from the Access JWT, but Access
+  isn't wired up yet. The user asked what Access/JWT even means rather than
+  committing to a stand-in; given that, went with the recommended default:
+  `ingest_review()` trusts whatever `reviewer` string it's handed (validated only for
+  shape, via the schema's `{"type": "string"}`) and does no identity verification of
+  its own — that check is explicitly the future Worker's job once Access exists, not
+  `ingest.py`'s. The smoke check hand-supplies plain reviewer strings, standing in
+  for "the Worker already verified this against the Access JWT before calling
+  ingest.py."
+- **`{reviewer-slug}` / `{ts}` filename derivation**: the user also deferred on this
+  one. Went with the recommended default: `reviewer-slug` = `reviewer` lowercased,
+  every run of non-alphanumeric characters collapsed to a single `-`, leading/
+  trailing `-` stripped (e.g. `"Jane Doe <jane@x.edu>"` → `"jane-doe-jane-x-edu"`);
+  `ts` = `reviewed_at` (already required, ISO 8601) reformatted to a compact
+  filename-safe UTC form with punctuation stripped (e.g. `2026-02-10T18:05:30Z` →
+  `20260210T180530Z`). Both covered by the smoke check's first case.
+- **R2 for the smoke check**: the user mentioned having real R2 read/write API keys,
+  but no `.env` exists in the repo yet. Confirmed with the user: keep this phase's
+  smoke check local-only (`ARCHIVE_LOCAL_ROOT`), matching every prior phase — nothing
+  in `ingest.py` is R2-specific (it only calls `lib/r2.py`), so pointing it at real R2
+  later is purely an env var change, not a code change. Setting up `.env` with real
+  keys is left for whenever the actual Worker deploy (the deferred follow-up above)
+  needs them.
+
 ## Next session should
 
-Start Phase 7a: Review Worker + `ingest.py` (review.json write path), per
-IMPLEMENTATION_PLAN.md §7a/§16. Smoke check per §16: review.json lands in R2,
-validated, pinned to the extraction hash. Note: real R2/Neon credentials are still not
-configured in `.env` (every smoke check so far runs against `ARCHIVE_LOCAL_ROOT` or a
-scratch local Postgres) — ask the user before this phase needs a live Cloudflare
-Worker deploy target.
+Start Phase 7b: Review UI (Pages + PDF.js + highlights + Access), per
+IMPLEMENTATION_PLAN.md §7b/§11/§16 — the largest remaining item, and the phase that
+will need the real Cloudflare Worker deferred above (this is likely the point where
+live R2/Cloudflare Access credentials become necessary; ask the user for them, and
+for `.env` setup, before this phase needs a live deploy target). Smoke check per
+§16: a fixture incident is reviewable end-to-end. `jobs/05-review/ingest.py`'s
+`ingest_review()` is what the review app's submit action should ultimately call
+(directly if the Worker ends up embedding Python via some runtime, otherwise ported
+to TypeScript) — treat its behavior (validation order, error cases, filename
+derivation) as settled by Phase 7a's smoke check, not to be redesigned in 7b.
