@@ -15,3 +15,7 @@ node_modules/
 # Claude Code local settings (per-machine permission allowlist) — .claude/launch.json
 # (dev server definitions) is shared/committed, this is not.
 .claude/settings.local.json
+
+# migration/export_legacy.py's output — real organizations' names and incident
+# descriptions from the old system, not an archive artifact, not for version control.
+migration/calibration_set.json

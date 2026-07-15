@@ -15,7 +15,7 @@ conversational context.
 | 6 | 01-discover: prompt.md, packets, merge.py | done | Smoke check passes (`.venv/bin/python tests/test_phase6_discover.py`) |
 | 7a | Review Worker + ingest.py (review.json write path) | done | Smoke check passes (`.venv/bin/python tests/test_phase7a_review.py`) |
 | 7b | Review UI (Pages + PDF.js + highlights + Access) | done | Smoke check passes (`.venv/bin/python tests/test_phase7b_review_app.py`; `npm --prefix jobs/05-review/app/worker test`) |
-| 8 | migration/: backfill_manifests.py + export_legacy.py | not_started | |
+| 8 | migration/: backfill_manifests.py + export_legacy.py | done | Smoke check passes (`.venv/bin/python tests/test_phase8_migration.py`) |
 
 ## Phase 0 — done
 
@@ -672,20 +672,121 @@ from an HTTP response alone:
   hand-rolled regex parser, with the Pages UI's scriptless sandboxed iframe as a
   second, independent layer of defense.
 
+## Phase 8 — done
+
+- [x] `migration/old_r2.py` — read-only client for the OLD system's R2 bucket. Mirrors
+      `lib/r2.py`'s local-fallback pattern (`OLD_ARCHIVE_LOCAL_ROOT` instead of
+      `ARCHIVE_LOCAL_ROOT`) so tests run against a fixture directory with no live
+      credentials. Deliberately has no `put_bytes` — migration must never write to the
+      old system.
+- [x] `migration/backfill_manifests.py` — walks the old Neon `raw_artifacts` table
+      (joined to `institutions` for unitid/name), fetches each object's bytes from the
+      old R2 bucket by its recorded `storage_key`, verifies the bytes hash to the
+      `content_hash` Neon recorded, and writes `manifest.json` + `original/{filename}`
+      into the new archive at `archive/{unitid}_{slug}/{scrape_year}/docs/{hash16}/` —
+      same shape and same `_slug()`/filename/content-type conventions
+      `jobs/02-archive/run.py`'s `store_document()` already uses (duplicated, not
+      imported, so the two inst_dir derivations can never silently drift apart). Never
+      re-fetches a source URL. The old Neon connection is opened `read_only = True` at
+      the transaction level — a real Postgres-enforced backstop, verified in this
+      phase's smoke check (a `DELETE` against it raises `ReadOnlySqlTransaction`).
+      Idempotent/resumable (per the user's confirmed choice — see below): a raw_artifacts
+      row whose target `manifest.json` already exists is skipped. A row whose unitid
+      isn't in the current `sources/schools.csv`, or whose fetched bytes don't hash to
+      the recorded `content_hash`, is skipped and logged rather than aborting the run;
+      a hash mismatch is never written under any circumstance.
+- [x] `migration/calibration_set.schema.json` — new schema (job-local, same placement
+      rule as `jobs/01-discover/schema.json`) for the volunteer calibration set, per
+      the shape confirmed with the user (see below).
+- [x] `migration/export_legacy.py` — walks the old Neon `incidents` table (Tier 6,
+      human-approved, joined through `chtr_reports` to `institutions` and
+      `raw_artifacts` for the `content_hash` that locates its now-backfilled `doc_dir`),
+      and writes `migration/calibration_set.json`: one entry per legacy incident whose
+      institution is still tracked and whose source document `backfill_manifests.py`
+      has already copied in, pairing `doc_dir` with the legacy incident's old fields as
+      a reference answer-key. Never imports old fields as catalog data — they have no
+      quotes/anchors and don't meet the new evidentiary standard. Same read-only-Neon
+      guarantee as `backfill_manifests.py`.
+- [x] `migration/RUNBOOK.md` — purpose/preconditions/steps/postconditions/failure modes
+      for both scripts, including the required run order (backfill before export, with
+      normal 03-normalize/04-extract re-extraction of the backfilled documents in
+      between).
+- [x] `.env.example` — added `OLD_R2_ENDPOINT_URL`/`OLD_R2_ACCESS_KEY_ID`/
+      `OLD_R2_SECRET_ACCESS_KEY`/`OLD_R2_BUCKET_NAME`/`OLD_DATABASE_URL`, placeholder
+      values only, same naming convention as the existing `R2_*`/`NEON_DATABASE_URL`.
+- [x] `.gitignore` — added `migration/calibration_set.json` (real organizations' names
+      and incident descriptions from the old system; not an archive artifact, not for
+      version control, same reasoning as `.env`).
+- [x] Smoke check: `tests/test_phase8_migration.py` — a scratch Postgres database seeded
+      with a faithful subset of the real old schema (copied from
+      `~/Documents/hazing-incidents/scraper/db.py`: `institutions`, `pipeline_runs`,
+      `raw_artifacts`, `chtr_reports`, `incidents`) plus a local directory standing in
+      for the old R2 bucket (`OLD_ARCHIVE_LOCAL_ROOT`) — the synthetic-fixture approach
+      the user chose over a live old-system connection this session. Three old
+      `raw_artifacts` rows exercise every branch: Northgate University (correct hash,
+      known institution — the happy path, backfilled then exported), Old Removed
+      College (correct hash, but not in the current `sources/schools.csv` — skipped by
+      both scripts), and Fernwood State (content_hash deliberately does not match the
+      real bytes at its storage_key — `backfill_manifests.py` refuses to write it, and
+      `export_legacy.py`'s legacy incident pointing at it correctly reports
+      `skipped_not_backfilled`, proving the two scripts' failure paths compose). A
+      fourth legacy incident with `artifact_id = NULL` exercises `skipped_no_document`.
+      Asserts manifest.json/original bytes are byte-correct, `backfill_manifests.py` is
+      resumable (run twice, second run backfills 0 new documents), and
+      `calibration_set.json` validates against its own schema. All 8 prior phases'
+      Python smoke checks (`tests/test_phase0..7b*.py`) and the Worker's `npm test` (26
+      cases) re-run clean afterward.
+
+### Decisions made during Phase 8 (asked the user, since the plan was silent/ambiguous here)
+
+- **Old-system credentials weren't available this session.** Confirmed with the user:
+  build and smoke-test against a synthetic fixture (as above) rather than the real old
+  R2/Neon, matching every prior phase's local-fixture pattern. The real
+  `OLD_R2_*`/`OLD_DATABASE_URL` values, and a run of both scripts against the actual old
+  system, are left for a follow-up session once the user hands them over — see "Next
+  session should" below. The old Neon schema itself was *not* an open question this
+  phase (unlike the plan's framing suggested it might be): `~/Documents/hazing-incidents/
+  scraper/db.py` (read, never modified — allowed per IMPLEMENTATION_PLAN.md §0, the same
+  old repo `reference/` mirrors a subset of) has the exact `CREATE TABLE` statements for
+  `raw_artifacts`, `institutions`, `chtr_reports`, and the human-verified `incidents`
+  table, so the column mapping was read directly rather than guessed or asked about.
+- **Resumability:** confirmed with the user — `backfill_manifests.py` follows invariant
+  10 like every other job (skip a row whose manifest.json already exists) rather than
+  being a true one-time, non-resumable script. Costs one `r2.exists()` check per row.
+- **`calibration_set.json`'s shape**: confirmed with the user — the proposal in this
+  session's question (top-level `{schema_version, calibration_set: [{legacy_incident_id,
+  unitid, doc_dir, legacy_fields: {...}}]}`, with `legacy_fields` covering every column
+  the old `incidents` table's Tier 6 verified row carries) was accepted as-is.
+- **`backfill_manifests.py` does not write `status.json`** (not asked separately — a
+  direct reading of §13's literal scope, which names only manifest.json as this script's
+  deliverable, unlike §7's 02-archive spec which explicitly calls out status.json
+  including the not_found/no_url cases). Consequence: backfilled institution-years won't
+  appear in `06-publish`'s `reporting_status` table or in `status.py`'s counts. This
+  doesn't block re-extraction/review/publish of the backfilled documents themselves —
+  `rebuild.py`'s `documents`/`reports`/`incidents` population all walk for `manifest.json`
+  directly, never `status.json`. Revisit if `status.py`/the operator console ever needs
+  visibility into backfilled-but-not-yet-status-tracked institution-years.
+- **Original document bytes are copied into the new archive's `original/`, not just
+  referenced** (not asked separately — a direct consequence of invariant 1 and the 2036
+  test: a `manifest.json` with no corresponding `original/` file isn't self-contained,
+  and 03-normalize needs the bytes present in the *new* archive to produce
+  `extracted/text.txt` for these documents like any other).
+
 ## Next session should
 
-Start Phase 8: `migration/` — `backfill_manifests.py` + `export_legacy.py`, per
-IMPLEMENTATION_PLAN.md §13/§16. Read Section 13 closely before starting: this phase
-must never refetch what the old system captured (those pages may have changed or
-vanished — the old captures are irreplaceable evidence), and previously
-human-verified legacy incidents do **not** get imported as-is (no quotes, no
-anchors) — instead their source documents are re-extracted under the new schema and
-the known incidents become the volunteer calibration set from §9. Smoke check per
-§16 is a dry run against the old bucket/Neon, read-only. This phase will need the old
-system's R2/Neon credentials (read-only) — ask the user for them and confirm access
-before starting.
+Nothing is blocking — all 9 build phases (0 through 8) are done, and the 2036 test
+(§17) should be re-validated end-to-end against a real annual pass once real
+credentials exist for both systems. Two credential hand-offs are still open, both
+deliberately deferred rather than blocking their phases:
 
-Also still open from Phase 7b, deliberately deferred rather than blocking it (see
-decisions above): the actual live deploy (real R2 write credentials scoped to
-`reviews/`, a Cloudflare Access application gating the Worker's route, `config.js`
-pointed at the deployed Worker) whenever the user is ready to hand over credentials.
+- **Phase 7b's live deploy** (still open from that phase): real R2 write credentials
+  scoped to `reviews/`, a Cloudflare Access application gating the Worker's route, and
+  `config.js` pointed at the deployed Worker, whenever the user is ready to hand over
+  credentials.
+- **Phase 8's real migration run** (this session): `OLD_R2_ENDPOINT_URL` /
+  `OLD_R2_ACCESS_KEY_ID` / `OLD_R2_SECRET_ACCESS_KEY` / `OLD_R2_BUCKET_NAME` /
+  `OLD_DATABASE_URL` for the actual old system, so `migration/backfill_manifests.py`
+  then `migration/export_legacy.py` can be run for real (read-only against the old
+  system throughout) instead of just against this phase's synthetic fixture. Once run,
+  follow `migration/RUNBOOK.md` step 2 (03-normalize + 04-extract over the newly
+  backfilled documents) before treating the calibration set as ready for volunteer use.
