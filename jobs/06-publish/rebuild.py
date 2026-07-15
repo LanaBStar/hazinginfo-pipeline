@@ -16,11 +16,15 @@ catalog_schema.sql, then walks the *entire* archive and repopulates every table:
     already relies on. A rejected incident, or one with no review.json yet, never
     enters `incidents`.
 
-Zero-incident ("fast" tier) reports have no incidents[] entry to review against (see
-BUILD_STATUS.md's Phase 5 notes) and are out of scope this phase: `reports` is
-populated only for documents that produced at least one approved/corrected incident;
-`is_zero_incident` therefore is always written false this phase, though the column
-exists per Section 12's schema for a later phase to populate.
+Zero-incident ("fast" tier) reports have no incidents[] entry to review against; since
+Phase 7b, review.schema.json supports a document-level review (extraction_ref.
+incident_index null) for exactly this case. An approved document-level review
+produces a `reports` row with `is_zero_incident=true` and no `incidents` rows at all
+(there's nothing to attach reviewer/reviewed_at to, since incidents is the only table
+that carries those columns per Section 12 -- the reviewer's identity is still
+permanently recorded in the archive's review.json, just not projected into Postgres).
+Documents that never got a document-level review, or whose extraction has >=1
+incident, follow the pre-existing per-incident path below.
 
 Corrections: review.json's `corrections` is a flat dot-path into the fields this job
 knows how to apply (see CORRECTION_FIELDS below) -- one incident-level scalar field
@@ -187,6 +191,20 @@ def _find_review(reviews: list[dict], file_hash: str, incident_index: int) -> di
     return max(matches, key=lambda r: r["reviewed_at"])
 
 
+def _find_document_review(reviews: list[dict], file_hash: str) -> dict | None:
+    """Same as _find_review but for a document-level review (extraction_ref.
+    incident_index null) -- the only way to review a "fast"-tier zero-incident
+    report, which has no incidents[] entry to index (Phase 7b)."""
+    matches = [
+        r for r in reviews
+        if r["extraction_ref"]["file_hash"] == file_hash
+        and r["extraction_ref"]["incident_index"] is None
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda r: r["reviewed_at"])
+
+
 def _institution_rows(schools: list[dict]) -> list[tuple]:
     return [(s["unitid"], s["name"], s.get("state") or None) for s in schools]
 
@@ -287,21 +305,48 @@ def _report_and_incident_rows(doc_dir: str, keys: set[str], failures: list[str])
         except Exception as e:
             failures.append(f"{doc_dir} incident {index}: {e}")
 
-    if not incident_rows:
-        return None, [], []
+    if incident_rows:
+        document = incidents_json.get("document") or {}
+        report_id = _report_id(content_hash, document.get("reporting_period_start"), document.get("reporting_period_end"))
+        report_row = (
+            report_id,
+            content_hash,
+            document.get("reporting_period_start"),
+            document.get("reporting_period_end"),
+            document.get("publication_date"),
+            False,
+        )
+        incident_rows = [row[:1] + (report_id,) + row[2:] for row in incident_rows]
+        return report_row, incident_rows, sanction_rows
 
-    document = incidents_json.get("document") or {}
-    report_id = _report_id(content_hash, document.get("reporting_period_start"), document.get("reporting_period_end"))
-    report_row = (
-        report_id,
-        content_hash,
-        document.get("reporting_period_start"),
-        document.get("reporting_period_end"),
-        document.get("publication_date"),
-        False,
-    )
-    incident_rows = [row[:1] + (report_id,) + row[2:] for row in incident_rows]
-    return report_row, incident_rows, sanction_rows
+    # Zero-incident ("fast" tier) report: no incidents[] to review individually --
+    # a document-level review (extraction_ref.incident_index null, Phase 7b) approves
+    # or rejects the whole document instead. "corrected" can't occur here (ingest.py
+    # rejects it -- no per-field correction vocabulary for the document object), and
+    # an unresolved "escalated" is excluded the same way an undecided incident is.
+    if not (incidents_json.get("incidents") or []) and (validation.get("document") or {}).get("tier") == "fast":
+        doc_review = _find_document_review(reviews, file_hash)
+        if doc_review is not None:
+            try:
+                decision, _ = _resolved_decision(doc_review)
+                if decision == "approved":
+                    document = incidents_json.get("document") or {}
+                    report_id = _report_id(
+                        content_hash, document.get("reporting_period_start"), document.get("reporting_period_end")
+                    )
+                    report_row = (
+                        report_id,
+                        content_hash,
+                        document.get("reporting_period_start"),
+                        document.get("reporting_period_end"),
+                        document.get("publication_date"),
+                        True,
+                    )
+                    return report_row, [], []
+            except Exception as e:
+                failures.append(f"{doc_dir} document-level review: {e}")
+
+    return None, [], []
 
 
 def _populate(cur, prefix: str, schools_csv: Path) -> dict:

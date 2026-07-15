@@ -26,7 +26,7 @@ EXPECTED = {
     "archive": {"institutions_done": 4, "pending": 0, "documents": 4},
     "normalize": {"pending_documents": 1, "no_text_layer": 1},
     "extract": {"packets_total": 4, "packets_done": 3, "awaiting_validation": 1},
-    "review": {"fast_lane": 1, "standard": 0, "flagged": 1, "decided": 1},
+    "review": {"fast_lane": 1, "standard": 0, "flagged": 1, "decided": 1, "escalated_pending": 0},
     "publish": {"last_rebuild": None, "approved_unpublished": 1},
 }
 

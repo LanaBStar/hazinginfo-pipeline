@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HazingInfo.org — Review</title>
+<link rel="stylesheet" href="styles.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+</head>
+<body>
+<header id="app-header">
+  <h1>HazingInfo.org review</h1>
+  <div id="queue-summary" aria-live="polite"></div>
+  <button id="help-toggle" title="Keyboard shortcuts (?)">?</button>
+</header>
+
+<main id="app-main">
+  <div id="empty-state" hidden>
+    <p>Queue is empty. Nothing waiting for review right now.</p>
+  </div>
+
+  <div id="loading-state">
+    <p>Loading queue…</p>
+  </div>
+
+  <div id="review-screen" hidden>
+    <div id="review-topbar">
+      <div id="review-context">
+        <span id="institution-name"></span>
+        <span id="tier-badge" class="badge"></span>
+        <span id="escalated-badge" class="badge badge-escalated" hidden>escalated — needs a second review</span>
+        <span id="position-indicator"></span>
+      </div>
+    </div>
+
+    <div id="review-body">
+      <section id="document-pane" aria-label="Original document (ground truth)">
+        <div id="pdf-container" hidden>
+          <div id="pdf-controls">
+            <button id="pdf-prev-page">&larr; page</button>
+            <span id="pdf-page-indicator"></span>
+            <button id="pdf-next-page">page &rarr;</button>
+          </div>
+          <div id="pdf-canvas-wrap">
+            <canvas id="pdf-canvas"></canvas>
+            <div id="pdf-highlight-layer"></div>
+          </div>
+          <p id="pdf-no-text-note" hidden>
+            This document has no extractable text layer (scanned PDF). Nothing is
+            auto-highlighted — compare the quotes on the right against this page image
+            by eye.
+          </p>
+        </div>
+        <div id="html-container" hidden>
+          <iframe id="html-frame" title="Original document" sandbox="allow-same-origin"></iframe>
+        </div>
+      </section>
+
+      <section id="fields-pane" aria-label="Extracted fields and decision">
+        <div id="incident-fields"></div>
+
+        <details id="nav-text-details">
+          <summary>Extracted text (navigation only — never the evidence; compare against the document on the left)</summary>
+          <pre id="nav-text"></pre>
+        </details>
+
+        <div id="correction-form" hidden></div>
+
+        <div id="decision-bar">
+          <button id="btn-approve" class="btn btn-approve" title="Approve (A)">Approve <kbd>A</kbd></button>
+          <button id="btn-fix" class="btn btn-fix" title="Fix / correct (F)">Fix <kbd>F</kbd></button>
+          <button id="btn-reject" class="btn btn-reject" title="Reject (X)">Reject <kbd>X</kbd></button>
+          <button id="btn-escalate" class="btn btn-escalate" title="Escalate (E)">Escalate <kbd>E</kbd></button>
+        </div>
+        <div id="submit-status" role="status"></div>
+      </section>
+    </div>
+  </div>
+</main>
+
+<div id="help-overlay" hidden>
+  <div id="help-panel">
+    <h2>Keyboard shortcuts</h2>
+    <dl>
+      <dt><kbd>A</kbd></dt><dd>Approve</dd>
+      <dt><kbd>F</kbd></dt><dd>Fix (open correction form)</dd>
+      <dt><kbd>X</kbd></dt><dd>Reject</dd>
+      <dt><kbd>E</kbd></dt><dd>Escalate (punt to a second reviewer)</dd>
+      <dt><kbd>&larr;</kbd> / <kbd>&rarr;</kbd></dt><dd>Previous / next PDF page</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Close correction form / this panel</dd>
+      <dt><kbd>?</kbd></dt><dd>Toggle this panel</dd>
+    </dl>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

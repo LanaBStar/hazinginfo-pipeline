@@ -1,0 +1,28 @@
+# jobs/05-review/app/worker -- the review app's API Worker (Phase 7b).
+#
+# Deliberately NOT deployed this session (confirmed with the user: local/test-only).
+# `wrangler dev` runs this against Miniflare's local R2 simulator by default -- no real
+# R2 credentials or account_id are needed for local development or the smoke check.
+# Before a real deploy: uncomment/fill `account_id`, point [[r2_buckets]] at the real
+# `hazinginfo-archive` bucket with a narrowly-scoped (reviews/ prefix only, per §15)
+# write token, and put this Worker's route behind a Cloudflare Access application.
+
+name = "hazinginfo-review-worker"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+
+# account_id = "<cloudflare-account-id>"   # fill in at real-deploy time
+
+[[r2_buckets]]
+binding = "ARCHIVE_BUCKET"
+bucket_name = "hazinginfo-archive"
+# preview_bucket_name defaults to a local Miniflare-simulated bucket under `wrangler dev`
+
+[vars]
+# Local-dev-only reviewer-identity fallback (see src/access.ts) -- lets `wrangler dev`
+# and the smoke check simulate a reviewer without a real Cloudflare Access deployment.
+# Must never be "true" on a live deploy: Access wiring only happens at that point.
+DEV_MODE = "true"
+DEV_REVIEWER = "dev-reviewer"
+# Real deploy: restrict this to the Pages project's actual origin.
+CORS_ALLOW_ORIGIN = "*"

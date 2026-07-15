@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "review-worker",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "jobs/05-review/app/worker", "run", "dev"],
+      "port": 8787
+    },
+    {
+      "name": "review-pages",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8788", "--directory", "jobs/05-review/app/pages"],
+      "port": 8788
+    }
+  ]
+}

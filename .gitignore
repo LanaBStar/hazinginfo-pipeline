@@ -7,3 +7,11 @@ __pycache__/
 # Frozen reference copy of the old repo (~/Documents/hazing-incidents/) — read-only
 # source material for the Phase 2 crawler port, not part of this repo's deliverables.
 reference/
+
+# jobs/05-review/app/worker (Phase 7b Cloudflare Worker) — npm-managed
+node_modules/
+.wrangler/
+
+# Claude Code local settings (per-machine permission allowlist) — .claude/launch.json
+# (dev server definitions) is shared/committed, this is not.
+.claude/settings.local.json

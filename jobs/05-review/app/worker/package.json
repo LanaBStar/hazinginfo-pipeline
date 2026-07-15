@@ -1,0 +1,18 @@
+{
+  "name": "hazinginfo-review-worker",
+  "private": true,
+  "version": "1.0.0",
+  "description": "05-review Phase 7b: the review app's API Worker. Ports jobs/05-review/ingest.py and lib/quotes.py to TypeScript (a Worker can't run Python) and adds the reviewable queue + document/original-document serving. Per IMPLEMENTATION_PLAN.md Section 11.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "wrangler": "^3.90.0"
+  }
+}

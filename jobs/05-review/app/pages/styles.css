@@ -1,0 +1,219 @@
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #14181f;
+  --muted: #5b6472;
+  --border: #d8dde3;
+  --accent: #2454ff;
+  --approve: #1a7f37;
+  --reject: #b42318;
+  --fix: #9a5b00;
+  --escalate: #7a2ba0;
+  --highlight: rgba(255, 214, 0, 0.55);
+  --panel-bg: #f6f7f9;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14181f;
+    --fg: #eef1f5;
+    --muted: #9aa4b2;
+    --border: #303844;
+    --panel-bg: #1b212b;
+    --highlight: rgba(255, 214, 0, 0.35);
+  }
+}
+
+* { box-sizing: border-box; }
+/* Author `display` rules below (e.g. `.badge { display: inline-block }`,
+   `#help-overlay { display: flex }`) always beat the UA stylesheet's default
+   `[hidden] { display: none }`, regardless of selector specificity, because author
+   styles outrank UA styles in the cascade. Without this, toggling the `hidden`
+   attribute on those elements from app.js has no visual effect. */
+[hidden] { display: none !important; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+#app-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+#app-header h1 { font-size: 1.05rem; margin: 0; }
+#queue-summary { color: var(--muted); font-size: 0.9rem; flex: 1; }
+#help-toggle {
+  border-radius: 50%;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+#app-main { padding: 1rem; }
+#loading-state, #empty-state { color: var(--muted); padding: 2rem; text-align: center; }
+
+#review-topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+#review-context { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+#institution-name { font-weight: 600; }
+#position-indicator { color: var(--muted); font-size: 0.85rem; }
+
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border: 1px solid var(--border);
+}
+.badge-fast { color: var(--approve); border-color: var(--approve); }
+.badge-standard { color: var(--accent); border-color: var(--accent); }
+.badge-flagged { color: var(--reject); border-color: var(--reject); }
+.badge-escalated { color: var(--escalate); border-color: var(--escalate); }
+
+#review-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  #review-body { grid-template-columns: 1fr; }
+}
+
+#document-pane {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  min-height: 60vh;
+  overflow: auto;
+}
+#pdf-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+#pdf-canvas-wrap { position: relative; padding: 0.5rem; }
+/* No max-width/height:auto here deliberately -- app.js's renderPdfPage() picks the
+   PDF.js render scale so the canvas's intrinsic pixel size already fits the
+   container. CSS-rescaling the canvas afterward would desync it from
+   #pdf-highlight-layer, whose boxes are positioned in that same intrinsic pixel
+   space (see the comment in renderPdfPage). */
+#pdf-canvas { display: block; }
+#pdf-highlight-layer { position: absolute; top: 0.5rem; left: 0.5rem; pointer-events: none; }
+.pdf-highlight-box {
+  position: absolute;
+  background: var(--highlight);
+  border-radius: 2px;
+}
+#pdf-no-text-note { padding: 0.75rem; color: var(--muted); font-size: 0.9rem; }
+
+#html-container, #html-frame { width: 100%; height: 70vh; border: 0; }
+
+#fields-pane { display: flex; flex-direction: column; gap: 0.75rem; }
+.field {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+}
+.field h3 { margin: 0 0 0.35rem; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); }
+.field .quote-text { font-style: italic; }
+.field .quote-meta { font-size: 0.78rem; color: var(--muted); margin-top: 0.3rem; }
+.anchor-ok { color: var(--approve); }
+.anchor-bad { color: var(--reject); }
+mark.quote-highlight { background: var(--highlight); border-radius: 2px; }
+
+#nav-text-details summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
+#nav-text {
+  white-space: pre-wrap;
+  max-height: 30vh;
+  overflow: auto;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem;
+  font-size: 0.82rem;
+}
+
+#correction-form {
+  border: 1px dashed var(--fix);
+  border-radius: 6px;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+#correction-form label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.15rem; }
+#correction-form input, #correction-form select, #correction-form textarea {
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+.correction-row { display: grid; grid-template-columns: 1fr 5rem; gap: 0.5rem; }
+
+#decision-bar { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.btn {
+  padding: 0.5rem 0.9rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  font: inherit;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.btn kbd {
+  font-size: 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 0.3rem;
+  opacity: 0.7;
+}
+.btn-approve { border-color: var(--approve); color: var(--approve); }
+.btn-fix { border-color: var(--fix); color: var(--fix); }
+.btn-reject { border-color: var(--reject); color: var(--reject); }
+.btn-escalate { border-color: var(--escalate); color: var(--escalate); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+#submit-status { min-height: 1.2rem; font-size: 0.85rem; }
+#submit-status.error { color: var(--reject); }
+#submit-status.ok { color: var(--approve); }
+
+#help-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+#help-panel {
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 1.25rem 1.5rem;
+  max-width: 24rem;
+}
+#help-panel dl { display: grid; grid-template-columns: 5rem 1fr; gap: 0.35rem 0.75rem; }
+#help-panel dt { color: var(--muted); }

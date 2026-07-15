@@ -52,6 +52,15 @@ def last_rebuild() -> str | None:
     return json.loads(r2.get_bytes(CATALOG_REBUILD_KEY))["rebuilt_at"]
 
 
+def _resolved_decision(review: dict) -> str:
+    """The final decision after second_review's last-write-wins override -- same rule
+    jobs/05-review/ingest.py / jobs/06-publish/rebuild.py apply (mirrored here, not
+    imported, since it's a couple of lines). A review whose resolved decision is
+    still "escalated" has no second_review yet -- that's what makes it pending."""
+    second = review.get("second_review")
+    return second["decision"] if second is not None else review["decision"]
+
+
 def _extract_versions(keys: set[str], doc_dir: str) -> list[str]:
     """Version dir names (e.g. "extract_v1", "extract_v2") that exist under
     {doc_dir}/ai/, oldest first."""
@@ -89,6 +98,7 @@ def walk_archive(prefix: str, year: int) -> dict:
     tier_counts = defaultdict(int)
     decided = 0
     approved_unpublished = 0
+    escalated_pending = 0
 
     for doc_dir in sorted(doc_dirs):
         manifest_key = f"{doc_dir}/manifest.json"
@@ -123,21 +133,37 @@ def walk_archive(prefix: str, year: int) -> dict:
         reviews_prefix = f"{doc_dir}/reviews/"
         reviews = [json.loads(r2.get_bytes(k)) for k in keys if k.startswith(reviews_prefix)]
 
-        for incident in validation.get("incidents", []):
+        # Review targets: one per incidents[] entry, plus a document-level target
+        # (index None) for a genuine "fast"-tier zero-incident report, which has no
+        # incidents[] to index -- extraction_ref.incident_index null is how a
+        # reviewer approves/rejects/escalates the whole document (Phase 7b).
+        review_targets = [(incident["index"], incident["tier"]) for incident in validation.get("incidents", [])]
+        if (validation.get("document") or {}).get("tier") == "fast":
+            review_targets.append((None, "fast"))
+
+        for index, tier in review_targets:
             match = next(
                 (
                     r for r in reviews
                     if r["extraction_ref"]["file_hash"] == file_hash
-                    and r["extraction_ref"]["incident_index"] == incident["index"]
+                    and r["extraction_ref"]["incident_index"] == index
                 ),
                 None,
             )
             if match is None:
-                tier_counts[incident["tier"]] += 1
-            else:
-                decided += 1
-                if match["decision"] in ("approved", "corrected"):
-                    approved_unpublished += 1
+                tier_counts[tier] += 1
+                continue
+            decision = _resolved_decision(match)
+            if decision == "escalated":
+                # No second_review yet (an escalation with one resolves to that
+                # second_review's terminal decision, never stays "escalated") --
+                # a single reviewer looked and punted; awaiting the operator/a
+                # second reviewer, not yet "decided".
+                escalated_pending += 1
+                continue
+            decided += 1
+            if decision in ("approved", "corrected"):
+                approved_unpublished += 1
 
     return {
         "institutions_done": len(institutions_this_year),
@@ -148,6 +174,7 @@ def walk_archive(prefix: str, year: int) -> dict:
         "awaiting_validation": awaiting_validation,
         "tier_counts": dict(tier_counts),
         "decided": decided,
+        "escalated_pending": escalated_pending,
         "approved_unpublished": approved_unpublished,
     }
 
@@ -183,6 +210,7 @@ def build_status() -> dict:
             "standard": archive_facts["tier_counts"].get("standard", 0),
             "flagged": archive_facts["tier_counts"].get("flagged", 0),
             "decided": archive_facts["decided"],
+            "escalated_pending": archive_facts["escalated_pending"],
         },
         "publish": {
             "last_rebuild": last_rebuild(),

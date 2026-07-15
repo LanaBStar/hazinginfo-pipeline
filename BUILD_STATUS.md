@@ -14,7 +14,7 @@ conversational context.
 | 5 | 06-publish: catalog_schema.sql + rebuild.py | done | Smoke check passes (`.venv/bin/python tests/test_phase5_publish.py`) |
 | 6 | 01-discover: prompt.md, packets, merge.py | done | Smoke check passes (`.venv/bin/python tests/test_phase6_discover.py`) |
 | 7a | Review Worker + ingest.py (review.json write path) | done | Smoke check passes (`.venv/bin/python tests/test_phase7a_review.py`) |
-| 7b | Review UI (Pages + PDF.js + highlights + Access) | not_started | |
+| 7b | Review UI (Pages + PDF.js + highlights + Access) | done | Smoke check passes (`.venv/bin/python tests/test_phase7b_review_app.py`; `npm --prefix jobs/05-review/app/worker test`) |
 | 8 | migration/: backfill_manifests.py + export_legacy.py | not_started | |
 
 ## Phase 0 — done
@@ -548,15 +548,144 @@ selection) was a test-authoring bug, not a plan gap.
   keys is left for whenever the actual Worker deploy (the deferred follow-up above)
   needs them.
 
+## Phase 7b — done
+
+- [x] `jobs/05-review/app/worker/` — the real Cloudflare Worker (TypeScript), built
+      and tested this phase rather than deferred further. `src/quotes.ts` and
+      `src/hashing.ts` port `lib/quotes.py`/`lib/hashing.py` (verified byte-for-byte
+      identical to the Python side, including exact similarity scores and offsets, on
+      the same fixture cases). `src/ingest.ts` is a line-for-line port of
+      `ingest.py`'s `ingest_review()`. `src/queue.ts` builds the reviewable queue by
+      walking the archive directly (mirrors `status.py`'s `walk_archive`) rather than
+      reading Postgres — the catalog only ever holds already-reviewed rows, so there
+      is no "pending" projection to read a queue from there; this also means the app
+      needs no Neon credentials at all, only R2. `src/access.ts` resolves reviewer
+      identity from `Cf-Access-Jwt-Assertion` (decoded, not signature-verified — real
+      Access is expected to have already verified it at the edge) with a
+      `DEV_MODE`-gated local fallback. `src/index.ts` wires the API routes (`/api/
+      queue`, `/api/document`, `/api/original` — sanitizing HTML via `HTMLRewriter`
+      since archived HTML is from an untrusted third party — `/api/review`) plus two
+      `DEV_MODE`-only routes (`/api/dev-seed`, `/api/dev-dump`) that let the smoke
+      check load/inspect a real fixture archive in Miniflare's local R2 simulation,
+      since there's no other way to pre-populate it from files on disk. `wrangler.toml`
+      configures the R2 binding and `DEV_MODE=true` for local dev; nothing is deployed.
+- [x] `jobs/05-review/app/pages/` — the static review UI (plain HTML/CSS/JS, no build
+      step, per §11's "Pages (static UI)"). One incident (or, for a "fast"-tier
+      zero-incident report, the whole document) per screen: PDF.js canvas for PDFs,
+      or a sanitized HTML document injected via `srcdoc` into a `sandbox=
+      "allow-same-origin"` iframe with no `allow-scripts` (so nothing archived from a
+      third-party site can execute) for HTML. Anchored quotes are pre-highlighted —
+      a best-effort text search purely for the reviewer's convenience; `validation.json`
+      remains the sole authority on whether a quote is trustworthy. Extracted text is
+      shown collapsed and labeled navigation-only. Keyboard-driven: `A` approve, `F`
+      fix (correction form covering every field `06-publish/rebuild.py`'s
+      `CORRECTION_FIELDS` can apply), `X` reject (reason picker), `E` escalate,
+      `←`/`→` PDF page, `Esc`/`?` for the shortcut panel. Scanned-PDF flagged view:
+      PDF.js renders the page's visual content regardless of text layer, so "page
+      image beside the quotes" (§11) falls out of the same canvas with no separate
+      page-image pipeline — no highlight overlay is drawn since nothing anchors.
+- [x] Two additive `schemas/review.schema.json` changes (both confirmed with the
+      user — see decisions below): `extraction_ref.incident_index` may be `null`
+      ("the whole document" — the only way to review a "fast"-tier zero-incident
+      report, which has no `incidents[]` to index), and `decision` gains
+      `"escalated"` (a single reviewer couldn't decide; resolved later via the
+      *existing* `second_review` mechanism flagged-tier dual review already uses).
+      `jobs/05-review/ingest.py` and `worker/src/ingest.ts` both updated in lockstep
+      (a document-level review can never resolve to `"corrected"` — rejected, no
+      correction vocabulary exists for the document object). `jobs/06-publish/
+      rebuild.py` writes a `reports` row (`is_zero_incident=true`, no `incidents`
+      rows) for an approved document-level review, closing the gap Phase 5's notes
+      flagged as deferred to "whatever Phase 7a/7b's review app defines." `status.py`
+      gained `review.escalated_pending` (an unresolved escalation isn't counted as
+      `decided`) so the operator's menu surfaces it.
+- [x] `jobs/05-review/RUNBOOK.md` rewritten to cover the app (dev commands, routes,
+      the Phase 7b schema additions) alongside the still-accurate `ingest.py` section.
+- [x] Smoke checks: `tests/test_phase7b_review_app.py` builds a real fixture archive
+      (crawl + normalize `fixtures/crawl_pages/`, `make_packets`/hand-authored
+      `incidents.json`/`validate.py`, plus the hillcrest zero-incident fixture reused
+      from Phase 4/5), launches a real `wrangler dev` subprocess (Miniflare's local R2
+      simulation — no live credentials), seeds it via `/api/dev-seed`, and drives the
+      HTTP API directly: queue ordering, document/original fetch, approve/escalate/
+      second-review-resolve/document-level-approve, and rejection of schema-invalid
+      or hash-mismatched reviews (422) — including a regression check that the Worker
+      stamps its own resolved identity onto `second_review.reviewer`, not just the
+      top-level `reviewer` (a real bug caught during manual testing, see below).
+      `jobs/05-review/app/worker/test/*.test.ts` (26 cases, `npm test`) unit-tests
+      `quotes.ts`/`ingest.ts`/`queue.ts` in isolation via an in-memory `ArchiveStore`.
+      Both were also driven for real: `wrangler dev` + a static file server for
+      `pages/`, exercised in an actual browser against seeded fixture data (approve,
+      fix/correct, reject, escalate, and second-review resolution all clicked
+      through, not just called via HTTP).
+- [x] All prior phases' Python smoke checks re-run clean afterward.
+
+### Bugs found and fixed during Phase 7b's browser verification
+
+Driving the actual UI in a browser (not just the automated HTTP-level smoke check)
+caught three real bugs the automated tests didn't, because none of them are visible
+from an HTTP response alone:
+
+- **CSS `[hidden]` override**: several elements (`.badge`, `#help-overlay`,
+  `#correction-form`) set an explicit `display` value in `styles.css`, which beats the
+  browser's default `[hidden] { display: none }` regardless of selector specificity
+  (author styles always outrank UA styles in the cascade) — toggling `.hidden` from
+  `app.js` had no visual effect. Fixed with a single `[hidden] { display: none
+  !important; }` rule.
+- **`second_review.reviewer` wasn't stamped**: `index.ts`'s `handleReviewSubmit`
+  overwrote the top-level `reviewer` field with the resolved Access/DEV_MODE identity,
+  but not `second_review.reviewer` — a second reviewer resolving an escalation could
+  have their submission attributed to whatever the client claimed. Fixed, and now
+  covered by `tests/test_phase7b_review_app.py`'s step 5.
+- **PDF highlight-box misplacement**: `drawPdfHighlight` computed box width as
+  `Math.hypot(tx[0], tx[1]) * item.width`, double-counting the font-size scaling
+  already baked into the combined viewport+item transform (`item.width` is already in
+  unscaled PDF user-space units) — boxes rendered thousands of pixels wide. Fixing the
+  width alone wasn't sufficient: `#pdf-canvas` also had `max-width: 100%; height:
+  auto`, letting the browser rescale the rendered canvas independently of
+  `#pdf-highlight-layer` (sized in the canvas's *intrinsic* pixel space), so the two
+  drifted apart. Fixed by having `renderPdfPage()` choose the PDF.js render scale
+  from the container's actual width up front (so the canvas's intrinsic size already
+  fits, no CSS-level rescaling needed) and removing the CSS rule entirely — verified
+  pixel-aligned in the browser afterward.
+
+### Decisions made during Phase 7b (asked the user, since the plan was silent/ambiguous here)
+
+- **Build the real Worker this phase, but stay local/test-only**: confirmed with the
+  user — port `ingest.py` to TypeScript now (tested via `wrangler dev` against
+  Miniflare's local R2 simulation) rather than deferring further, but do not deploy
+  live or set up real R2/Access credentials this session. `.env` / a live deploy is
+  left for a dedicated follow-up when the user is ready to hand over credentials.
+- **The zero-incident "fast" tier gap** (flagged as open since Phase 5): confirmed
+  with the user to close it by extending `review.schema.json` (nullable
+  `incident_index`) rather than leaving fast-lane review unbuilt — see above.
+- **The "escalate" mechanism**: confirmed with the user to add `"escalated"` as a
+  real `decision` value (an artifact, per invariant 6 — not a silent no-op skip) that
+  gets resolved through the *existing* `second_review` field rather than inventing a
+  new one, since that's exactly the mechanism flagged-tier dual review already needed.
+- **Queue source is the archive, not Postgres**: not explicitly asked, but a direct
+  consequence of the catalog schema's own design (Phase 5: only approved/corrected
+  rows ever enter `reports`/`incidents`) — §11's "reads from the catalog's queue view"
+  can't literally mean Postgres, since pending items never appear there. Recorded as a
+  real design decision since it determines the app needs zero Neon credentials.
+- **HTML sanitization approach**: not asked separately — using the Workers runtime's
+  built-in `HTMLRewriter` (streaming, strips `<script>`/`<iframe>`/`<object>`/
+  `<embed>`/`<form>`, `on*` attributes, `javascript:` URLs, meta-refresh) rather than a
+  hand-rolled regex parser, with the Pages UI's scriptless sandboxed iframe as a
+  second, independent layer of defense.
+
 ## Next session should
 
-Start Phase 7b: Review UI (Pages + PDF.js + highlights + Access), per
-IMPLEMENTATION_PLAN.md §7b/§11/§16 — the largest remaining item, and the phase that
-will need the real Cloudflare Worker deferred above (this is likely the point where
-live R2/Cloudflare Access credentials become necessary; ask the user for them, and
-for `.env` setup, before this phase needs a live deploy target). Smoke check per
-§16: a fixture incident is reviewable end-to-end. `jobs/05-review/ingest.py`'s
-`ingest_review()` is what the review app's submit action should ultimately call
-(directly if the Worker ends up embedding Python via some runtime, otherwise ported
-to TypeScript) — treat its behavior (validation order, error cases, filename
-derivation) as settled by Phase 7a's smoke check, not to be redesigned in 7b.
+Start Phase 8: `migration/` — `backfill_manifests.py` + `export_legacy.py`, per
+IMPLEMENTATION_PLAN.md §13/§16. Read Section 13 closely before starting: this phase
+must never refetch what the old system captured (those pages may have changed or
+vanished — the old captures are irreplaceable evidence), and previously
+human-verified legacy incidents do **not** get imported as-is (no quotes, no
+anchors) — instead their source documents are re-extracted under the new schema and
+the known incidents become the volunteer calibration set from §9. Smoke check per
+§16 is a dry run against the old bucket/Neon, read-only. This phase will need the old
+system's R2/Neon credentials (read-only) — ask the user for them and confirm access
+before starting.
+
+Also still open from Phase 7b, deliberately deferred rather than blocking it (see
+decisions above): the actual live deploy (real R2 write credentials scoped to
+`reviews/`, a Cloudflare Access application gating the Worker's route, `config.js`
+pointed at the deployed Worker) whenever the user is ready to hand over credentials.

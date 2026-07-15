@@ -17,6 +17,10 @@ rebuild.py has to handle:
   - westfield's incident: validated but deliberately given no review.json at all --
     proves an unreviewed incident never enters the catalog even though it exists in
     the archive.
+  - hillcrest (hand-added, genuine zero-incident report, same as test_phase4's "fast"
+    tier fixture): a document-level review (extraction_ref.incident_index null,
+    Phase 7b) approving the whole document -- proves rebuild.py's new zero-incident
+    path writes a `reports` row with is_zero_incident=true and no `incidents` rows.
 
 Runs rebuild.py twice against a scratch local Postgres database (created via the
 already-running local `postgres` server -- see BUILD_STATUS.md) and asserts every
@@ -43,7 +47,7 @@ sys.path.insert(0, str(ROOT))
 import psycopg  # noqa: E402
 
 from lib import r2  # noqa: E402
-from lib.hashing import short_hash  # noqa: E402
+from lib.hashing import sha256_bytes, short_hash  # noqa: E402
 
 FIXTURES = ROOT / "fixtures" / "crawl_pages"
 
@@ -160,6 +164,19 @@ def _incidents_for(manifest: dict) -> dict:
     if unitid == "200002":  # eastview's decoy PDF / index page -- not a CHTR
         return {"schema_version": 1, "is_chtr": False, "document": dict(_EMPTY_DOCUMENT), "incidents": []}
 
+    if unitid == "200006":  # hillcrest (hand-added): genuine zero-incident report
+        return {
+            "schema_version": 1,
+            "is_chtr": True,
+            "document": {
+                **_EMPTY_DOCUMENT,
+                "reporting_period_start": "2025-01-01",
+                "reporting_period_end": "2025-12-31",
+                "zero_incidents_quote": _QUOTE("No hazing incidents were reported during this reporting period."),
+            },
+            "incidents": [],
+        }
+
     if unitid == "200003":  # westfield: one incident, deliberately never reviewed
         return {
             "schema_version": 1,
@@ -196,6 +213,47 @@ def _finish_packets(tasks_dir: Path) -> int:
         (packet_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
         finished += 1
     return finished
+
+
+def _add_hillcrest(archive_root: Path) -> str:
+    """Hand-adds a genuine zero-incident report directly to the archive -- same
+    fixture test_phase4_extract.py builds for the "fast" tier case. Returns its
+    doc_dir key (relative to the archive local root)."""
+    text = (
+        "Campus Hazing Transparency Report\n"
+        "Reporting period: January 1, 2025 - December 31, 2025\n"
+        "No hazing incidents were reported during this reporting period."
+    )
+    content = text.encode("utf-8")
+    content_hash = sha256_bytes(content)
+    hash16 = short_hash(content_hash)
+    doc_dir = f"archive/200006_hillcrest-academy/2026/docs/{hash16}"
+
+    manifest = {
+        "schema_version": 1,
+        "source_url": "http://example.test/hillcrest/chtr-2025.html",
+        "fetched_at": "2026-01-20T00:00:00Z",
+        "sha256": content_hash,
+        "content_type": "text/html",
+        "size_bytes": len(content),
+        "unitid": "200006",
+        "scrape_year": 2026,
+    }
+    r2.put_bytes(f"{doc_dir}/manifest.json", json.dumps(manifest).encode("utf-8"))
+    r2.put_bytes(f"{doc_dir}/original/report.html", content)
+    r2.put_bytes(f"{doc_dir}/extracted/text.txt", content)
+
+    status = {
+        "schema_version": 1,
+        "unitid": "200006",
+        "scrape_year": 2026,
+        "status": "published",
+        "source_url": manifest["source_url"],
+        "documents": [content_hash],
+        "fetched_at": manifest["fetched_at"],
+    }
+    r2.put_bytes("archive/200006_hillcrest-academy/2026/status.json", json.dumps(status).encode("utf-8"))
+    return doc_dir
 
 
 def _hash16_for(archive_local_root: Path, inst_dir: str, *, predicate=None) -> str:
@@ -239,7 +297,10 @@ def main() -> int:
     base_url = f"http://127.0.0.1:{port}"
     schools_csv = tmp_root / "schools.csv"
     template = (FIXTURES / "schools_template.csv").read_text()
-    schools_csv.write_text(template.replace("{BASE_URL}", base_url))
+    schools_csv.write_text(
+        template.replace("{BASE_URL}", base_url)
+        + "200006,Hillcrest Academy,ZZ,,confirmed,hand-added fixture (see test_phase4_extract.py)\n"
+    )
 
     db_user = os.environ.get("USER", "postgres")
     db_name = f"hazinginfo_test_{uuid.uuid4().hex[:12]}"
@@ -267,16 +328,18 @@ def main() -> int:
         if norm_results["normalized"] != 5 or norm_results["failed"] != 0:
             failures.append(f"setup: unexpected normalize results {norm_results!r}")
 
+        hc_dir = _add_hillcrest(archive_local_root)
+
         packet_results = make_packets.run(prefix="archive/", tasks_dir=tasks_dir)
-        if packet_results != {"packets_created": 5, "skipped": 0, "failed": 0}:
+        if packet_results != {"packets_created": 6, "skipped": 0, "failed": 0}:
             failures.append(f"setup: unexpected make_packets results {packet_results!r}")
 
         finished = _finish_packets(tasks_dir)
-        if finished != 5:
-            failures.append(f"setup: expected to finish 5 packets, finished {finished}")
+        if finished != 6:
+            failures.append(f"setup: expected to finish 6 packets, finished {finished}")
 
         validate_results = validate.run(tasks_dir=tasks_dir)
-        if validate_results != {"archived": 5, "skipped": 0, "pending": 0, "failed": 0}:
+        if validate_results != {"archived": 6, "skipped": 0, "pending": 0, "failed": 0}:
             failures.append(f"setup: unexpected validate results {validate_results!r}")
 
         nr_dir = f"archive/200001_north-ridge-college/2026/docs/{_hash16_for(archive_local_root, '200001_north-ridge-college')}"
@@ -285,6 +348,7 @@ def main() -> int:
 
         nr_hash = _file_hash(nr_dir)
         ev_hash = _file_hash(ev_dir)
+        hc_hash = _file_hash(hc_dir)
 
         _write_review(nr_dir, 0, "0_jane-reviewer_20260210T180000Z.review.json", {
             "schema_version": 1,
@@ -327,10 +391,22 @@ def main() -> int:
         })
         # westfield's incident is deliberately left with no review.json.
 
+        _write_review(hc_dir, 0, "document_jane-reviewer_20260210T180300Z.review.json", {
+            "schema_version": 1,
+            "extraction_ref": {"file_hash": hc_hash, "incident_index": None},
+            "tier": "fast",
+            "decision": "approved",
+            "rejection_reason": None,
+            "corrections": None,
+            "reviewer": "jane-reviewer",
+            "reviewed_at": "2026-02-10T18:03:00Z",
+            "second_review": None,
+        })
+
         results1 = rebuild.run(prefix="archive/", schools_csv=schools_csv)
         expected_counts = {
-            "institutions": 5, "reporting_status": 5, "documents": 5,
-            "reports": 2, "incidents": 2, "incident_sanctions": 2, "failed": 0,
+            "institutions": 6, "reporting_status": 6, "documents": 6,
+            "reports": 3, "incidents": 2, "incident_sanctions": 2, "failed": 0,
         }
         if results1 != expected_counts:
             failures.append(f"rebuild run 1: expected {expected_counts!r}, got {results1!r}")
@@ -358,12 +434,12 @@ def main() -> int:
         snap1 = _snapshot()
         institutions1, documents1, statuses1, incidents1, sanctions1, reports1 = snap1
 
-        if len(institutions1) != 5:
-            failures.append(f"institutions: expected 5 rows, got {len(institutions1)}")
-        if len(documents1) != 5:
-            failures.append(f"documents: expected 5 rows, got {len(documents1)}")
-        if len(statuses1) != 5:
-            failures.append(f"reporting_status: expected 5 rows, got {len(statuses1)}")
+        if len(institutions1) != 6:
+            failures.append(f"institutions: expected 6 rows, got {len(institutions1)}")
+        if len(documents1) != 6:
+            failures.append(f"documents: expected 6 rows, got {len(documents1)}")
+        if len(statuses1) != 6:
+            failures.append(f"reporting_status: expected 6 rows, got {len(statuses1)}")
 
         wf_hash = json.loads(r2.get_bytes(f"{wf_dir}/manifest.json"))["sha256"]
         wf_doc = next((d for d in documents1 if d[0] == wf_hash), None)
@@ -394,10 +470,14 @@ def main() -> int:
 
         if len(sanctions1) != 2:
             failures.append(f"incident_sanctions: expected 2 rows, got {len(sanctions1)}")
-        if len(reports1) != 2:
-            failures.append(f"reports: expected 2 rows (north-ridge + eastview), got {len(reports1)}")
-        if any(is_zero for _, is_zero in reports1):
-            failures.append(f"reports: expected is_zero_incident=false everywhere this phase, got {reports1!r}")
+        if len(reports1) != 3:
+            failures.append(f"reports: expected 3 rows (north-ridge + eastview + hillcrest), got {len(reports1)}")
+        zero_incident_reports = [r for r, is_zero in reports1 if is_zero]
+        if len(zero_incident_reports) != 1:
+            failures.append(
+                f"reports: expected exactly 1 is_zero_incident=true row (hillcrest's approved "
+                f"document-level review), got {reports1!r}"
+            )
 
         # ── rebuild run 2: byte-identical ids, identical rows (invariant 9) ──
         results2 = rebuild.run(prefix="archive/", schools_csv=schools_csv)
@@ -438,6 +518,7 @@ def main() -> int:
     print("ok    rejected incident (Women's Club Rowing) never enters incidents")
     print("ok    unreviewed incident (westfield) never enters incidents")
     print("ok    corrected incident (Zeta Psi): second_review's correction wins over the first review's")
+    print("ok    hillcrest: approved document-level review produces an is_zero_incident=true reports row, no incidents")
     print("ok    rebuild run 2: byte-identical ids and rows vs run 1 (invariant 9)")
     return 0
 

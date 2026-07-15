@@ -10,13 +10,21 @@
       "type": "object",
       "properties": {
         "file_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "incident_index": {"type": "integer", "minimum": 0}
+        "incident_index": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "null means this review is of the whole document, not one incidents[] entry -- the only case this applies to is a 'fast'-tier zero-incident report (validate.py's document.tier), which has no incidents[] to index."
+        }
       },
       "required": ["file_hash", "incident_index"],
       "additionalProperties": false
     },
     "tier": {"type": "string", "enum": ["fast", "standard", "flagged"]},
-    "decision": {"type": "string", "enum": ["approved", "rejected", "corrected"]},
+    "decision": {
+      "type": "string",
+      "enum": ["approved", "rejected", "corrected", "escalated"],
+      "description": "escalated: a single reviewer looked and could not decide -- resolved later by a second_review, the same mechanism flagged-tier dual review already uses. Never itself a terminal decision (rebuild.py only ever publishes approved/corrected)."
+    },
     "rejection_reason": {
       "type": ["string", "null"],
       "enum": ["not_hazing", "duplicate", "segmentation_error", "extraction_error", null]

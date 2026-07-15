@@ -1,17 +1,13 @@
 """
 ingest.py -- 05-review: validate and archive one review.json (the review Worker's
 write path). Per IMPLEMENTATION_PLAN.md Section 10 (review.json), Section 11 (review
-app), Section 15 (credentials), and Section 16's Phase 7a smoke check.
+app), Section 15 (credentials), and Section 16's Phase 7a/7b smoke checks.
 
-This phase builds `ingest_review()` as pure, locally-testable Python -- no real
-Cloudflare Worker, wrangler config, or Access wiring yet (confirmed with the user:
-no live R2/Cloudflare credentials exist in .env, and every smoke check so far runs
-against ARCHIVE_LOCAL_ROOT, same as Phases 1-6). A Worker can't run Python, so the
-eventual Worker will port this validation logic to TypeScript (or shell out to a
-small HTTP-callable wrapper around it) once real credentials and Access exist --
-that wiring is a separate follow-up phase, not this one. Until then, this module IS
-the review write path: anything that can call `ingest_review()` (a script, a test, a
-future Worker's embedded logic) gets the exact same guarantees.
+This module is the settled validation/write logic; jobs/05-review/app/worker/src/
+ingest.ts (Phase 7b) is a line-for-line TypeScript port of it, since a Cloudflare
+Worker can't run Python. Both are tested against the same fixture archive shape and
+must reject/accept identically -- treat this file, not the port, as the source of
+truth when the two ever appear to disagree.
 
 `ingest_review(doc_dir, review_json)` does exactly what Section 10/16 require, in
 order, and never partially writes:
@@ -25,17 +21,32 @@ order, and never partially writes:
      under `doc_dir`, not just the current one, since the review may have been
      submitted against an older extraction than whatever is "current" now.
   3. Confirms `extraction_ref.incident_index` is in range for that extraction's
-     `incidents[]`.
+     `incidents[]` -- or, if null, that the extraction really is a zero-incident
+     ("fast" tier) report with no incidents[] to index (Phase 7b addition: null is
+     the only way to represent a reviewer approving/rejecting/escalating a whole
+     zero-incident document, since review.schema.json's extraction_ref previously
+     had no way to reference "the document" rather than one incident).
   4. If the *resolved* decision (second_review's decision wins over the first's,
      same last-write-wins rule jobs/06-publish/rebuild.py already uses) is
      "corrected": re-runs `lib.quotes.anchor_quote` on every quote-bearing field a
      correction touches (organization_quote, description_quote, findings_quote,
-     dates.incident_quote) -- a reviewer can never introduce unanchored text.
+     dates.incident_quote) -- a reviewer can never introduce unanchored text. A
+     document-level review (incident_index null) can never resolve to "corrected" --
+     there is no per-field correction vocabulary for the document object, so it's
+     rejected; the reviewer should reject it instead to send it back for
+     re-extraction. "escalated" (Phase 7b addition) needs no re-anchoring: it means
+     a single reviewer couldn't decide and the incident/document waits for a
+     second_review to resolve it, exactly like flagged tier's existing dual-review
+     path -- rebuild.py already treats any non-approved/corrected resolved decision
+     as unpublished, so "escalated" with no second_review needs no special case
+     there.
   5. Writes the review to `{doc_dir}/reviews/{incident_index}_{reviewer-slug}_{ts}
-     .review.json` (Section 6). Never overwrites: the archive is append-only, and a
-     later dual-review resolution (embedding `second_review`) is submitted as a new
-     file with a later `reviewed_at`, exactly as jobs/06-publish/rebuild.py already
-     assumes when picking the latest-`reviewed_at` match per incident.
+     .review.json` (Section 6) -- or `{doc_dir}/reviews/document_{reviewer-slug}_{ts}
+     .review.json` for a document-level (null incident_index) review. Never
+     overwrites: the archive is append-only, and a later dual-review resolution
+     (embedding `second_review`) is submitted as a new file with a later
+     `reviewed_at`, exactly as jobs/06-publish/rebuild.py already assumes when
+     picking the latest-`reviewed_at` match per incident.
 
 `doc_dir` is supplied by the caller, not read out of review.json -- review.schema.json
 (fixed in Phase 0, `additionalProperties: false`) has no such field, and the review
@@ -178,7 +189,16 @@ def ingest_review(doc_dir: str, review_json: dict) -> str:
 
     incidents_json = _find_incidents_json(doc_dir, file_hash)
     incidents = incidents_json.get("incidents") or []
-    if incident_index >= len(incidents):
+
+    if incident_index is None:
+        # Document-level review -- only valid for a genuine zero-incident extraction
+        # (the "fast" tier has no incidents[] entry to index against).
+        if incidents:
+            raise IngestError(
+                f"extraction_ref.incident_index is null, but {doc_dir} extraction has "
+                f"{len(incidents)} incident(s) -- null is reserved for zero-incident reports"
+            )
+    elif incident_index >= len(incidents):
         raise IngestError(
             f"extraction_ref.incident_index {incident_index} out of range -- "
             f"{doc_dir} extraction has {len(incidents)} incident(s)"
@@ -186,11 +206,18 @@ def ingest_review(doc_dir: str, review_json: dict) -> str:
 
     decision, corrections = _resolved_decision(review_json)
     if decision == "corrected":
+        if incident_index is None:
+            raise IngestError(
+                "a document-level (zero-incident) review cannot be \"corrected\" -- "
+                "there is no per-field correction vocabulary for the document object; "
+                "reject it instead to send the document back for re-extraction"
+            )
         document_text = r2.get_bytes(f"{doc_dir}/extracted/text.txt").decode("utf-8", errors="replace")
         _reanchor_corrections(incidents[incident_index], corrections, document_text)
 
+    index_token = "document" if incident_index is None else str(incident_index)
     key = (
-        f"{doc_dir}/reviews/{incident_index}_"
+        f"{doc_dir}/reviews/{index_token}_"
         f"{_slugify(review_json['reviewer'])}_{_filename_ts(review_json['reviewed_at'])}.review.json"
     )
     r2.put_bytes(key, json.dumps(review_json, indent=2).encode("utf-8"))

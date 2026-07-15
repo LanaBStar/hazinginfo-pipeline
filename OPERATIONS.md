@@ -42,7 +42,7 @@ script reads; a chat answer is not a decision.
   "archive":   {"institutions_done": 1391, "pending": 93, "documents": 2140},
   "normalize": {"pending_documents": 14, "no_text_layer": 63},
   "extract":   {"packets_total": 68, "packets_done": 52, "awaiting_validation": 1},
-  "review":    {"fast_lane": 812, "standard": 141, "flagged": 46, "decided": 655},
+  "review":    {"fast_lane": 812, "standard": 141, "flagged": 46, "decided": 655, "escalated_pending": 9},
   "publish":   {"last_rebuild": "2026-06-02", "approved_unpublished": 118}
 }
 ```
@@ -88,6 +88,9 @@ the runbook before acting and follows it — it does not invent steps.
 - **5. Review** — status only, rendered read-only in the menu. Reviewing itself — by
   volunteers or the operator — happens in the review web app (`jobs/05-review/app/`),
   never in chat, so every decision produces the same `review.json` audit trail.
+  `review.escalated_pending` (a reviewer looked and couldn't decide) needs the operator's
+  own pass through the same app to resolve via a `second_review` — flag it in the menu
+  when nonzero.
 - **6. Publish** — `jobs/06-publish/rebuild.py` drops and rebuilds the entire catalog from
   the archive. Run after every review batch.
 
