@@ -24,7 +24,13 @@ Status vocabulary written by this job (see decisions recorded in BUILD_STATUS.md
 Resumable: an institution whose status.json already exists for the current scrape year is
 skipped entirely (per IMPLEMENTATION_PLAN.md §7's 02-archive spec).
 
-Run: python jobs/02-archive/run.py [--schools-csv PATH] [--year YYYY]
+--prefix defaults to "archive" (the real archive) but, like every other job's --prefix
+flag (03-normalize, 04-extract/make_packets.py, 06-publish/rebuild.py), can be pointed at
+"smoke" instead — this is what makes the annual pass's mandatory first step (the fixtures
+smoke run into a sandboxed smoke/ prefix, IMPLEMENTATION_PLAN.md §14) possible without
+mixing smoke and real archive data in the same live R2 bucket.
+
+Run: python jobs/02-archive/run.py [--schools-csv PATH] [--year YYYY] [--prefix archive]
 """
 import argparse
 import csv
@@ -140,10 +146,10 @@ def _candidate_links(links: list[dict], page_has_signal: bool, home_domain: str)
 
 # ── Storage layer (R2 manifest.json / dedup) ───────────────────────────────────
 
-def _existing_hashes(inst_dir: str) -> set[str]:
+def _existing_hashes(prefix: str, inst_dir: str) -> set[str]:
     """The 16-char doc-dir names already archived for this institution, across every prior
     scrape year (§6 dedup: an unchanged document is never re-stored)."""
-    keys = r2.list_keys(f"{ARCHIVE_PREFIX}/{inst_dir}/")
+    keys = r2.list_keys(f"{prefix}/{inst_dir}/")
     hashes = set()
     for key in keys:
         parts = key.split("/")
@@ -152,7 +158,7 @@ def _existing_hashes(inst_dir: str) -> set[str]:
     return hashes
 
 
-def store_document(inst_dir: str, unitid: str, year: int, url: str, content: bytes,
+def store_document(prefix: str, inst_dir: str, unitid: str, year: int, url: str, content: bytes,
                     is_pdf: bool, known_hashes: set[str]) -> str:
     """Stores one document if its content hash isn't already archived for this institution
     (in this year or any prior one). Returns the full sha256 hash either way."""
@@ -163,7 +169,7 @@ def store_document(inst_dir: str, unitid: str, year: int, url: str, content: byt
         logging.info(f"  duplicate — {url} already archived as {hash16}")
         return content_hash
 
-    doc_dir = f"{ARCHIVE_PREFIX}/{inst_dir}/{year}/docs/{hash16}"
+    doc_dir = f"{prefix}/{inst_dir}/{year}/docs/{hash16}"
     filename = "report.pdf" if is_pdf else "index.html"
     r2.put_bytes(f"{doc_dir}/original/{filename}", content)
 
@@ -184,7 +190,7 @@ def store_document(inst_dir: str, unitid: str, year: int, url: str, content: byt
     return content_hash
 
 
-def write_status(inst_dir: str, unitid: str, year: int, status: str,
+def write_status(prefix: str, inst_dir: str, unitid: str, year: int, status: str,
                   source_url: str | None, documents: list[str]) -> None:
     doc = {
         "schema_version": 1,
@@ -196,12 +202,12 @@ def write_status(inst_dir: str, unitid: str, year: int, status: str,
         "fetched_at": _now_iso(),
     }
     _validate(doc, "status.schema.json")
-    r2.put_bytes(f"{ARCHIVE_PREFIX}/{inst_dir}/{year}/status.json", json.dumps(doc, indent=2).encode())
+    r2.put_bytes(f"{prefix}/{inst_dir}/{year}/status.json", json.dumps(doc, indent=2).encode())
 
 
 # ── Crawl ───────────────────────────────────────────────────────────────────────
 
-def _crawl(inst_dir: str, unitid: str, year: int, home_domain: str, initial_links: list[str],
+def _crawl(prefix: str, inst_dir: str, unitid: str, year: int, home_domain: str, initial_links: list[str],
            seen_links: set[str], known_hashes: set[str]) -> list[str]:
     """Breadth-first crawl from the source page's links, bounded by
     MAX_FETCHES_PER_INSTITUTION and MAX_DEPTH. Breadth-first so every direct link is
@@ -223,7 +229,7 @@ def _crawl(inst_dir: str, unitid: str, year: int, home_domain: str, initial_link
 
         if is_pdf_response(resp, url):
             stored_hashes.append(
-                store_document(inst_dir, unitid, year, url, resp.content, True, known_hashes)
+                store_document(prefix, inst_dir, unitid, year, url, resp.content, True, known_hashes)
             )
             continue
 
@@ -234,7 +240,7 @@ def _crawl(inst_dir: str, unitid: str, year: int, home_domain: str, initial_link
 
         if text_signal and page_text.strip():
             stored_hashes.append(
-                store_document(inst_dir, unitid, year, url, resp.content, False, known_hashes)
+                store_document(prefix, inst_dir, unitid, year, url, resp.content, False, known_hashes)
             )
 
         if depth < MAX_DEPTH:
@@ -247,7 +253,7 @@ def _crawl(inst_dir: str, unitid: str, year: int, home_domain: str, initial_link
     return stored_hashes
 
 
-def crawl_institution(inst_dir: str, unitid: str, year: int, source_url: str,
+def crawl_institution(prefix: str, inst_dir: str, unitid: str, year: int, source_url: str,
                        known_hashes: set[str]) -> list[str]:
     """Fetch and store all CHTR documents reachable from one institution's source URL.
     Returns the list of content hashes stored or found already archived (empty = nothing
@@ -257,7 +263,7 @@ def crawl_institution(inst_dir: str, unitid: str, year: int, source_url: str,
         return []
 
     if is_pdf_response(resp, source_url):
-        return [store_document(inst_dir, unitid, year, source_url, resp.content, True, known_hashes)]
+        return [store_document(prefix, inst_dir, unitid, year, source_url, resp.content, True, known_hashes)]
 
     page_text = html_to_text(resp.text)
     links = _extract_links(resp.text, source_url)
@@ -270,18 +276,18 @@ def crawl_institution(inst_dir: str, unitid: str, year: int, source_url: str,
 
     stored = []
     if text_signal and page_text.strip():
-        stored.append(store_document(inst_dir, unitid, year, source_url, resp.content, False, known_hashes))
+        stored.append(store_document(prefix, inst_dir, unitid, year, source_url, resp.content, False, known_hashes))
 
     home_domain = _domain(source_url)
     seen_links: set[str] = {source_url}
-    stored += _crawl(inst_dir, unitid, year, home_domain,
+    stored += _crawl(prefix, inst_dir, unitid, year, home_domain,
                       _candidate_links(links, any_signal, home_domain), seen_links, known_hashes)
     return stored
 
 
 # ── Per-institution driver ──────────────────────────────────────────────────────
 
-def process_institution(row: dict, year: int) -> str | None:
+def process_institution(prefix: str, row: dict, year: int) -> str | None:
     """Returns the outcome ("published" | "not_found" | "no_url" | "skipped"), or None if
     the institution isn't actionable yet (e.g. discover hasn't confirmed a URL)."""
     unitid = row["unitid"]
@@ -289,7 +295,7 @@ def process_institution(row: dict, year: int) -> str | None:
     url_status = (row.get("url_status") or "").strip()
     chtr_url = (row.get("chtr_url") or "").strip()
     inst_dir = f"{unitid}_{_slug(name)}"
-    status_key = f"{ARCHIVE_PREFIX}/{inst_dir}/{year}/status.json"
+    status_key = f"{prefix}/{inst_dir}/{year}/status.json"
 
     if r2.exists(status_key):
         logging.info(f"{name}: status.json already exists for {year} — skipping")
@@ -297,7 +303,7 @@ def process_institution(row: dict, year: int) -> str | None:
 
     if url_status == "no_url" or not chtr_url:
         if url_status == "no_url":
-            write_status(inst_dir, unitid, year, "no_url", None, [])
+            write_status(prefix, inst_dir, unitid, year, "no_url", None, [])
             return "no_url"
         logging.info(f"{name}: no confirmed URL yet (url_status={url_status!r}) — skipping")
         return None
@@ -307,21 +313,21 @@ def process_institution(row: dict, year: int) -> str | None:
         return None
 
     logging.info(f"{name}: crawling {chtr_url}")
-    known_hashes = _existing_hashes(inst_dir)
-    hashes = crawl_institution(inst_dir, unitid, year, chtr_url, known_hashes)
+    known_hashes = _existing_hashes(prefix, inst_dir)
+    hashes = crawl_institution(prefix, inst_dir, unitid, year, chtr_url, known_hashes)
     documents = list(dict.fromkeys(hashes))  # de-dupe, preserve order
 
     if documents:
-        write_status(inst_dir, unitid, year, "published", chtr_url, documents)
+        write_status(prefix, inst_dir, unitid, year, "published", chtr_url, documents)
         logging.info(f"  {name}: published ({len(documents)} document(s))")
         return "published"
 
-    write_status(inst_dir, unitid, year, "not_found", chtr_url, [])
+    write_status(prefix, inst_dir, unitid, year, "not_found", chtr_url, [])
     logging.info(f"  {name}: not_found")
     return "not_found"
 
 
-def run(schools_csv: Path = DEFAULT_SCHOOLS_CSV, year: int | None = None) -> dict:
+def run(schools_csv: Path = DEFAULT_SCHOOLS_CSV, year: int | None = None, prefix: str = ARCHIVE_PREFIX) -> dict:
     year = year or scrape_year()
     if not schools_csv.exists():
         logging.warning(f"{schools_csv} not found — nothing to archive yet "
@@ -334,7 +340,7 @@ def run(schools_csv: Path = DEFAULT_SCHOOLS_CSV, year: int | None = None) -> dic
     results: dict[str, int] = defaultdict(int)
     for row in rows:
         try:
-            outcome = process_institution(row, year)
+            outcome = process_institution(prefix, row, year)
         except Exception as e:
             # A single institution's fetch/crawl failure must not abort the whole run —
             # ~1,484 live university sites means network flakiness is expected.
@@ -343,7 +349,7 @@ def run(schools_csv: Path = DEFAULT_SCHOOLS_CSV, year: int | None = None) -> dic
                 unitid = row["unitid"]
                 inst_dir = f"{unitid}_{_slug(row['name'])}"
                 chtr_url = (row.get("chtr_url") or "").strip() or None
-                write_status(inst_dir, unitid, year, "not_found", chtr_url, [])
+                write_status(prefix, inst_dir, unitid, year, "not_found", chtr_url, [])
                 outcome = "not_found"
             except Exception as write_error:
                 logging.error(f"  also failed to record not_found status: {write_error}")
@@ -359,10 +365,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--schools-csv", type=Path, default=DEFAULT_SCHOOLS_CSV)
     parser.add_argument("--year", type=int, default=None)
+    parser.add_argument("--prefix", default=ARCHIVE_PREFIX)
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-    run(schools_csv=args.schools_csv, year=args.year)
+    run(schools_csv=args.schools_csv, year=args.year, prefix=args.prefix)
     return 0
 
 

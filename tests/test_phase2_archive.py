@@ -174,6 +174,18 @@ def main() -> int:
                 "not re-stored under the new year"
             )
 
+        # ── Run 4: --prefix smoke — the fixtures smoke run must land under smoke/,
+        # never mixed into archive/ (IMPLEMENTATION_PLAN.md §14) ──
+        fetch_calls.clear()
+        results4 = run.run(schools_csv=schools_csv, year=2099, prefix="smoke")
+        if results4 != expected_results:
+            failures.append(f"run 4 (prefix=smoke) results: expected {expected_results!r}, got {results4!r}")
+        smoke_status_path = archive_local_root / "smoke" / "200001_north-ridge-college" / "2099" / "status.json"
+        if not smoke_status_path.exists():
+            failures.append(f"run 4 (prefix=smoke): expected {smoke_status_path} to exist")
+        if (archive_root / "200001_north-ridge-college" / "2099").exists():
+            failures.append("run 4 (prefix=smoke): leaked a 2099 dir into archive/ instead of smoke/")
+
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -193,6 +205,7 @@ def main() -> int:
     print("ok    all written manifest.json/status.json validate against their schemas")
     print("ok    run 2: re-run is fully resumable (skips all, zero HTTP fetches)")
     print("ok    run 3: unchanged document deduped across scrape years")
+    print("ok    run 4: --prefix smoke writes under smoke/, never touches archive/")
     return 0
 
 

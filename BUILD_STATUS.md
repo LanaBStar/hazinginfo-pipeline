@@ -169,6 +169,27 @@ conversational context.
   files currently have no `assets/` sibling directory. Revisit before relying on the
   review app (`05-review`) to render archived HTML with full fidelity.
 
+### Post-Phase-8 fix: `jobs/02-archive/run.py` gained a `--prefix` flag
+
+Found while preparing the operator-console handoff (grounding it in real repo state
+before writing the prompt, not just describing intent): `02-archive/run.py` had no
+`--prefix` flag, unlike its three siblings (`03-normalize/run.py`,
+`04-extract/make_packets.py`, `06-publish/rebuild.py`), which all support one. It always
+wrote to a hardcoded `ARCHIVE_PREFIX = "archive"`. That meant OPERATIONS.md's mandatory
+first operator-console step — the fixtures smoke run into a sandboxed `smoke/` prefix
+(§14, "never mixed with real data") — could not actually work: 02-archive would write
+straight into the real `archive/` prefix instead.
+
+Fixed by threading a `prefix: str = ARCHIVE_PREFIX` parameter through
+`run`/`process_institution`/`crawl_institution`/`_crawl`/`store_document`/`write_status`/
+`_existing_hashes` (mirroring `03-normalize`'s exact pattern) and adding `--prefix` to
+`main()`'s argparse. Default behavior (writing to `archive/`) is unchanged — every prior
+phase's test still passes with no changes to its own calls. Added `tests/
+test_phase2_archive.py`'s "run 4": a real crawl with `prefix="smoke"` against a fresh
+year, asserting the output lands under `smoke/` and nothing leaks into `archive/`. This
+was a bug-fix/consistency fix (the pattern was already established three other places in
+the codebase), not a design decision, so it wasn't asked about separately.
+
 ## Phase 3 — done
 
 - [x] `lib/quotes.py` — `anchor_quote(quote_text, page_hint, document_text)`: whitespace-
@@ -774,19 +795,39 @@ from an HTTP response alone:
 
 ## Next session should
 
-Nothing is blocking — all 9 build phases (0 through 8) are done, and the 2036 test
-(§17) should be re-validated end-to-end against a real annual pass once real
-credentials exist for both systems. Two credential hand-offs are still open, both
-deliberately deferred rather than blocking their phases:
+All 9 build phases (0 through 8) are done — no code work is blocking. But `python
+status.py` was actually run at the end of this session (to ground the operator-console
+handoff in real state, not just described intent) and it fails immediately with
+`lib.r2.MissingEnvVar: missing required environment variable: R2_ENDPOINT_URL` — **no
+live R2 credentials exist anywhere in this project yet**, for either the new system or
+the old one. Every phase so far has built and smoke-tested entirely against local
+fixtures (`ARCHIVE_LOCAL_ROOT` / a scratch Postgres database), by design, per each
+phase's own smoke-check section above — this is not a regression, just the first time it
+matters operationally. Three credential hand-offs are open, in the order they'd actually
+unblock work:
 
-- **Phase 7b's live deploy** (still open from that phase): real R2 write credentials
-  scoped to `reviews/`, a Cloudflare Access application gating the Worker's route, and
-  `config.js` pointed at the deployed Worker, whenever the user is ready to hand over
-  credentials.
-- **Phase 8's real migration run** (this session): `OLD_R2_ENDPOINT_URL` /
-  `OLD_R2_ACCESS_KEY_ID` / `OLD_R2_SECRET_ACCESS_KEY` / `OLD_R2_BUCKET_NAME` /
-  `OLD_DATABASE_URL` for the actual old system, so `migration/backfill_manifests.py`
-  then `migration/export_legacy.py` can be run for real (read-only against the old
-  system throughout) instead of just against this phase's synthetic fixture. Once run,
-  follow `migration/RUNBOOK.md` step 2 (03-normalize + 04-extract over the newly
-  backfilled documents) before treating the calibration set as ready for volunteer use.
+1. **The new system's own `R2_*` (and, for 06-publish, `NEON_DATABASE_URL`).** Without
+   these, `status.py` can't run at all, which means the operator console (OPERATIONS.md)
+   can't render its menu, and the mandatory first annual-pass step — the fixtures smoke
+   run into a sandboxed `smoke/` prefix (§14) — can't happen either. This is the
+   credential hand-off that actually starts real operation; the other two are narrower.
+   (The `smoke/`-prefix mechanism itself was fixed this session — see the Phase 2
+   addendum above — `jobs/02-archive/run.py` now supports `--prefix` like its siblings
+   do, so the smoke run will work correctly once real R2 credentials exist.)
+2. **Phase 7b's live deploy** (still open from that phase): real R2 write credentials
+   scoped to `reviews/`, a Cloudflare Access application gating the Worker's route, and
+   `config.js` pointed at the deployed Worker.
+3. **Phase 8's real migration run**: `OLD_R2_ENDPOINT_URL` / `OLD_R2_ACCESS_KEY_ID` /
+   `OLD_R2_SECRET_ACCESS_KEY` / `OLD_R2_BUCKET_NAME` / `OLD_DATABASE_URL` for the actual
+   old system, so `migration/backfill_manifests.py` then `migration/export_legacy.py`
+   can be run for real (read-only against the old system throughout) instead of just
+   against Phase 8's synthetic fixture. Once run, follow `migration/RUNBOOK.md` step 2
+   (03-normalize + 04-extract over the newly backfilled documents) before treating the
+   calibration set as ready for volunteer use.
+
+Once (1) is handed over, the next session's job is the operator-console handoff itself:
+boot per CLAUDE.md's mode check (BUILD_STATUS.md shows every phase done, so the session
+is the operator console, not the builder), run `status.py` for real, and — since
+`smoke_run.done_this_year` will be `false` on a brand-new bucket — run the fixtures
+smoke run first, per OPERATIONS.md's boot behavior, before starting any real annual-pass
+step.
