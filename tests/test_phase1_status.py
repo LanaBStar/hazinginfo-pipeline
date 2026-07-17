@@ -14,7 +14,12 @@ sys.path.insert(0, str(ROOT))
 os.environ["ARCHIVE_LOCAL_ROOT"] = str(ROOT / "fixtures" / "mini_archive")
 os.environ["SCRAPE_YEAR"] = "2026"
 for var in ["R2_ENDPOINT_URL", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME"]:
-    os.environ.pop(var, None)
+    # Set to "" rather than popping: dotenv's load_dotenv(override=False) only fills in
+    # a var that's absent from os.environ, so once a real .env exists (as of this
+    # session) popping would let a real value leak back in on the reload() below.
+    # An empty string keeps the key "present" (blocking that) while still being falsy
+    # enough to trip lib.r2._require_env's `if not value: raise MissingEnvVar`.
+    os.environ[var] = ""
 
 import lib.r2  # noqa: E402  (import-safe with zero credentials, per Phase 1 requirement)
 import status  # noqa: E402

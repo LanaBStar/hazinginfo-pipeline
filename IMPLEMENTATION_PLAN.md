@@ -139,9 +139,6 @@ hazinginfo-pipeline/
 │   ├── 04-extract/            # RUNBOOK.md, prompt.md, schema.json, make_packets.py, validate.py
 │   ├── 05-review/             # RUNBOOK.md, app/  (Cloudflare Pages + Worker), ingest.py
 │   └── 06-publish/            # RUNBOOK.md, rebuild.py, catalog_schema.sql
-├── migration/
-│   ├── backfill_manifests.py  # old R2 bucket + old Neon rows → manifest.json files
-│   └── export_legacy.py       # old verified incidents → calibration set
 ├── lib/                       # shared: r2.py, fetch.py, text.py, hashing.py, quotes.py
 ├── fixtures/                  # 3 test institutions: canned HTML/PDFs + expected outputs
 └── tests/                     # smoke tests per job
@@ -360,9 +357,10 @@ Human review checks exactly two things machines can't: **segmentation** (inciden
 or split incorrectly) and **interpretation** (booleans, date normalization) — plus, for
 scanned documents, that quotes match the page image.
 
-**Calibration:** before trusting single review, all volunteers review the same ~30
-incidents (the legacy set — Section 13). Disagreement rates determine whether
-single-review on `standard` is safe.
+**Calibration:** before trusting single review on the `standard` tier, volunteers
+dual-review a shared initial batch of real incidents (there is no legacy system to draw
+a pre-built answer-key from). Disagreement rates determine whether single-review on
+`standard` is safe.
 
 ---
 
@@ -430,19 +428,6 @@ reporting_status    (unitid, scrape_year, status, source_url)          -- from s
 - Only `approved`/`corrected` incidents (with corrections applied) enter `incidents`.
   There is no staging schema — staging is files in the archive.
 
-## 13. Migration from the legacy system (one-time)
-
-1. **`backfill_manifests.py`:** walk the old R2 bucket; for each object, pull source_url /
-   hash / fetch date from the old Neon `raw_artifacts` rows; write manifest.json files
-   into the new layout. **Never refetch what the old system captured** — those pages may
-   have changed or vanished; they are irreplaceable evidence. Export the old Neon data
-   before decommissioning it.
-2. **`export_legacy.py`:** export previously human-verified incidents. They do **not**
-   meet the new evidentiary standard (no quotes, no anchors), so they are not imported.
-   Instead their source documents are re-extracted under the new schema, and the known
-   incidents become the **volunteer calibration set** (Section 9) — re-certified to the
-   new standard while calibrating reviewers. One effort, two purposes.
-
 ## 14. Fixtures and the annual smoke run
 
 - `fixtures/`: three synthetic institutions — (a) HTML CHTR with 2 incidents, (b) text-layer
@@ -476,7 +461,6 @@ reporting_status    (unitid, scrape_year, status, source_url)          -- from s
 | 6 | 01-discover: prompt.md, packets, merge.py | candidate → confirm → merge round-trip on a schools.csv copy |
 | 7a | Review Worker + ingest.py (review.json write path) | review.json lands in R2, validated, pinned to extraction hash |
 | 7b | Review UI (Pages + PDF.js + highlights + Access) | fixture incident reviewable end-to-end |
-| 8 | migration/: backfill_manifests.py + export_legacy.py | dry-run against old bucket/Neon (read-only) |
 
 Order matters: publish (5) before discover (6) so the core loop is provable early; the
 review app (7) is the largest item and depends on validation.json offsets from Phase 4.

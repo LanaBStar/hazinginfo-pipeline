@@ -15,11 +15,12 @@ conversational context.
 | 6 | 01-discover: prompt.md, packets, merge.py | done | Smoke check passes (`.venv/bin/python tests/test_phase6_discover.py`) |
 | 7a | Review Worker + ingest.py (review.json write path) | done | Smoke check passes (`.venv/bin/python tests/test_phase7a_review.py`) |
 | 7b | Review UI (Pages + PDF.js + highlights + Access) | done | Smoke check passes (`.venv/bin/python tests/test_phase7b_review_app.py`; `npm --prefix jobs/05-review/app/worker test`) |
-| 8 | migration/: backfill_manifests.py + export_legacy.py | done | Smoke check passes (`.venv/bin/python tests/test_phase8_migration.py`) |
 
 ## Phase 0 — done
 
-- [x] Directory scaffold created (`schemas/`, `jobs/*/`, `migration/`, `lib/`, `fixtures/`, `tests/`)
+- [x] Directory scaffold created (`schemas/`, `jobs/*/`, `lib/`, `fixtures/`, `tests/`) —
+      a `migration/` directory was also scaffolded here for a since-removed Phase 8; see
+      "Phase 8 (removed)" below.
 - [x] BUILD_STATUS.md (this file)
 - [x] CLAUDE.md (boot file, mode-check header)
 - [x] AGENTS.md (boot file, mode-check header)
@@ -169,7 +170,7 @@ conversational context.
   files currently have no `assets/` sibling directory. Revisit before relying on the
   review app (`05-review`) to render archived HTML with full fidelity.
 
-### Post-Phase-8 fix: `jobs/02-archive/run.py` gained a `--prefix` flag
+### Post-Phase-7b fix: `jobs/02-archive/run.py` gained a `--prefix` flag
 
 Found while preparing the operator-console handoff (grounding it in real repo state
 before writing the prompt, not just describing intent): `02-archive/run.py` had no
@@ -693,141 +694,49 @@ from an HTTP response alone:
   hand-rolled regex parser, with the Pages UI's scriptless sandboxed iframe as a
   second, independent layer of defense.
 
-## Phase 8 — done
+## Phase 8 (removed)
 
-- [x] `migration/old_r2.py` — read-only client for the OLD system's R2 bucket. Mirrors
-      `lib/r2.py`'s local-fallback pattern (`OLD_ARCHIVE_LOCAL_ROOT` instead of
-      `ARCHIVE_LOCAL_ROOT`) so tests run against a fixture directory with no live
-      credentials. Deliberately has no `put_bytes` — migration must never write to the
-      old system.
-- [x] `migration/backfill_manifests.py` — walks the old Neon `raw_artifacts` table
-      (joined to `institutions` for unitid/name), fetches each object's bytes from the
-      old R2 bucket by its recorded `storage_key`, verifies the bytes hash to the
-      `content_hash` Neon recorded, and writes `manifest.json` + `original/{filename}`
-      into the new archive at `archive/{unitid}_{slug}/{scrape_year}/docs/{hash16}/` —
-      same shape and same `_slug()`/filename/content-type conventions
-      `jobs/02-archive/run.py`'s `store_document()` already uses (duplicated, not
-      imported, so the two inst_dir derivations can never silently drift apart). Never
-      re-fetches a source URL. The old Neon connection is opened `read_only = True` at
-      the transaction level — a real Postgres-enforced backstop, verified in this
-      phase's smoke check (a `DELETE` against it raises `ReadOnlySqlTransaction`).
-      Idempotent/resumable (per the user's confirmed choice — see below): a raw_artifacts
-      row whose target `manifest.json` already exists is skipped. A row whose unitid
-      isn't in the current `sources/schools.csv`, or whose fetched bytes don't hash to
-      the recorded `content_hash`, is skipped and logged rather than aborting the run;
-      a hash mismatch is never written under any circumstance.
-- [x] `migration/calibration_set.schema.json` — new schema (job-local, same placement
-      rule as `jobs/01-discover/schema.json`) for the volunteer calibration set, per
-      the shape confirmed with the user (see below).
-- [x] `migration/export_legacy.py` — walks the old Neon `incidents` table (Tier 6,
-      human-approved, joined through `chtr_reports` to `institutions` and
-      `raw_artifacts` for the `content_hash` that locates its now-backfilled `doc_dir`),
-      and writes `migration/calibration_set.json`: one entry per legacy incident whose
-      institution is still tracked and whose source document `backfill_manifests.py`
-      has already copied in, pairing `doc_dir` with the legacy incident's old fields as
-      a reference answer-key. Never imports old fields as catalog data — they have no
-      quotes/anchors and don't meet the new evidentiary standard. Same read-only-Neon
-      guarantee as `backfill_manifests.py`.
-- [x] `migration/RUNBOOK.md` — purpose/preconditions/steps/postconditions/failure modes
-      for both scripts, including the required run order (backfill before export, with
-      normal 03-normalize/04-extract re-extraction of the backfilled documents in
-      between).
-- [x] `.env.example` — added `OLD_R2_ENDPOINT_URL`/`OLD_R2_ACCESS_KEY_ID`/
-      `OLD_R2_SECRET_ACCESS_KEY`/`OLD_R2_BUCKET_NAME`/`OLD_DATABASE_URL`, placeholder
-      values only, same naming convention as the existing `R2_*`/`NEON_DATABASE_URL`.
-- [x] `.gitignore` — added `migration/calibration_set.json` (real organizations' names
-      and incident descriptions from the old system; not an archive artifact, not for
-      version control, same reasoning as `.env`).
-- [x] Smoke check: `tests/test_phase8_migration.py` — a scratch Postgres database seeded
-      with a faithful subset of the real old schema (copied from
-      `~/Documents/hazing-incidents/scraper/db.py`: `institutions`, `pipeline_runs`,
-      `raw_artifacts`, `chtr_reports`, `incidents`) plus a local directory standing in
-      for the old R2 bucket (`OLD_ARCHIVE_LOCAL_ROOT`) — the synthetic-fixture approach
-      the user chose over a live old-system connection this session. Three old
-      `raw_artifacts` rows exercise every branch: Northgate University (correct hash,
-      known institution — the happy path, backfilled then exported), Old Removed
-      College (correct hash, but not in the current `sources/schools.csv` — skipped by
-      both scripts), and Fernwood State (content_hash deliberately does not match the
-      real bytes at its storage_key — `backfill_manifests.py` refuses to write it, and
-      `export_legacy.py`'s legacy incident pointing at it correctly reports
-      `skipped_not_backfilled`, proving the two scripts' failure paths compose). A
-      fourth legacy incident with `artifact_id = NULL` exercises `skipped_no_document`.
-      Asserts manifest.json/original bytes are byte-correct, `backfill_manifests.py` is
-      resumable (run twice, second run backfills 0 new documents), and
-      `calibration_set.json` validates against its own schema. All 8 prior phases'
-      Python smoke checks (`tests/test_phase0..7b*.py`) and the Worker's `npm test` (26
-      cases) re-run clean afterward.
-
-### Decisions made during Phase 8 (asked the user, since the plan was silent/ambiguous here)
-
-- **Old-system credentials weren't available this session.** Confirmed with the user:
-  build and smoke-test against a synthetic fixture (as above) rather than the real old
-  R2/Neon, matching every prior phase's local-fixture pattern. The real
-  `OLD_R2_*`/`OLD_DATABASE_URL` values, and a run of both scripts against the actual old
-  system, are left for a follow-up session once the user hands them over — see "Next
-  session should" below. The old Neon schema itself was *not* an open question this
-  phase (unlike the plan's framing suggested it might be): `~/Documents/hazing-incidents/
-  scraper/db.py` (read, never modified — allowed per IMPLEMENTATION_PLAN.md §0, the same
-  old repo `reference/` mirrors a subset of) has the exact `CREATE TABLE` statements for
-  `raw_artifacts`, `institutions`, `chtr_reports`, and the human-verified `incidents`
-  table, so the column mapping was read directly rather than guessed or asked about.
-- **Resumability:** confirmed with the user — `backfill_manifests.py` follows invariant
-  10 like every other job (skip a row whose manifest.json already exists) rather than
-  being a true one-time, non-resumable script. Costs one `r2.exists()` check per row.
-- **`calibration_set.json`'s shape**: confirmed with the user — the proposal in this
-  session's question (top-level `{schema_version, calibration_set: [{legacy_incident_id,
-  unitid, doc_dir, legacy_fields: {...}}]}`, with `legacy_fields` covering every column
-  the old `incidents` table's Tier 6 verified row carries) was accepted as-is.
-- **`backfill_manifests.py` does not write `status.json`** (not asked separately — a
-  direct reading of §13's literal scope, which names only manifest.json as this script's
-  deliverable, unlike §7's 02-archive spec which explicitly calls out status.json
-  including the not_found/no_url cases). Consequence: backfilled institution-years won't
-  appear in `06-publish`'s `reporting_status` table or in `status.py`'s counts. This
-  doesn't block re-extraction/review/publish of the backfilled documents themselves —
-  `rebuild.py`'s `documents`/`reports`/`incidents` population all walk for `manifest.json`
-  directly, never `status.json`. Revisit if `status.py`/the operator console ever needs
-  visibility into backfilled-but-not-yet-status-tracked institution-years.
-- **Original document bytes are copied into the new archive's `original/`, not just
-  referenced** (not asked separately — a direct consequence of invariant 1 and the 2036
-  test: a `manifest.json` with no corresponding `original/` file isn't self-contained,
-  and 03-normalize needs the bytes present in the *new* archive to produce
-  `extracted/text.txt` for these documents like any other).
+`migration/` (`backfill_manifests.py` + `export_legacy.py`, per what was
+IMPLEMENTATION_PLAN.md §13) was built and smoke-tested against a synthetic old-system
+fixture, then **removed entirely** once Mahir confirmed there is no old system to migrate
+from — no separate old R2 bucket/Neon database exists. Removed: `migration/` (all
+files), `tests/test_phase8_migration.py`, the `OLD_R2_*`/`OLD_DATABASE_URL` entries from
+`.env`/`.env.example`, and IMPLEMENTATION_PLAN.md §13 + its repo-layout entry + its Phase
+8 table row. §9's calibration paragraph was reworded to no longer depend on a legacy
+answer-key (volunteers now calibrate against a shared initial batch of real incidents
+instead). See git history for the removed code if a legacy source ever does turn up.
 
 ## Next session should
 
-All 9 build phases (0 through 8) are done — no code work is blocking. But `python
-status.py` was actually run at the end of this session (to ground the operator-console
-handoff in real state, not just described intent) and it fails immediately with
-`lib.r2.MissingEnvVar: missing required environment variable: R2_ENDPOINT_URL` — **no
-live R2 credentials exist anywhere in this project yet**, for either the new system or
-the old one. Every phase so far has built and smoke-tested entirely against local
-fixtures (`ARCHIVE_LOCAL_ROOT` / a scratch Postgres database), by design, per each
-phase's own smoke-check section above — this is not a regression, just the first time it
-matters operationally. Three credential hand-offs are open, in the order they'd actually
-unblock work:
+All build phases (0 through 7b) are done — no code work is blocking. Real credentials
+landed this session: Mahir provisioned a real Cloudflare R2 bucket and Neon Postgres
+database and put `R2_ENDPOINT_URL`/`R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY`/
+`R2_BUCKET_NAME`/`NEON_DATABASE_URL` into `.env` (confirmed non-placeholder), plus real
+`AIRTABLE_TOKEN`/`AIRTABLE_BASE_ID`/`AIRTABLE_TABLE_NAME` for the old system's
+human-curated institution/URL registry (Airtable — a separate thing from the removed R2/
+Neon legacy migration; see "Phase 8 (removed)" above). There is no old R2 bucket or old
+Neon database to migrate from — confirmed with Mahir this session.
 
-1. **The new system's own `R2_*` (and, for 06-publish, `NEON_DATABASE_URL`).** Without
-   these, `status.py` can't run at all, which means the operator console (OPERATIONS.md)
-   can't render its menu, and the mandatory first annual-pass step — the fixtures smoke
-   run into a sandboxed `smoke/` prefix (§14) — can't happen either. This is the
-   credential hand-off that actually starts real operation; the other two are narrower.
-   (The `smoke/`-prefix mechanism itself was fixed this session — see the Phase 2
-   addendum above — `jobs/02-archive/run.py` now supports `--prefix` like its siblings
-   do, so the smoke run will work correctly once real R2 credentials exist.)
-2. **Phase 7b's live deploy** (still open from that phase): real R2 write credentials
-   scoped to `reviews/`, a Cloudflare Access application gating the Worker's route, and
-   `config.js` pointed at the deployed Worker.
-3. **Phase 8's real migration run**: `OLD_R2_ENDPOINT_URL` / `OLD_R2_ACCESS_KEY_ID` /
-   `OLD_R2_SECRET_ACCESS_KEY` / `OLD_R2_BUCKET_NAME` / `OLD_DATABASE_URL` for the actual
-   old system, so `migration/backfill_manifests.py` then `migration/export_legacy.py`
-   can be run for real (read-only against the old system throughout) instead of just
-   against Phase 8's synthetic fixture. Once run, follow `migration/RUNBOOK.md` step 2
-   (03-normalize + 04-extract over the newly backfilled documents) before treating the
-   calibration set as ready for volunteer use.
+In progress, not yet finished: `jobs/01-discover/import_airtable.py` — pulls
+institutions from Airtable (fields seen in the old repo's `airtable_client.py`: `UNITID`,
+`Institution`, `City, State`, `Transparency Report`), matches by `unitid` against the
+current `sources/schools.csv` (never adds rows — the 1,484-institution scope is fixed),
+backfills the blank `state` column directly where Airtable has one, and for institutions
+with a `Transparency Report` URL and a still-blank `url_status`, writes a
+`candidates.json` + `decisions.json` pair (decisions pre-set to `confirmed` — Mahir
+confirmed treating Airtable's existing human curation as sufficient, no per-row operator
+review needed) into a new `tasks/discover/batch_NNN/` for the *existing*, already-tested
+`merge.py` to apply — no new merge logic, reusing invariant 3's single write path.
+Next session should finish writing this script, add a smoke test with a stubbed Airtable
+response (no real API calls in tests), run it for real, then run `merge.py`.
 
-Once (1) is handed over, the next session's job is the operator-console handoff itself:
-boot per CLAUDE.md's mode check (BUILD_STATUS.md shows every phase done, so the session
-is the operator console, not the builder), run `status.py` for real, and — since
-`smoke_run.done_this_year` will be `false` on a brand-new bucket — run the fixtures
-smoke run first, per OPERATIONS.md's boot behavior, before starting any real annual-pass
-step.
+After that, the mandatory next step per OPERATIONS.md is the fixtures smoke run (now
+actually unblocked — real R2/Neon credentials exist and `jobs/02-archive/run.py` gained
+`--prefix` support this session specifically so the smoke run can target `smoke/` without
+touching the real archive). Only after that passes should the real annual pass
+(discover → archive → normalize → extract → review → publish) begin against whatever of
+the 1,484 institutions Airtable didn't already resolve.
+
+Still separately open: Phase 7b's live deploy (real review-app R2 write credentials
+scoped to `reviews/`, a Cloudflare Access application, `config.js` pointed at the
+deployed Worker) — needed before any volunteer can actually use the review app.
