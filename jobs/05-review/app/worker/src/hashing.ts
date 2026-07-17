@@ -8,7 +8,3 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-
-export function shortHash(contentHash: string, length = 16): string {
-  return contentHash.slice(0, length);
-}

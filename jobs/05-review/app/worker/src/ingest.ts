@@ -14,7 +14,7 @@ import { anchorQuote } from "./quotes";
 import { sha256Hex } from "./hashing";
 import { validateReviewSchema, ReviewSchemaError } from "./reviewSchema";
 import type { ArchiveStore } from "./store";
-import { getJson, getText, putJson } from "./store";
+import { getText, putJson } from "./store";
 import type { Incident, IncidentsJson, ReviewJson } from "./types";
 
 export class IngestError extends Error {}
@@ -160,6 +160,3 @@ export async function ingestReview(store: ArchiveStore, docDir: string, reviewJs
 // Re-exported for queue.ts / index.ts, which need the same resolution rule to know
 // whether an incident/document is still awaiting a decision.
 export { resolvedDecision };
-export async function readJson<T>(store: ArchiveStore, key: string): Promise<T> {
-  return getJson<T>(store, key);
-}
