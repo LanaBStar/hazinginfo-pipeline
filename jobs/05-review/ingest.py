@@ -1,13 +1,20 @@
 """
 ingest.py -- 05-review: validate and archive one review.json (the review Worker's
 write path). Per IMPLEMENTATION_PLAN.md Section 10 (review.json), Section 11 (review
-app), Section 15 (credentials), and Section 16's Phase 7a/7b smoke checks.
+app), Section 15 (credentials), and Section 16's Phase 7a/7b/15 smoke checks.
 
 This module is the settled validation/write logic; jobs/05-review/app/worker/src/
-ingest.ts (Phase 7b) is a line-for-line TypeScript port of it, since a Cloudflare
-Worker can't run Python. Both are tested against the same fixture archive shape and
-must reject/accept identically -- treat this file, not the port, as the source of
-truth when the two ever appear to disagree.
+ingest.ts is a line-for-line TypeScript port of it, since a Cloudflare Worker can't run
+Python. Both are tested against the same fixture archive shape and must reject/accept
+identically -- treat this file, not the port, as the source of truth when the two ever
+appear to disagree.
+
+v3.0 (Phase 15): no more tiers, escalation, second_review, or quote-anchoring on
+correction -- there's nothing left to anchor against once quotes themselves are gone
+(IMPLEMENTATION_PLAN.md Section 9/10). `decision` is a single, final call:
+approved/rejected/corrected. `corrections` is a list, one entry per changed field
+(matching Staging_incident_corrections' one-row-per-field grain); `organization_review`
+is an independent decision on the incident's proposed organization.
 
 `ingest_review(doc_dir, review_json)` does exactly what Section 10/16 require, in
 order, and never partially writes:
@@ -22,49 +29,34 @@ order, and never partially writes:
      submitted against an older extraction than whatever is "current" now.
   3. Confirms `extraction_ref.incident_index` is in range for that extraction's
      `incidents[]` -- or, if null, that the extraction really is a zero-incident
-     ("fast" tier) report with no incidents[] to index (Phase 7b addition: null is
-     the only way to represent a reviewer approving/rejecting/escalating a whole
-     zero-incident document, since review.schema.json's extraction_ref previously
-     had no way to reference "the document" rather than one incident).
-  4. If the *resolved* decision (second_review's decision wins over the first's,
-     same last-write-wins rule jobs/06-publish/rebuild.py already uses) is
-     "corrected": re-runs `lib.quotes.anchor_quote` on every quote-bearing field a
-     correction touches (organization_quote, description_quote, findings_quote,
-     dates.incident_quote) -- a reviewer can never introduce unanchored text. A
-     document-level review (incident_index null) can never resolve to "corrected" --
-     there is no per-field correction vocabulary for the document object, so it's
-     rejected; the reviewer should reject it instead to send it back for
-     re-extraction. "escalated" (Phase 7b addition) needs no re-anchoring: it means
-     a single reviewer couldn't decide and the incident/document waits for a
-     second_review to resolve it, exactly like flagged tier's existing dual-review
-     path -- rebuild.py already treats any non-approved/corrected resolved decision
-     as unpublished, so "escalated" with no second_review needs no special case
-     there.
-  5. Writes the review to `{doc_dir}/reviews/{incident_index}_{reviewer-slug}_{ts}
+     report with no incidents[] to index (null means "the whole document").
+  4. If `decision == "corrected"`: confirms `incident_index` is not null (a
+     document-level review can never be "corrected" -- there is no per-field
+     correction vocabulary for the document object; reject it instead to send it
+     back for re-extraction) and every correction's `field_name` is one of the
+     known correctable incident fields (CORRECTABLE_FIELDS below -- mirrors
+     jobs/06-publish/rebuild.py's own whitelist, applied here too so a malformed
+     review is rejected at write time, not silently archived and only discovered at
+     the next rebuild).
+  5. If `organization_review` is present: confirms `incident_index` is not null (a
+     zero-incident document has no organization to review).
+  6. Writes the review to `{doc_dir}/reviews/{incident_index}_{reviewer-slug}_{ts}
      .review.json` (Section 6) -- or `{doc_dir}/reviews/document_{reviewer-slug}_{ts}
      .review.json` for a document-level (null incident_index) review. Never
-     overwrites: the archive is append-only, and a later dual-review resolution
-     (embedding `second_review`) is submitted as a new file with a later
-     `reviewed_at`, exactly as jobs/06-publish/rebuild.py already assumes when
-     picking the latest-`reviewed_at` match per incident.
+     overwrites: the archive is append-only.
 
 `doc_dir` is supplied by the caller, not read out of review.json -- review.schema.json
-(fixed in Phase 0, `additionalProperties: false`) has no such field, and the review
-app already knows it from the catalog's queue view (`documents.storage_key`, Section
-12). This is a design decision made this session, not something the plan states
-explicitly: the future Worker's request shape (e.g. a route parameter) is expected to
-carry `doc_dir` alongside the review.json body.
+has no such field; the review app already knows it from the queue (`GET /api/queue`'s
+`docDir`).
 
-Reviewer identity: Section 11 says `reviewer` comes from the Access JWT, but Access
-isn't wired up this phase (confirmed with the user). `ingest_review()` trusts whatever
-`reviewer` string it's handed -- verifying it against a real signed identity is the
-future Worker's job once Access exists, not this module's.
+Reviewer identity: `ingest_review()` trusts whatever `reviewer` string it's handed --
+the Worker overwrites it with the resolved Access/DEV_MODE identity before calling this,
+per jobs/05-review/app/worker/src/index.ts.
 
 reviewer-slug / ts (Section 6's filename): lowercase `reviewer`, non-alphanumeric runs
 collapsed to a single `-`, leading/trailing `-` stripped; `ts` is `reviewed_at`
 reformatted to a compact filename-safe UTC form (colons/punctuation stripped), e.g.
-"jane@x.edu" + "2026-07-12T15:30:00Z" -> "jane-x-edu" + "20260712T153000Z". Confirmed
-with the user (they deferred to this as a sensible default) this session.
+"jane@x.edu" + "2026-07-12T15:30:00Z" -> "jane-x-edu" + "20260712T153000Z".
 
 Run standalone: python jobs/05-review/ingest.py --doc-dir <archive path> --review <path
 to a review.json file>
@@ -84,26 +76,41 @@ from jsonschema.exceptions import ValidationError as SchemaValidationError  # no
 
 from lib import r2  # noqa: E402
 from lib.hashing import sha256_bytes  # noqa: E402
-from lib.quotes import anchor_quote  # noqa: E402
 
 JOB_DIR = Path(__file__).resolve().parent
 REVIEW_SCHEMA = json.loads((ROOT / "schemas" / "review.schema.json").read_text())
 
-# review.json's `corrections` dot-paths that target a verbatim quote's text/page.
-# Mirrors jobs/06-publish/rebuild.py's CORRECTION_FIELDS vocabulary for the same four
-# quote-bearing fields -- sanction_quotes (a list) and any document-level field are
-# not correctable through review.json (a review is scoped to one incident), so
-# neither needs re-anchoring here either.
-QUOTE_FIELDS = {
-    "organization_quote": ("organization_quote.text", "organization_quote.page"),
-    "description_quote": ("description_quote.text", "description_quote.page"),
-    "findings_quote": ("findings_quote.text", "findings_quote.page"),
-    "dates.incident_quote": ("dates.incident_quote.text", "dates.incident_quote.page"),
+# review.json's `corrections[].field_name` values a reviewer may actually correct.
+# Mirrors jobs/06-publish/rebuild.py's own CORRECTION_FIELDS whitelist -- organization
+# fields other than type go through here too (organization_type itself is corrected via
+# `organization_review.corrected_organization_type` instead, since it has its own
+# independent approve/reject decision).
+CORRECTABLE_FIELDS = {
+    "organization_name_raw",
+    "organization_name_normalized",
+    "description_raw",
+    "findings_raw",
+    "sanctions_raw",
+    "alcohol_involved",
+    "drugs_involved",
+    "determination_status",
+    "dates.incident_start_raw",
+    "dates.incident_start_normalized",
+    "dates.incident_start_precision",
+    "dates.incident_end_raw",
+    "dates.incident_end_normalized",
+    "dates.incident_end_precision",
+    "dates.investigation_start_date_raw",
+    "dates.investigation_start_date",
+    "dates.investigation_end_date_raw",
+    "dates.investigation_end_date",
+    "dates.notice_date_raw",
+    "dates.notice_date",
 }
 
 
 class IngestError(ValueError):
-    """review_json failed validation, hash-pinning, range-checking, or anchoring --
+    """review_json failed validation, hash-pinning, or range-checking --
     ingest_review() never writes anything when this is raised."""
 
 
@@ -115,28 +122,6 @@ def _slugify(reviewer: str) -> str:
 def _filename_ts(reviewed_at: str) -> str:
     dt = datetime.fromisoformat(reviewed_at.replace("Z", "+00:00")).astimezone(timezone.utc)
     return dt.strftime("%Y%m%dT%H%M%SZ")
-
-
-def _get_path(obj: dict, dotted: str):
-    node = obj
-    for key in dotted.split("."):
-        if node is None:
-            return None
-        node = node.get(key)
-    return node
-
-
-def _resolved_decision(review: dict) -> tuple[str, dict]:
-    """(decision, corrections) after second_review's last-write-wins override --
-    same rule jobs/06-publish/rebuild.py applies at read time; ingest.py applies it
-    at write time so what gets anchored matches what rebuild.py will later trust."""
-    corrections = dict(review.get("corrections") or {})
-    decision = review["decision"]
-    second = review.get("second_review")
-    if second is not None:
-        decision = second["decision"]
-        corrections.update(second.get("corrections") or {})
-    return decision, corrections
 
 
 def _find_incidents_json(doc_dir: str, file_hash: str) -> dict:
@@ -153,32 +138,17 @@ def _find_incidents_json(doc_dir: str, file_hash: str) -> dict:
     )
 
 
-def _reanchor_corrections(incident: dict, corrections: dict, document_text: str) -> None:
-    for field_path, (text_key, page_key) in QUOTE_FIELDS.items():
-        if text_key not in corrections and page_key not in corrections:
-            continue
-        original = _get_path(incident, field_path) or {}
-        text = corrections.get(text_key, original.get("text"))
-        page = corrections.get(page_key, original.get("page"))
-        if page is not None and not isinstance(page, int):
-            try:
-                page = int(page)
-            except (TypeError, ValueError):
-                raise IngestError(f"correction {page_key!r} must be an integer page number, got {page!r}")
-        if not text:
-            raise IngestError(f"correction touching {field_path!r} targets a null/empty quote")
-
-        result = anchor_quote(text, page, document_text)
-        if not result["anchored"]:
-            raise IngestError(
-                f"corrected {field_path} (\"{text[:80]}\") no longer anchors in the document's extracted text"
-            )
+def _validate_corrections(corrections: list[dict]) -> None:
+    for correction in corrections:
+        field_name = correction["field_name"]
+        if field_name not in CORRECTABLE_FIELDS:
+            raise IngestError(f"correction targets unknown/uncorrectable field_name {field_name!r}")
 
 
 def ingest_review(doc_dir: str, review_json: dict) -> str:
     """Validates and archives `review_json` for the document at `doc_dir`. Returns
     the R2 key it was written to. Raises IngestError (nothing written) on any
-    validation/pinning/anchoring failure."""
+    validation/pinning/range-checking failure."""
     try:
         Draft202012Validator(REVIEW_SCHEMA).validate(review_json)
     except SchemaValidationError as e:
@@ -191,8 +161,7 @@ def ingest_review(doc_dir: str, review_json: dict) -> str:
     incidents = incidents_json.get("incidents") or []
 
     if incident_index is None:
-        # Document-level review -- only valid for a genuine zero-incident extraction
-        # (the "fast" tier has no incidents[] entry to index against).
+        # Document-level review -- only valid for a genuine zero-incident extraction.
         if incidents:
             raise IngestError(
                 f"extraction_ref.incident_index is null, but {doc_dir} extraction has "
@@ -204,16 +173,17 @@ def ingest_review(doc_dir: str, review_json: dict) -> str:
             f"{doc_dir} extraction has {len(incidents)} incident(s)"
         )
 
-    decision, corrections = _resolved_decision(review_json)
-    if decision == "corrected":
+    if review_json["decision"] == "corrected":
         if incident_index is None:
             raise IngestError(
                 "a document-level (zero-incident) review cannot be \"corrected\" -- "
                 "there is no per-field correction vocabulary for the document object; "
                 "reject it instead to send the document back for re-extraction"
             )
-        document_text = r2.get_bytes(f"{doc_dir}/extracted/text.txt").decode("utf-8", errors="replace")
-        _reanchor_corrections(incidents[incident_index], corrections, document_text)
+        _validate_corrections(review_json["corrections"])
+
+    if review_json.get("organization_review") is not None and incident_index is None:
+        raise IngestError("a document-level (zero-incident) review has no organization to review")
 
     index_token = "document" if incident_index is None else str(incident_index)
     key = (

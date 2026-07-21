@@ -1,13 +1,14 @@
 /**
- * app.js -- jobs/05-review/app/pages: the review app's static UI (Phase 7b, Section 11).
+ * app.js -- jobs/05-review/app/pages: the review app's static UI (Section 11).
  *
- * One incident (or, for a zero-incident "fast"-tier report, the whole document) per
- * screen. The original document (PDF.js canvas for PDFs, a sanitized-HTML iframe for
- * HTML) is the ground-truth surface, with anchored quotes pre-highlighted from
- * validation.json's offsets; the extracted-text panel is navigation only, never the
- * evidence a reviewer compares against. Keyboard-driven: Approve/Fix/Reject/Escalate.
- * Talks only to the Worker API (config.js's workerBaseUrl) -- never writes catalog
- * rows, never touches R2 directly.
+ * One incident (or, for a zero-incident report, the whole document) per screen. The
+ * original document (PDF.js canvas for PDFs, a sanitized-HTML iframe for HTML) is the
+ * ground-truth surface; raw fields are best-effort highlighted by direct text search
+ * (there is no page-anchored quote/offset in v3.0 -- every raw field is captured
+ * verbatim by the AI but carries no position hint, so this is cosmetic only, never the
+ * evidence a reviewer relies on). The extracted-text panel is navigation only.
+ * Keyboard-driven: Approve/Fix/Reject. Talks only to the Worker API (config.js's
+ * workerBaseUrl) -- never writes catalog rows, never touches R2 directly.
  */
 (function () {
   "use strict";
@@ -18,8 +19,45 @@
   window.pdfjsLib.GlobalWorkerOptions.workerSrc =
     "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
+  const TEXT_FIELDS = [
+    ["organization_name_raw", "Organization name (raw)"],
+    ["organization_name_normalized", "Organization name (normalized)"],
+    ["description_raw", "Description"],
+    ["findings_raw", "Findings"],
+    ["sanctions_raw", "Sanctions"],
+  ];
+  const ENUM_FIELDS = [
+    ["alcohol_involved", "Alcohol involved", ["Yes", "No", "Not specified"]],
+    ["drugs_involved", "Drugs involved", ["Yes", "No", "Not specified"]],
+    ["determination_status", "Determination status", ["Pending", "Determined hazing", "Dismissed", "Not specified"]],
+  ];
+  const DATE_PRECISIONS = ["Year", "Day", "Academic year", "Academic term", "Month", "Unknown"];
+  const DATE_TRIPLES = [
+    ["Incident start", "dates.incident_start_raw", "dates.incident_start_normalized", "dates.incident_start_precision"],
+    ["Incident end", "dates.incident_end_raw", "dates.incident_end_normalized", "dates.incident_end_precision"],
+  ];
+  const DATE_PAIRS = [
+    ["Investigation start", "dates.investigation_start_date_raw", "dates.investigation_start_date"],
+    ["Investigation end", "dates.investigation_end_date_raw", "dates.investigation_end_date"],
+    ["Notice date", "dates.notice_date_raw", "dates.notice_date"],
+  ];
+  const ORGANIZATION_TYPES = [
+    "Fraternity",
+    "Sorority",
+    "Institution Athletic Team",
+    "Club Sport",
+    "Honor/Leadership Society",
+    "Academic/Professional Club",
+    "Performing/Spirit Group",
+    "Military/Cadet Organization",
+    "General Interest/Social Club",
+    "Religious/Faith-Based Organization",
+    "Orientation/Mentorship Program",
+    "Unrecognized Organization",
+  ];
+
   let queue = [];
-  let current = null; // { item, docDir, incidentIndex, manifest, incidentsJson, validation, fileHash, extractedText, existingReview }
+  let current = null; // { item, manifest, incidentsJson, validation, fileHash, extractedText, existingReview }
   let pdfDoc = null;
   let pdfPageNum = 1;
 
@@ -40,9 +78,6 @@
   function escapeAttr(s) {
     return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
   }
-  function boolText(b) {
-    return b === true ? "yes" : b === false ? "no" : "unknown";
-  }
   function getPathValue(obj, path) {
     return path.split(".").reduce((n, k) => (n == null ? null : n[k]), obj);
   }
@@ -51,14 +86,21 @@
     node.textContent = msg;
     node.className = kind || "";
   }
+  function confidenceClass(c) {
+    if (c === null) return "";
+    if (c >= 0.75) return "confidence-high";
+    if (c >= 0.4) return "confidence-mid";
+    return "confidence-low";
+  }
 
-  /** Whitespace-tolerant regex built from a verbatim quote -- used for the review
-   * UI's best-effort visual highlighting only. The archive's real, authoritative
-   * anchoring (whether this quote is trustworthy at all) is validate.py/lib/quotes.py
-   * (and its TS port) -- this function never decides tier or acceptance, it only
-   * decides where to draw a highlight box. */
-  function buildQuoteRegex(quoteText) {
-    const words = quoteText.trim().split(/\s+/).filter(Boolean);
+  /** Whitespace-tolerant regex built from a raw text field -- used for the review UI's
+   * best-effort visual highlighting only. There is no authoritative anchoring in v3.0
+   * (that machinery was retired along with the old tier system): this function only
+   * ever decides where to draw a cosmetic highlight box, never whether a field is
+   * trustworthy. */
+  function buildTextRegex(text) {
+    if (!text) return null;
+    const words = text.trim().split(/\s+/).filter(Boolean);
     if (!words.length) return null;
     const escaped = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
     return new RegExp(escaped.join("\\s+"));
@@ -71,7 +113,7 @@
     el("empty-state").hidden = true;
     el("review-screen").hidden = true;
     queue = await fetchJson("/api/queue");
-    renderQueueSummary();
+    el("queue-summary").textContent = `${queue.length} waiting for review`;
     if (queue.length === 0) {
       el("loading-state").hidden = true;
       el("empty-state").hidden = false;
@@ -79,15 +121,6 @@
       return;
     }
     await loadCurrentItem();
-  }
-
-  function renderQueueSummary() {
-    const counts = queue.reduce((acc, item) => {
-      acc[item.tier] = (acc[item.tier] || 0) + 1;
-      return acc;
-    }, {});
-    el("queue-summary").textContent =
-      `${queue.length} waiting — fast ${counts.fast || 0} · standard ${counts.standard || 0} · flagged ${counts.flagged || 0}`;
   }
 
   async function loadCurrentItem() {
@@ -107,12 +140,18 @@
   async function renderReviewScreen() {
     const { item } = current;
     el("institution-name").textContent = `${item.institutionSlug} (${item.unitid}, ${item.scrapeYear})`;
-    const tierBadge = el("tier-badge");
-    tierBadge.textContent = item.tier;
-    tierBadge.className = `badge badge-${item.tier}`;
-    el("escalated-badge").hidden = item.status !== "escalated_pending";
+    const confBadge = el("confidence-badge");
+    if (item.extractionConfidence === null) {
+      confBadge.hidden = true;
+    } else {
+      confBadge.hidden = false;
+      confBadge.textContent = `confidence ${Math.round(item.extractionConfidence * 100)}%`;
+      confBadge.className = `badge ${confidenceClass(item.extractionConfidence)}`;
+    }
     el("position-indicator").textContent = `${queue.length} remaining`;
     el("btn-fix").disabled = item.incidentIndex === null;
+    el("org-review-panel").hidden = item.incidentIndex === null;
+    resetOrgReviewPanel();
 
     renderFields();
     renderNavText(current.extractedText);
@@ -125,88 +164,72 @@
     if (current.item.incidentIndex === null) return null;
     return current.incidentsJson.incidents[current.item.incidentIndex];
   }
-  function currentValidationEntry() {
-    if (current.item.incidentIndex === null) return current.validation.document;
-    return current.validation.incidents.find((i) => i.index === current.item.incidentIndex);
-  }
 
-  function quoteFieldHtml(label, quote, anchor) {
-    if (!quote || !quote.text) {
-      return `<div class="field"><h3>${label}</h3><p class="quote-meta">not provided</p></div>`;
-    }
-    const anchorClass = anchor && anchor.anchored ? "anchor-ok" : "anchor-bad";
-    const anchorLabel = anchor ? (anchor.anchored ? `anchored (${Math.round(anchor.similarity * 100)}%)` : "NOT ANCHORED") : "";
-    return `<div class="field">
-      <h3>${label}</h3>
-      <p class="quote-text">&ldquo;${escapeHtml(quote.text)}&rdquo;</p>
-      <p class="quote-meta">page ${quote.page ?? "—"} · <span class="${anchorClass}">${anchorLabel}</span></p>
-    </div>`;
+  function fieldHtml(label, value) {
+    return `<div class="field"><h3>${label}</h3><p>${value === null || value === "" ? "<span class=\"muted\">not provided</span>" : escapeHtml(value)}</p></div>`;
   }
 
   function renderFields() {
     const wrap = el("incident-fields");
     if (current.item.incidentIndex === null) {
       const doc = current.incidentsJson.document;
-      const anchor = current.validation.document.zero_incidents_quote;
       wrap.innerHTML =
         `<h2>Zero-incident report</h2>` +
-        `<p class="quote-meta">No incidents were extracted from this document. Approving confirms the zero-incidents statement is genuine and anchored.</p>` +
-        quoteFieldHtml("Zero incidents statement", doc.zero_incidents_quote, anchor);
+        `<p class="quote-meta">No incidents were extracted from this document. Approving confirms the zero-incidents statement is genuine.</p>` +
+        fieldHtml("Zero incidents statement", doc.zero_incidents_statement);
       return;
     }
     const inc = currentIncident();
-    const v = currentValidationEntry();
-    const sanctionsHtml = (inc.sanction_quotes || [])
-      .map((s, i) => quoteFieldHtml(`Sanction ${i + 1}`, s, (v.quotes.sanction_quotes || [])[i]))
-      .join("");
-    wrap.innerHTML = [
-      quoteFieldHtml("Organization", inc.organization_quote, v.quotes.organization_quote),
-      quoteFieldHtml("Description", inc.description_quote, v.quotes.description_quote),
-      quoteFieldHtml("Findings", inc.findings_quote, v.quotes.findings_quote),
-      sanctionsHtml,
-      quoteFieldHtml("Incident date", inc.dates.incident_quote, v.quotes.incident_quote),
-      `<div class="field"><h3>Alcohol / drugs</h3><p>alcohol: ${boolText(inc.alcohol_involved)} &middot; drugs: ${boolText(inc.drugs_involved)}</p></div>`,
-      `<div class="field"><h3>Dates</h3><p>start ${inc.dates.incident_start ?? "—"} &middot; end ${inc.dates.incident_end ?? "—"} &middot; investigation ${inc.dates.investigation_initiated ?? "—"} &middot; resolved ${inc.dates.resolved ?? "—"}</p></div>`,
-      v.flagged_reasons && v.flagged_reasons.length
-        ? `<div class="field"><h3>Flagged reasons</h3><p>${v.flagged_reasons.map(escapeHtml).join(", ")}</p></div>`
-        : "",
-    ].join("");
+    const rows = [];
+    rows.push(fieldHtml("Organization type", inc.organization_type));
+    for (const [path, label] of TEXT_FIELDS) rows.push(fieldHtml(label, getPathValue(inc, path)));
+    for (const [path, label] of ENUM_FIELDS) rows.push(fieldHtml(label, getPathValue(inc, path)));
+    for (const [label, rawPath, normPath, precPath] of DATE_TRIPLES) {
+      rows.push(
+        `<div class="field"><h3>${label}</h3><p>${escapeHtml(getPathValue(inc, rawPath) || "—")} ` +
+          `&middot; normalized ${escapeHtml(getPathValue(inc, normPath) ?? "—")} ` +
+          `&middot; precision ${escapeHtml(getPathValue(inc, precPath))}</p></div>`
+      );
+    }
+    for (const [label, rawPath, normPath] of DATE_PAIRS) {
+      rows.push(
+        `<div class="field"><h3>${label}</h3><p>${escapeHtml(getPathValue(inc, rawPath) || "—")} ` +
+          `&middot; normalized ${escapeHtml(getPathValue(inc, normPath) ?? "—")}</p></div>`
+      );
+    }
+    if (inc.flags && inc.flags.length) {
+      rows.push(
+        `<div class="field field-flags"><h3>Flags</h3><ul>${inc.flags
+          .map((f) => `<li><strong>${escapeHtml(f.flag_type)}</strong> (${escapeHtml(f.field_name)})${f.note ? `: ${escapeHtml(f.note)}` : ""}</li>`)
+          .join("")}</ul></div>`
+      );
+    }
+    wrap.innerHTML = rows.join("");
   }
 
   function renderNavText(text) {
     el("nav-text").textContent = text && text.length ? text : "(no extracted text -- this document has no text layer)";
   }
 
-  // ---------- original document: PDF ----------
+  // ---------- raw-text fields eligible for highlighting ----------
 
-  function collectQuotesForPage(pageNum) {
-    const quotes = [];
+  function collectRawTextsForHighlight() {
     if (current.item.incidentIndex === null) {
-      const q = current.incidentsJson.document.zero_incidents_quote;
-      if (q && q.text && (q.page == null || q.page === pageNum)) quotes.push(q);
-      return quotes;
+      const stmt = current.incidentsJson.document.zero_incidents_statement;
+      return stmt ? [stmt] : [];
     }
     const inc = currentIncident();
-    const candidates = [inc.organization_quote, inc.description_quote, inc.findings_quote, inc.dates.incident_quote].concat(
-      inc.sanction_quotes || []
-    );
-    for (const q of candidates) {
-      if (q && q.text && (q.page == null || q.page === pageNum)) quotes.push(q);
-    }
-    return quotes;
+    return [inc.description_raw, inc.findings_raw, inc.sanctions_raw].filter(Boolean);
   }
+
+  // ---------- original document: PDF ----------
 
   async function renderPdf(url) {
     el("pdf-container").hidden = false;
     el("html-container").hidden = true;
     pdfDoc = await window.pdfjsLib.getDocument(url).promise;
     el("pdf-no-text-note").hidden = current.extractedText.trim().length > 0;
-
-    const firstQuotePage =
-      current.item.incidentIndex === null
-        ? current.incidentsJson.document.zero_incidents_quote?.page
-        : currentIncident()?.description_quote?.page;
-    pdfPageNum = Math.min(Math.max(firstQuotePage || 1, 1), pdfDoc.numPages);
+    pdfPageNum = 1;
     await renderPdfPage();
   }
 
@@ -254,8 +277,8 @@
       map.push([ii, str.length]);
     }
 
-    for (const quote of collectQuotesForPage(pdfPageNum)) {
-      const re = buildQuoteRegex(quote.text);
+    for (const text of collectRawTextsForHighlight()) {
+      const re = buildTextRegex(text);
       if (!re) continue;
       const m = re.exec(concat);
       if (!m) continue;
@@ -319,13 +342,13 @@
     const frame = el("html-frame");
     const doc = frame.contentDocument;
     if (!doc || !doc.body) return;
-    for (const quote of collectQuotesForPage(null)) {
-      highlightTextInDocument(doc, quote.text);
+    for (const text of collectRawTextsForHighlight()) {
+      highlightTextInDocument(doc, text);
     }
   }
 
-  function highlightTextInDocument(doc, quoteText) {
-    const re = buildQuoteRegex(quoteText);
+  function highlightTextInDocument(doc, text) {
+    const re = buildTextRegex(text);
     if (!re) return;
     const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
     const nodes = [];
@@ -333,9 +356,9 @@
     const map = [];
     let node;
     while ((node = walker.nextNode())) {
-      const text = node.nodeValue || "";
-      for (let i = 0; i < text.length; i++) {
-        concat += text[i];
+      const nodeText = node.nodeValue || "";
+      for (let i = 0; i < nodeText.length; i++) {
+        concat += nodeText[i];
         map.push([nodes.length, i]);
       }
       nodes.push(node);
@@ -385,11 +408,52 @@
     }
   }
 
+  // ---------- organization review panel ----------
+
+  function initOrgReviewTypeOptions() {
+    const select = el("org-review-type");
+    select.innerHTML =
+      `<option value="">(no change)</option>` +
+      ORGANIZATION_TYPES.map((t) => `<option value="${escapeAttr(t)}">${escapeHtml(t)}</option>`).join("");
+  }
+
+  function resetOrgReviewPanel() {
+    el("org-review-decision").value = "approved";
+    el("org-review-type").value = "";
+    el("org-review-type").disabled = true;
+  }
+
+  function currentOrganizationReview() {
+    if (current.item.incidentIndex === null) return null;
+    const decision = el("org-review-decision").value;
+    return {
+      decision,
+      corrected_organization_type: decision === "corrected" ? el("org-review-type").value || null : null,
+    };
+  }
+
+  el("org-review-decision").onchange = () => {
+    el("org-review-type").disabled = el("org-review-decision").value !== "corrected";
+  };
+
   // ---------- correction / reject forms ----------
 
   function hideCorrectionForm() {
     el("correction-form").hidden = true;
     el("correction-form").innerHTML = "";
+  }
+
+  function textInputRow(path, label, value) {
+    return `<div><label>${label}</label><input data-path="${path}" value="${escapeAttr(value ?? "")}"></div>`;
+  }
+  function textAreaRow(path, label, value) {
+    return `<div><label>${label}</label><textarea data-path="${path}" rows="2">${escapeHtml(value ?? "")}</textarea></div>`;
+  }
+  function selectRow(path, label, options, value) {
+    const opts = options
+      .map((o) => `<option value="${escapeAttr(o)}" ${o === value ? "selected" : ""}>${escapeHtml(o)}</option>`)
+      .join("");
+    return `<div><label>${label}</label><select data-path="${path}"><option value="">(unchanged)</option>${opts}</select></div>`;
   }
 
   function showCorrectionForm() {
@@ -400,57 +464,53 @@
     }
     const form = el("correction-form");
     form.hidden = false;
-    form.innerHTML = `
-      <h3>Correct fields (only changed fields are recorded)</h3>
-      <div class="correction-row">
-        <div><label>Organization text</label><input data-path="organization_quote.text" value="${escapeAttr(inc.organization_quote?.text ?? "")}"></div>
-        <div><label>page</label><input data-path="organization_quote.page" value="${inc.organization_quote?.page ?? ""}"></div>
-      </div>
-      <div class="correction-row">
-        <div><label>Description text</label><input data-path="description_quote.text" value="${escapeAttr(inc.description_quote?.text ?? "")}"></div>
-        <div><label>page</label><input data-path="description_quote.page" value="${inc.description_quote?.page ?? ""}"></div>
-      </div>
-      <div class="correction-row">
-        <div><label>Findings text</label><input data-path="findings_quote.text" value="${escapeAttr(inc.findings_quote?.text ?? "")}"></div>
-        <div><label>page</label><input data-path="findings_quote.page" value="${inc.findings_quote?.page ?? ""}"></div>
-      </div>
-      <div><label>Incident-date quote text</label><input data-path="dates.incident_quote.text" value="${escapeAttr(inc.dates.incident_quote?.text ?? "")}"></div>
-      <div class="correction-row">
-        <div><label>Alcohol involved</label>
-          <select data-path="alcohol_involved">
-            <option value="">(unchanged)</option>
-            <option value="true" ${inc.alcohol_involved === true ? "selected" : ""}>yes</option>
-            <option value="false" ${inc.alcohol_involved === false ? "selected" : ""}>no</option>
-          </select>
-        </div>
-        <div><label>Drugs involved</label>
-          <select data-path="drugs_involved">
-            <option value="">(unchanged)</option>
-            <option value="true" ${inc.drugs_involved === true ? "selected" : ""}>yes</option>
-            <option value="false" ${inc.drugs_involved === false ? "selected" : ""}>no</option>
-          </select>
-        </div>
-      </div>
-      <div class="correction-row">
-        <div><label>Incident start (YYYY-MM-DD)</label><input data-path="dates.incident_start" value="${inc.dates.incident_start ?? ""}"></div>
-        <div><label>Incident end</label><input data-path="dates.incident_end" value="${inc.dates.incident_end ?? ""}"></div>
-      </div>
-      <div class="correction-row">
-        <div><label>Investigation initiated</label><input data-path="dates.investigation_initiated" value="${inc.dates.investigation_initiated ?? ""}"></div>
-        <div><label>Resolved</label><input data-path="dates.resolved" value="${inc.dates.resolved ?? ""}"></div>
+    const rows = [];
+    rows.push(textInputRow("organization_name_raw", "Organization name (raw)", inc.organization_name_raw));
+    rows.push(textInputRow("organization_name_normalized", "Organization name (normalized)", inc.organization_name_normalized));
+    rows.push(textAreaRow("description_raw", "Description", inc.description_raw));
+    rows.push(textAreaRow("findings_raw", "Findings", inc.findings_raw));
+    rows.push(textAreaRow("sanctions_raw", "Sanctions", inc.sanctions_raw));
+    for (const [path, label, options] of ENUM_FIELDS) {
+      rows.push(selectRow(path, label, options, getPathValue(inc, path)));
+    }
+    for (const [label, rawPath, normPath, precPath] of DATE_TRIPLES) {
+      rows.push(
+        `<div class="correction-row">` +
+          textInputRow(rawPath, `${label} (raw)`, getPathValue(inc, rawPath)) +
+          textInputRow(normPath, `${label} (normalized, YYYY-MM-DD)`, getPathValue(inc, normPath)) +
+          `</div>` +
+          selectRow(precPath, `${label} precision`, DATE_PRECISIONS, getPathValue(inc, precPath))
+      );
+    }
+    for (const [label, rawPath, normPath] of DATE_PAIRS) {
+      rows.push(
+        `<div class="correction-row">` +
+          textInputRow(rawPath, `${label} (raw)`, getPathValue(inc, rawPath)) +
+          textInputRow(normPath, `${label} (normalized, YYYY-MM-DD)`, getPathValue(inc, normPath)) +
+          `</div>`
+      );
+    }
+    form.innerHTML =
+      `<h3>Correct fields (only changed fields are recorded)</h3>` +
+      rows.join("") +
+      `<div><label>Correction type (applies to every changed field above)</label>
+        <select id="correction-type-select">
+          <option value="Extraction error">Extraction error</option>
+          <option value="Minor cleanup">Minor cleanup</option>
+        </select>
       </div>
       <div id="correction-actions">
         <button id="correction-submit" class="btn btn-fix">Submit correction</button>
         <button id="correction-cancel" class="btn">Cancel (Esc)</button>
-      </div>
-    `;
+      </div>`;
     el("correction-submit").onclick = submitCorrectionForm;
     el("correction-cancel").onclick = hideCorrectionForm;
   }
 
   function submitCorrectionForm() {
     const inc = currentIncident();
-    const corrections = {};
+    const correctionType = el("correction-type-select").value;
+    const corrections = [];
     el("correction-form")
       .querySelectorAll("[data-path]")
       .forEach((input) => {
@@ -458,9 +518,16 @@
         const value = input.value;
         const original = getPathValue(inc, path);
         const originalStr = original === null || original === undefined ? "" : String(original);
-        if (value !== "" && value !== originalStr) corrections[path] = value;
+        if (value !== "" && value !== originalStr) {
+          corrections.push({
+            field_name: path,
+            original_value: original === null || original === undefined ? null : String(original),
+            corrected_value: value,
+            correction_type: [correctionType],
+          });
+        }
       });
-    if (Object.keys(corrections).length === 0) {
+    if (corrections.length === 0) {
       setSubmitStatus("No fields changed -- nothing to correct.", "error");
       return;
     }
@@ -491,30 +558,19 @@
 
   function buildReviewPayload(decision, extra) {
     extra = extra || {};
-    const now = new Date().toISOString();
     const item = current.item;
     // "reviewer" here is a placeholder -- the Worker overwrites it with the resolved
-    // Cloudflare Access identity (or the DEV_MODE stub) before calling ingestReview,
+    // Cloudflare Access identity (or the DEV_MODE stub) before calling ingestReview(),
     // so a review can never be filed under a spoofed name (see worker/src/index.ts).
-    const decisionBlock = {
+    return {
+      schema_version: 2,
+      extraction_ref: { file_hash: current.fileHash, incident_index: item.incidentIndex },
       decision,
       rejection_reason: extra.rejection_reason ?? null,
-      corrections: extra.corrections ?? null,
+      corrections: extra.corrections ?? [],
+      organization_review: currentOrganizationReview(),
       reviewer: "reviewer",
-      reviewed_at: now,
-    };
-
-    if (current.existingReview) {
-      // This item already has a first review (an unresolved escalation) -- the new
-      // decision becomes its second_review, per Section 10.
-      return { ...current.existingReview, second_review: decisionBlock };
-    }
-    return {
-      schema_version: 1,
-      extraction_ref: { file_hash: current.fileHash, incident_index: item.incidentIndex },
-      tier: item.tier,
-      second_review: null,
-      ...decisionBlock,
+      reviewed_at: new Date().toISOString(),
     };
   }
 
@@ -542,7 +598,7 @@
    * re-render loadQueue() triggers on success doesn't get clobbered by this function
    * unconditionally re-enabling it for whatever item comes next. */
   function setDecisionButtonsDisabled(disabled) {
-    ["btn-approve", "btn-reject", "btn-escalate"].forEach((id) => {
+    ["btn-approve", "btn-reject"].forEach((id) => {
       el(id).disabled = disabled;
     });
   }
@@ -584,9 +640,6 @@
       case "x":
         showRejectForm();
         break;
-      case "e":
-        submitDecision("escalated");
-        break;
       case "arrowleft":
         changePdfPage(-1);
         break;
@@ -605,10 +658,10 @@
   el("btn-approve").onclick = () => submitDecision("approved");
   el("btn-fix").onclick = showCorrectionForm;
   el("btn-reject").onclick = showRejectForm;
-  el("btn-escalate").onclick = () => submitDecision("escalated");
   el("pdf-prev-page").onclick = () => changePdfPage(-1);
   el("pdf-next-page").onclick = () => changePdfPage(1);
 
+  initOrgReviewTypeOptions();
   loadQueue().catch((e) => {
     el("loading-state").textContent = `Failed to load queue: ${e.message}`;
   });

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "unitid": "100001",
+  "scrape_year": 2026,
+  "pipeline_run_id": "run_20260601T120000Z_abcd1234",
+  "chtr_index_url": "https://example.edu/chtr/",
+  "checked_by": "01-discover-agent",
+  "data_check_date": "2026-06-01",
+  "pipeline_status": "Complete",
+  "airtable_cross_check": {"matched": true, "airtable_url": "https://example.edu/chtr/"}
+}

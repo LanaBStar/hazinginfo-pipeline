@@ -38,6 +38,17 @@ write) / invariant 6 (human decisions are artifacts).
    back to blank, so the school is re-batched on the next pass. Marks the batch
    `merged.json` so it's never reprocessed, even if a rejected school later gets
    recycled into a new batch.
+5. **Airtable cross-check (v3.0):** `python jobs/01-discover/import_airtable.py` — for
+   every institution with `url_status=confirmed`, looks it up by `unitid` in the
+   existing schools-registry Airtable base (`AIRTABLE_TOKEN`/`AIRTABLE_BASE_ID`/
+   `AIRTABLE_TABLE_NAME`) and compares its `Transparency Report` field against the
+   confirmed `chtr_url`. Writes `tasks/discover/airtable_cross_check.json` (schema:
+   `jobs/01-discover/airtable_cross_check.schema.json`) — never edits `schools.csv`,
+   never overwrites Airtable. A mismatch (or an institution Airtable has no opinion on
+   yet) is just recorded for the operator to look at; `02-archive`'s `write_data_check`
+   reads this same file to populate each `data_check.json`'s `airtable_cross_check`
+   field. Safe to re-run any time — it's a derived comparison recomputed fresh each run,
+   not an append-only artifact (invariant 7).
 
 ## Postconditions
 

@@ -4,11 +4,12 @@
   --fg: #14181f;
   --muted: #5b6472;
   --border: #d8dde3;
-  --accent: #2454ff;
   --approve: #1a7f37;
   --reject: #b42318;
   --fix: #9a5b00;
-  --escalate: #7a2ba0;
+  --confidence-high: #1a7f37;
+  --confidence-mid: #9a5b00;
+  --confidence-low: #b42318;
   --highlight: rgba(255, 214, 0, 0.55);
   --panel-bg: #f6f7f9;
 }
@@ -79,10 +80,9 @@ body {
   letter-spacing: 0.03em;
   border: 1px solid var(--border);
 }
-.badge-fast { color: var(--approve); border-color: var(--approve); }
-.badge-standard { color: var(--accent); border-color: var(--accent); }
-.badge-flagged { color: var(--reject); border-color: var(--reject); }
-.badge-escalated { color: var(--escalate); border-color: var(--escalate); }
+.confidence-high { color: var(--confidence-high); border-color: var(--confidence-high); }
+.confidence-mid { color: var(--confidence-mid); border-color: var(--confidence-mid); }
+.confidence-low { color: var(--confidence-low); border-color: var(--confidence-low); }
 
 #review-body {
   display: grid;
@@ -132,10 +132,9 @@ body {
   padding: 0.6rem 0.75rem;
 }
 .field h3 { margin: 0 0 0.35rem; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); }
-.field .quote-text { font-style: italic; }
 .field .quote-meta { font-size: 0.78rem; color: var(--muted); margin-top: 0.3rem; }
-.anchor-ok { color: var(--approve); }
-.anchor-bad { color: var(--reject); }
+.field .muted { color: var(--muted); }
+.field-flags ul { margin: 0; padding-left: 1.1rem; }
 mark.quote-highlight { background: var(--highlight); border-radius: 2px; }
 
 #nav-text-details summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
@@ -150,7 +149,7 @@ mark.quote-highlight { background: var(--highlight); border-radius: 2px; }
   font-size: 0.82rem;
 }
 
-#correction-form {
+#correction-form, #org-review-panel {
   border: 1px dashed var(--fix);
   border-radius: 6px;
   padding: 0.75rem;
@@ -158,8 +157,11 @@ mark.quote-highlight { background: var(--highlight); border-radius: 2px; }
   flex-direction: column;
   gap: 0.5rem;
 }
-#correction-form label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.15rem; }
-#correction-form input, #correction-form select, #correction-form textarea {
+#org-review-panel { border-style: solid; border-color: var(--border); }
+#org-review-panel h3 { margin: 0; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); }
+#correction-form label, #org-review-panel label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.15rem; }
+#correction-form input, #correction-form select, #correction-form textarea,
+#org-review-panel select {
   width: 100%;
   padding: 0.35rem 0.5rem;
   border: 1px solid var(--border);
@@ -168,7 +170,7 @@ mark.quote-highlight { background: var(--highlight); border-radius: 2px; }
   color: var(--fg);
   font: inherit;
 }
-.correction-row { display: grid; grid-template-columns: 1fr 5rem; gap: 0.5rem; }
+.correction-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
 
 #decision-bar { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .btn {
@@ -193,7 +195,6 @@ mark.quote-highlight { background: var(--highlight); border-radius: 2px; }
 .btn-approve { border-color: var(--approve); color: var(--approve); }
 .btn-fix { border-color: var(--fix); color: var(--fix); }
 .btn-reject { border-color: var(--reject); color: var(--reject); }
-.btn-escalate { border-color: var(--escalate); color: var(--escalate); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 #submit-status { min-height: 1.2rem; font-size: 0.85rem; }

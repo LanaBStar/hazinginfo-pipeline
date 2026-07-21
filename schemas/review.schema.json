@@ -1,11 +1,29 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hazinginfo.org/schemas/review.schema.json",
-  "title": "review.json",
-  "description": "Human review decision, written synchronously at decision time via the review Worker's ingest.py. Per IMPLEMENTATION_PLAN.md §10.",
+  "title": "review.json (v2 — v3.0 pipeline)",
+  "description": "Human review decision, written synchronously at decision time via the review Worker's ingest.py. Per IMPLEMENTATION_PLAN.md §10. No tier, no escalation, no second_review in v3.0 -- every incident and organization proposal gets exactly one reviewer decision. corrections is a list, one entry per changed field (matching Staging_incident_corrections' one-row-per-field grain), not a dotted-path dict.",
+  "$defs": {
+    "correction_type_enum": {"enum": ["Minor cleanup", "Extraction error"]},
+    "correction_entry": {
+      "type": "object",
+      "properties": {
+        "field_name": {"type": "string"},
+        "original_value": {"type": ["string", "null"]},
+        "corrected_value": {"type": "string"},
+        "correction_type": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/correction_type_enum"},
+          "minItems": 1
+        }
+      },
+      "required": ["field_name", "original_value", "corrected_value", "correction_type"],
+      "additionalProperties": false
+    }
+  },
   "type": "object",
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "extraction_ref": {
       "type": "object",
       "properties": {
@@ -13,57 +31,46 @@
         "incident_index": {
           "type": ["integer", "null"],
           "minimum": 0,
-          "description": "null means this review is of the whole document, not one incidents[] entry -- the only case this applies to is a 'fast'-tier zero-incident report (validate.py's document.tier), which has no incidents[] to index."
+          "description": "null means this review is of the whole document, not one incidents[] entry -- the only case this applies to is a genuine zero-incident report (document.zero_incidents_statement), which has no incidents[] to index."
         }
       },
       "required": ["file_hash", "incident_index"],
       "additionalProperties": false
     },
-    "tier": {"type": "string", "enum": ["fast", "standard", "flagged"]},
     "decision": {
       "type": "string",
-      "enum": ["approved", "rejected", "corrected", "escalated"],
-      "description": "escalated: a single reviewer looked and could not decide -- resolved later by a second_review, the same mechanism flagged-tier dual review already uses. Never itself a terminal decision (rebuild.py only ever publishes approved/corrected)."
+      "enum": ["approved", "rejected", "corrected"]
     },
     "rejection_reason": {
       "type": ["string", "null"],
       "enum": ["not_hazing", "duplicate", "segmentation_error", "extraction_error", null]
     },
     "corrections": {
-      "type": ["object", "null"],
-      "additionalProperties": {"type": "string"}
+      "type": "array",
+      "items": {"$ref": "#/$defs/correction_entry"}
     },
-    "reviewer": {"type": "string"},
-    "reviewed_at": {"type": "string", "format": "date-time"},
-    "second_review": {
+    "organization_review": {
       "type": ["object", "null"],
+      "description": "Independent of decision -- the incident and its proposed organization can each be approved/rejected/corrected without waiting on the other (IMPLEMENTATION_PLAN.md §9). null means this screen's reviewer didn't touch the organization decision.",
       "properties": {
         "decision": {"type": "string", "enum": ["approved", "rejected", "corrected"]},
-        "rejection_reason": {
-          "type": ["string", "null"],
-          "enum": ["not_hazing", "duplicate", "segmentation_error", "extraction_error", null]
-        },
-        "corrections": {
-          "type": ["object", "null"],
-          "additionalProperties": {"type": "string"}
-        },
-        "reviewer": {"type": "string"},
-        "reviewed_at": {"type": "string", "format": "date-time"}
+        "corrected_organization_type": {"type": ["string", "null"]}
       },
-      "required": ["decision", "rejection_reason", "corrections", "reviewer", "reviewed_at"],
+      "required": ["decision", "corrected_organization_type"],
       "additionalProperties": false
-    }
+    },
+    "reviewer": {"type": "string"},
+    "reviewed_at": {"type": "string", "format": "date-time"}
   },
   "required": [
     "schema_version",
     "extraction_ref",
-    "tier",
     "decision",
     "rejection_reason",
     "corrections",
+    "organization_review",
     "reviewer",
-    "reviewed_at",
-    "second_review"
+    "reviewed_at"
   ],
   "additionalProperties": false
 }

@@ -62,9 +62,18 @@ def _validate_all_json(archive_root: Path) -> list[str]:
     failures = []
     manifest_schema = Draft202012Validator(json.loads((SCHEMAS / "manifest.schema.json").read_text()))
     status_schema = Draft202012Validator(json.loads((SCHEMAS / "status.schema.json").read_text()))
+    ledger_schema = Draft202012Validator(json.loads((SCHEMAS / "ledger_entry.schema.json").read_text()))
+    data_check_schema = Draft202012Validator(json.loads((SCHEMAS / "data_check.schema.json").read_text()))
     for path in archive_root.rglob("*.json"):
         doc = json.loads(path.read_text())
-        validator = status_schema if path.name == "status.json" else manifest_schema
+        if path.name == "status.json":
+            validator = status_schema
+        elif path.name == "data_check.json":
+            validator = data_check_schema
+        elif path.parent.name == "ledger":
+            validator = ledger_schema
+        else:
+            validator = manifest_schema
         errors = list(validator.iter_errors(doc))
         if errors:
             for e in errors:
@@ -145,6 +154,28 @@ def main() -> int:
         schema_failures = _validate_all_json(archive_root)
         failures += [f"schema: {f}" for f in schema_failures]
 
+        # ── v3.0: data_check.json + ledger entries (Phase 11) ──────────────
+        def _data_check(inst_dir: str, year: int = 2026) -> dict:
+            return json.loads((archive_root / inst_dir / str(year) / "data_check.json").read_text())
+
+        nr_dc = _data_check("200001_north-ridge-college")
+        if nr_dc["pipeline_status"] != "Complete" or not nr_dc["chtr_index_url"]:
+            failures.append(f"north-ridge data_check.json unexpected: {nr_dc}")
+
+        nra_dc = _data_check("200005_no-report-academy")
+        if nra_dc["pipeline_status"] != "Complete" or nra_dc["chtr_index_url"] is not None:
+            failures.append(f"no-report-academy data_check.json unexpected: {nra_dc}")
+
+        ledger_dir = archive_root / "200001_north-ridge-college" / "ledger"
+        ledger_files = list(ledger_dir.glob("*.json")) if ledger_dir.exists() else []
+        if not ledger_files:
+            failures.append("north-ridge: no ledger entries written")
+        else:
+            entry = json.loads(ledger_files[0].read_text())
+            if entry["first_seen_date"] != entry["last_seen_date"]:
+                failures.append(f"north-ridge ledger entry: first/last seen should match on first sighting: {entry}")
+        nr_ledger_first_seen = entry["first_seen_date"] if ledger_files else None
+
         # ── Run 2: same year, resumability — must skip everything, zero fetches ──
         fetch_calls.clear()
         results2 = run.run(schools_csv=schools_csv, year=2026)
@@ -173,6 +204,15 @@ def main() -> int:
                 "eastview 2027 has a docs/ dir — unchanged documents should be deduped, "
                 "not re-stored under the new year"
             )
+
+        nr_ledger_files_2027 = list((archive_root / "200001_north-ridge-college" / "ledger").glob("*.json"))
+        if len(nr_ledger_files_2027) != 1:
+            failures.append(
+                f"north-ridge: expected exactly one ledger entry (updated in place across years), "
+                f"found {len(nr_ledger_files_2027)}"
+            )
+        elif json.loads(nr_ledger_files_2027[0].read_text())["first_seen_date"] != nr_ledger_first_seen:
+            failures.append("north-ridge ledger entry: first_seen_date should stay fixed across the 2027 re-crawl")
 
         # ── Run 4: --prefix smoke — the fixtures smoke run must land under smoke/,
         # never mixed into archive/ (IMPLEMENTATION_PLAN.md §14) ──

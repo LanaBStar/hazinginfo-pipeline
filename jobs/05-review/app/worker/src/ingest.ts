@@ -5,28 +5,41 @@
  * -- this file must reject/accept every case tests/test_phase7a_review.py exercises
  * identically, which is what test/ingest.test.ts checks.
  *
- * ingestReview(store, docDir, reviewJson) does exactly what ingest_review() does, in
- * order, never partially writing -- see jobs/05-review/ingest.py's docstring for the
- * full rationale of each step (hash-pinning invariant 9, re-anchoring on "corrected",
- * the null-incident_index / "escalated" additions from Phase 7b).
+ * v3.0: no more tier, escalation, second_review, or quote-anchoring on correction --
+ * there's nothing left to anchor against once quotes themselves are gone. decision is a
+ * single, final call. See jobs/05-review/ingest.py's docstring for the full rationale.
  */
-import { anchorQuote } from "./quotes";
 import { sha256Hex } from "./hashing";
 import { validateReviewSchema, ReviewSchemaError } from "./reviewSchema";
 import type { ArchiveStore } from "./store";
-import { getText, putJson } from "./store";
-import type { Incident, IncidentsJson, ReviewJson } from "./types";
+import { putJson } from "./store";
+import type { IncidentsJson, ReviewJson } from "./types";
 
 export class IngestError extends Error {}
 
-// Mirrors ingest.py's QUOTE_FIELDS / jobs/06-publish/rebuild.py's CORRECTION_FIELDS
-// vocabulary for the four quote-bearing incident fields correctable through review.json.
-const QUOTE_FIELDS: Record<string, [string, string]> = {
-  organization_quote: ["organization_quote.text", "organization_quote.page"],
-  description_quote: ["description_quote.text", "description_quote.page"],
-  findings_quote: ["findings_quote.text", "findings_quote.page"],
-  "dates.incident_quote": ["dates.incident_quote.text", "dates.incident_quote.page"],
-};
+// Mirrors ingest.py's CORRECTABLE_FIELDS / jobs/06-publish/rebuild.py's own whitelist.
+const CORRECTABLE_FIELDS = new Set([
+  "organization_name_raw",
+  "organization_name_normalized",
+  "description_raw",
+  "findings_raw",
+  "sanctions_raw",
+  "alcohol_involved",
+  "drugs_involved",
+  "determination_status",
+  "dates.incident_start_raw",
+  "dates.incident_start_normalized",
+  "dates.incident_start_precision",
+  "dates.incident_end_raw",
+  "dates.incident_end_normalized",
+  "dates.incident_end_precision",
+  "dates.investigation_start_date_raw",
+  "dates.investigation_start_date",
+  "dates.investigation_end_date_raw",
+  "dates.investigation_end_date",
+  "dates.notice_date_raw",
+  "dates.notice_date",
+]);
 
 function slugify(reviewer: string): string {
   const slug = reviewer
@@ -46,26 +59,6 @@ function filenameTs(reviewedAt: string): string {
   );
 }
 
-function getPath(obj: Record<string, unknown>, dotted: string): unknown {
-  return dotted.split(".").reduce<unknown>((node, key) => {
-    if (node === null || typeof node !== "object") return null;
-    return (node as Record<string, unknown>)[key];
-  }, obj);
-}
-
-/** (resolved decision, merged corrections) after second_review's last-write-wins
- * override -- same rule jobs/06-publish/rebuild.py applies at read time. */
-function resolvedDecision(review: ReviewJson): [string, Record<string, string>] {
-  const corrections: Record<string, string> = { ...(review.corrections ?? {}) };
-  let decision: string = review.decision;
-  const second = review.second_review;
-  if (second !== null) {
-    decision = second.decision;
-    Object.assign(corrections, second.corrections ?? {});
-  }
-  return [decision, corrections];
-}
-
 async function findIncidentsJson(store: ArchiveStore, docDir: string, fileHash: string): Promise<IncidentsJson> {
   const prefix = `${docDir}/ai/extract_v`;
   const keys = await store.listKeys(`${docDir}/ai/`);
@@ -82,30 +75,10 @@ async function findIncidentsJson(store: ArchiveStore, docDir: string, fileHash: 
   );
 }
 
-function reanchorCorrections(incident: Incident, corrections: Record<string, string>, documentText: string): void {
-  for (const [fieldPath, [textKey, pageKey]] of Object.entries(QUOTE_FIELDS)) {
-    if (!(textKey in corrections) && !(pageKey in corrections)) continue;
-    const original = (getPath(incident as unknown as Record<string, unknown>, fieldPath) as
-      | { text?: string; page?: number | null }
-      | null) ?? {};
-    const text = textKey in corrections ? corrections[textKey] : original.text;
-    let page: number | null | undefined = pageKey in corrections ? undefined : original.page;
-    if (pageKey in corrections) {
-      const raw = corrections[pageKey];
-      const parsed = Number(raw);
-      if (raw === "" || Number.isNaN(parsed)) {
-        throw new IngestError(`correction ${pageKey} must be an integer page number, got ${JSON.stringify(raw)}`);
-      }
-      page = parsed;
-    }
-    if (!text) {
-      throw new IngestError(`correction touching ${fieldPath} targets a null/empty quote`);
-    }
-    const result = anchorQuote(text, page ?? null, documentText);
-    if (!result.anchored) {
-      throw new IngestError(
-        `corrected ${fieldPath} ("${text.slice(0, 80)}") no longer anchors in the document's extracted text`
-      );
+function validateCorrections(corrections: ReviewJson["corrections"]): void {
+  for (const correction of corrections) {
+    if (!CORRECTABLE_FIELDS.has(correction.field_name)) {
+      throw new IngestError(`correction targets unknown/uncorrectable field_name ${correction.field_name}`);
     }
   }
 }
@@ -139,16 +112,18 @@ export async function ingestReview(store: ArchiveStore, docDir: string, reviewJs
     );
   }
 
-  const [decision, corrections] = resolvedDecision(review);
-  if (decision === "corrected") {
+  if (review.decision === "corrected") {
     if (incidentIndex === null) {
       throw new IngestError(
         'a document-level (zero-incident) review cannot be "corrected" -- there is no per-field correction ' +
           "vocabulary for the document object; reject it instead to send the document back for re-extraction"
       );
     }
-    const documentText = await getText(store, `${docDir}/extracted/text.txt`);
-    reanchorCorrections(incidents[incidentIndex], corrections, documentText);
+    validateCorrections(review.corrections);
+  }
+
+  if (review.organization_review !== null && incidentIndex === null) {
+    throw new IngestError("a document-level (zero-incident) review has no organization to review");
   }
 
   const indexToken = incidentIndex === null ? "document" : String(incidentIndex);
@@ -156,7 +131,3 @@ export async function ingestReview(store: ArchiveStore, docDir: string, reviewJs
   await putJson(store, key, review);
   return key;
 }
-
-// Re-exported for queue.ts / index.ts, which need the same resolution rule to know
-// whether an incident/document is still awaiting a decision.
-export { resolvedDecision };

@@ -1,80 +1,82 @@
 /**
  * Ports the same cases tests/test_phase7a_review.py exercises against ingest.py,
- * against this file's TypeScript port -- both must reject/accept identically. Adds
- * Phase 7b's new paths (document-level review, "escalated") on top.
+ * against this file's TypeScript port -- both must reject/accept identically.
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import { sha256Hex } from "../src/hashing";
 import { IngestError, ingestReview } from "../src/ingest";
 import { MemoryStore, putJson } from "../src/store";
-import type { IncidentsJson } from "../src/types";
+import type { IncidentDates, IncidentsJson } from "../src/types";
 
 const NR_DIR = "archive/200001_north-ridge-college/2026/docs/aaaa000000000000";
 const HC_DIR = "archive/200006_hillcrest-academy/2026/docs/bbbb000000000000";
 
-const NR_TEXT =
-  "Campus Hazing Transparency Report\n" +
-  "Sigma Alpha Fraternity: new members were required to perform physically demanding tasks late at night.\n" +
-  "The organization was found responsible for hazing.\n" +
-  "Sanction: probation through Fall 2026.\n" +
-  "Women's Club Rowing: members required new members to consume alcohol at a team event.";
-
-const HC_TEXT =
-  "Campus Hazing Transparency Report\n" +
-  "No hazing incidents were reported during this reporting period.";
+function dates(): IncidentDates {
+  return {
+    incident_start_raw: "late at night",
+    incident_start_normalized: null,
+    incident_start_precision: "Unknown",
+    incident_end_raw: "",
+    incident_end_normalized: null,
+    incident_end_precision: "Unknown",
+    investigation_start_date_raw: "",
+    investigation_start_date: null,
+    investigation_end_date_raw: "",
+    investigation_end_date: null,
+    notice_date_raw: "",
+    notice_date: null,
+  };
+}
 
 const NR_INCIDENTS: IncidentsJson = {
-  schema_version: 1,
+  schema_version: 2,
   is_chtr: true,
   document: {
-    title_quote: null,
-    reporting_period_quote: null,
     reporting_period_start: "2025-01-01",
     reporting_period_end: "2025-12-31",
     publication_date: null,
-    zero_incidents_quote: null,
+    zero_incidents_statement: null,
   },
   incidents: [
     {
-      organization_quote: { text: "Sigma Alpha Fraternity", page: null },
-      description_quote: {
-        text: "new members were required to perform physically demanding tasks late at night.",
-        page: null,
-      },
-      findings_quote: { text: "The organization was found responsible for hazing.", page: null },
-      sanction_quotes: [{ text: "Sanction: probation through Fall 2026.", page: null }],
-      alcohol_involved: false,
-      drugs_involved: false,
-      dates: { incident_quote: null, incident_start: null, incident_end: null, investigation_initiated: null, resolved: null },
+      organization_name_raw: "Sigma Alpha Fraternity",
+      organization_name_normalized: "sigma alpha fraternity",
+      organization_type: "Fraternity",
+      description_raw: "new members were required to perform physically demanding tasks late at night.",
+      findings_raw: "The organization was found responsible for hazing.",
+      sanctions_raw: "Sanction: probation through Fall 2026.",
+      alcohol_involved: "No",
+      drugs_involved: "No",
+      determination_status: "Determined hazing",
+      dates: dates(),
+      extraction_confidence: 0.9,
+      flags: [],
     },
   ],
 };
 
 const HC_INCIDENTS: IncidentsJson = {
-  schema_version: 1,
+  schema_version: 2,
   is_chtr: true,
   document: {
-    title_quote: null,
-    reporting_period_quote: null,
     reporting_period_start: "2025-01-01",
     reporting_period_end: "2025-12-31",
     publication_date: null,
-    zero_incidents_quote: { text: "No hazing incidents were reported during this reporting period.", page: null },
+    zero_incidents_statement: "No hazing incidents were reported during this reporting period.",
   },
   incidents: [],
 };
 
 function baseReview(fileHash: string, incidentIndex: number | null, overrides: Record<string, unknown> = {}) {
   return {
-    schema_version: 1,
+    schema_version: 2,
     extraction_ref: { file_hash: fileHash, incident_index: incidentIndex },
-    tier: "flagged",
     decision: "approved",
     rejection_reason: null,
-    corrections: null,
+    corrections: [],
+    organization_review: null,
     reviewer: "jane-reviewer",
     reviewed_at: "2026-02-10T18:00:00Z",
-    second_review: null,
     ...overrides,
   };
 }
@@ -85,8 +87,8 @@ let hcHash: string;
 
 beforeEach(async () => {
   store = new MemoryStore();
-  store.seed(`${NR_DIR}/extracted/text.txt`, NR_TEXT);
-  store.seed(`${HC_DIR}/extracted/text.txt`, HC_TEXT);
+  store.seed(`${NR_DIR}/extracted/text.txt`, "some text");
+  store.seed(`${HC_DIR}/extracted/text.txt`, "some text");
   await putJson(store, `${NR_DIR}/ai/extract_v1/incidents.json`, NR_INCIDENTS);
   await putJson(store, `${HC_DIR}/ai/extract_v1/incidents.json`, HC_INCIDENTS);
   nrHash = await sha256Hex(await store.getBytes(`${NR_DIR}/ai/extract_v1/incidents.json`));
@@ -123,91 +125,63 @@ describe("ingestReview", () => {
     await expect(ingestReview(store, NR_DIR, review)).rejects.toBeInstanceOf(IngestError);
   });
 
-  it("accepts a corrected review whose corrected quote still anchors", async () => {
+  it("accepts a corrected review targeting a known correctable field", async () => {
     const review = baseReview(nrHash, 0, {
       decision: "corrected",
-      corrections: { "organization_quote.text": "Sigma Alpha Fraternity" },
+      corrections: [
+        {
+          field_name: "organization_name_raw",
+          original_value: "Sigma Alpha Fraternity",
+          corrected_value: "Sigma Alpha Epsilon Fraternity",
+          correction_type: ["Extraction error"],
+        },
+      ],
     });
     const key = await ingestReview(store, NR_DIR, review);
     expect(await store.exists(key)).toBe(true);
   });
 
-  it("rejects a corrected review whose corrected quote does not anchor", async () => {
+  it("rejects a corrected review targeting an unknown field_name", async () => {
     const review = baseReview(nrHash, 0, {
       decision: "corrected",
-      corrections: { "organization_quote.text": "This text does not appear anywhere in the document." },
+      corrections: [
+        { field_name: "not_a_real_field", original_value: "x", corrected_value: "y", correction_type: ["Minor cleanup"] },
+      ],
     });
     await expect(ingestReview(store, NR_DIR, review)).rejects.toBeInstanceOf(IngestError);
   });
 
-  it("second_review overriding corrected -> approved skips re-anchoring the bad first correction", async () => {
-    const review = baseReview(nrHash, 0, {
-      decision: "corrected",
-      corrections: { "organization_quote.text": "garbage nowhere in the document" },
-      second_review: {
-        decision: "approved",
-        rejection_reason: null,
-        corrections: null,
-        reviewer: "john-reviewer",
-        reviewed_at: "2026-02-11T09:00:00Z",
-      },
-    });
-    const key = await ingestReview(store, NR_DIR, review);
-    expect(await store.exists(key)).toBe(true);
-  });
-
-  it("second_review's correction (not first's) is the one re-anchored, last-write-wins", async () => {
-    const review = baseReview(nrHash, 0, {
-      decision: "corrected",
-      corrections: { "organization_quote.text": "Sigma Alpha Fraternity" }, // valid alone
-      second_review: {
-        decision: "corrected",
-        rejection_reason: null,
-        corrections: { "organization_quote.text": "still nowhere in the document" }, // invalid, should win
-        reviewer: "john-reviewer",
-        reviewed_at: "2026-02-11T09:05:00Z",
-      },
-    });
-    await expect(ingestReview(store, NR_DIR, review)).rejects.toBeInstanceOf(IngestError);
-  });
-
-  // ── Phase 7b: document-level (zero-incident, "fast" tier) review ──
   it("accepts a document-level approved review (incident_index null) for a genuine zero-incident extraction", async () => {
-    const review = baseReview(hcHash, null, { tier: "fast" });
+    const review = baseReview(hcHash, null);
     const key = await ingestReview(store, HC_DIR, review);
     expect(key).toBe(`${HC_DIR}/reviews/document_jane-reviewer_20260210T180000Z.review.json`);
   });
 
   it("rejects incident_index null when the extraction actually has incidents", async () => {
-    await expect(ingestReview(store, NR_DIR, baseReview(nrHash, null, { tier: "fast" }))).rejects.toBeInstanceOf(
-      IngestError
-    );
+    await expect(ingestReview(store, NR_DIR, baseReview(nrHash, null))).rejects.toBeInstanceOf(IngestError);
   });
 
   it("rejects a document-level review resolving to 'corrected'", async () => {
-    const review = baseReview(hcHash, null, { tier: "fast", decision: "corrected", corrections: { "x": "y" } });
+    const review = baseReview(hcHash, null, {
+      decision: "corrected",
+      corrections: [{ field_name: "description_raw", original_value: null, corrected_value: "x", correction_type: ["Minor cleanup"] }],
+    });
     await expect(ingestReview(store, HC_DIR, review)).rejects.toBeInstanceOf(IngestError);
   });
 
-  // ── Phase 7b: "escalated" decision ──
-  it("accepts an escalated review with no corrections/re-anchoring required", async () => {
-    const review = baseReview(nrHash, 0, { decision: "escalated" });
-    const key = await ingestReview(store, NR_DIR, review);
-    expect(await store.exists(key)).toBe(true);
-    expect(JSON.parse(new TextDecoder().decode(await store.getBytes(key)))).toMatchObject({ decision: "escalated" });
+  it("rejects organization_review on a document-level review", async () => {
+    const review = baseReview(hcHash, null, {
+      organization_review: { decision: "approved", corrected_organization_type: null },
+    });
+    await expect(ingestReview(store, HC_DIR, review)).rejects.toBeInstanceOf(IngestError);
   });
 
-  it("a second_review resolving an escalation to corrected re-anchors that correction", async () => {
+  it("accepts organization_review on a normal incident review", async () => {
     const review = baseReview(nrHash, 0, {
-      decision: "escalated",
-      second_review: {
-        decision: "corrected",
-        rejection_reason: null,
-        corrections: { "organization_quote.text": "nowhere in the document at all" },
-        reviewer: "john-reviewer",
-        reviewed_at: "2026-02-11T09:00:00Z",
-      },
+      organization_review: { decision: "corrected", corrected_organization_type: "Sorority" },
     });
-    await expect(ingestReview(store, NR_DIR, review)).rejects.toBeInstanceOf(IngestError);
+    const key = await ingestReview(store, NR_DIR, review);
+    const written = JSON.parse(new TextDecoder().decode(await store.getBytes(key)));
+    expect(written.organization_review).toEqual({ decision: "corrected", corrected_organization_type: "Sorority" });
   });
 });

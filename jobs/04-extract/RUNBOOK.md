@@ -3,11 +3,17 @@
 ## Purpose
 
 Turn every archived, normalized document into structured incident data, per
-IMPLEMENTATION_PLAN.md Section 8, and mechanically verify every factual claim before
-it's archived (invariant 5). Classification (`is_chtr`) happens as part of extraction
--- there is no separate cleaning job. The agent never writes to the archive directly
-(invariant 3): it fills in a packet, and only `validate.py` writes `incidents.json` /
-`metadata.json` / `validation.json` into R2, after schema validation and anchoring.
+IMPLEMENTATION_PLAN.md Section 8. Classification (`is_chtr`) happens as part of
+extraction -- there is no separate cleaning job. The agent never writes to the archive
+directly (invariant 3): it fills in a packet, and only `validate.py` writes
+`incidents.json` / `metadata.json` / `validation.json` into R2, after schema validation.
+
+v3.0: there is no more quote-anchoring or tier assignment here (`lib/quotes.py` was
+deleted). Instead, the agent reports its own per-incident `extraction_confidence` and a
+structured `flags[]` array directly in `incidents.json`; a human reviewer always makes
+the final call regardless of confidence (IMPLEMENTATION_PLAN.md Section 9). The old
+`crosscheck_prompt.md` second-pass verification concept (tied to the now-removed
+`standard` tier) was removed along with it -- see BUILD_STATUS.md's Phase 14 notes.
 
 ## Preconditions
 
@@ -29,22 +35,26 @@ it's archived (invariant 5). Classification (`is_chtr`) happens as part of extra
      skipped -- re-extraction under a new prompt is a deliberate future action, not
      something this scan triggers on its own.
 2. For each packet under `tasks/extract/`: read `prompt.md`, follow it, write
-   `incidents.json` into the packet directory, and fill in `metadata.json`'s `model`
-   and `created` fields (leave `doc_dir`/`target_version` as-is -- `validate.py` reads
-   and then strips them before archiving).
+   `incidents.json` into the packet directory (raw+normalized fields, organization
+   proposal, `determination_status`, per-incident `extraction_confidence` and
+   `flags[]` -- see `prompt.md` and `DATABASE_SCHEMA.md` for the full field rules),
+   and fill in `metadata.json`'s `model` and `created` fields (leave
+   `doc_dir`/`target_version` as-is -- `validate.py` reads and then strips them
+   before archiving).
 3. Run: `python jobs/04-extract/validate.py` (optionally `--tasks-dir PATH` to match
    step 1). For every packet whose `incidents.json` + finished `metadata.json` are
    present:
    - Strict JSON-schema validation of `incidents.json` against `schema.json` (unknown
      fields rejected). Archived either way -- invalid output is marked invalid, never
      discarded.
-   - Every quote (and `document.zero_incidents_quote`) is anchored against
-     `{doc_dir}/extracted/text.txt` via `lib/quotes.anchor_quote`.
-   - Each incident (and, for a zero-incident report, the document itself) gets a tier
-     per Section 9's table.
-   - Archives `incidents.json` + a schema-compliant `metadata.json` + `validation.json`
-     to `{doc_dir}/ai/extract_v{N}/`, where `doc_dir`/`N` come from the packet's
+   - Archives `incidents.json` + a schema-compliant `metadata.json` + a `validation.json`
+     that's now just `{schema_version, valid, schema_errors}` -- to
+     `{doc_dir}/ai/extract_v{N}/`, where `doc_dir`/`N` come from the packet's
      `metadata.json` stub.
+
+Organization matching (against the public `Organizations` registry) and cross-year
+incident-status resolution are **not** this job's concern -- both are derived by
+`06-publish/rebuild.py` at publish time (invariant 7), not computed or stored here.
 
 ## Postconditions
 
@@ -52,6 +62,7 @@ it's archived (invariant 5). Classification (`is_chtr`) happens as part of extra
   `ai/extract_v{N}/` directory with all three files, valid or not.
 - `status.py`'s `extract.packets_done` reflects the run; a packet left without
   `incidents.json`/a finished `metadata.json` still counts as outstanding.
+  `extract.low_confidence` is informational only, not a routing signal.
 
 ## Failure modes
 
@@ -61,6 +72,3 @@ it's archived (invariant 5). Classification (`is_chtr`) happens as part of extra
 - Malformed or schema-invalid `incidents.json` is **not** a failure mode here -- it's
   archived with `valid: false` and its `schema_errors`, so a human can see exactly
   what the agent produced and why it didn't pass, rather than it vanishing silently.
-- Cross-check disagreement has no wiring yet (see `crosscheck_prompt.md`'s header) --
-  `crosscheck` is always `null`, so no incident reaches the `standard` tier from this
-  job today; only `fast` (zero-incident reports) and `flagged` are reachable.

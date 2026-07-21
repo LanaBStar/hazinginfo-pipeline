@@ -1,10 +1,13 @@
-"""Phase 3 smoke check: jobs/03-normalize/run.py + lib/quotes.py anchoring.
+"""Phase 3 smoke check: jobs/03-normalize/run.py.
 
 Builds a real archive by crawling fixtures/crawl_pages/ with 02-archive (same pattern as
-test_phase2_archive.py), normalizes it, and asserts: PDF page markers are correct, known
-quotes anchor (including after whitespace reflow), a bad quote does not anchor, page hints
-are checked correctly, and the scanned/no-text-layer PDF yields empty text.txt. Also
+test_phase2_archive.py), normalizes it, and asserts: PDF page markers are correct, expected
+incident text is present, and the scanned/no-text-layer PDF yields empty text.txt. Also
 checks the run is idempotent (a second pass writes nothing new).
+
+v3.0: lib/quotes.py (anchoring) was removed along with the tier system -- this test no
+longer exercises it. See tests/test_phase7a_review.py and test_phase14_extract.py for
+what replaced it.
 
 Run with: python tests/test_phase3_normalize.py
 """
@@ -21,8 +24,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-
-from lib.quotes import anchor_quote  # noqa: E402
 
 FIXTURES = ROOT / "fixtures" / "crawl_pages"
 
@@ -121,32 +122,6 @@ def main() -> int:
         if wf_text != "":
             failures.append(f"westfield (scanned PDF) text.txt should be empty, got {wf_text!r}")
 
-        # ── Anchoring (lib/quotes.py) against the normalized eastview PDF text ──
-        if pdf_text is not None:
-            good = anchor_quote("Zeta Psi Fraternity", 1, pdf_text)
-            if not good["anchored"] or good["similarity"] != 1.0 or good["page_match"] is not True:
-                failures.append(f"anchor_quote: exact verbatim quote should anchor cleanly, got {good!r}")
-
-            wrong_page = anchor_quote("Zeta Psi Fraternity", 2, pdf_text)
-            if not wrong_page["anchored"] or wrong_page["page_match"] is not False:
-                failures.append(f"anchor_quote: wrong page hint should still anchor but page_match=False, got {wrong_page!r}")
-
-            reflowed = anchor_quote("Zeta   Psi\nFraternity", 1, pdf_text)
-            if not reflowed["anchored"] or reflowed["similarity"] != 1.0:
-                failures.append(f"anchor_quote: whitespace-reflowed quote should still anchor at similarity 1.0, got {reflowed!r}")
-
-            bogus = anchor_quote("This sentence never appears in any fixture document.", None, pdf_text)
-            if bogus["anchored"]:
-                failures.append(f"anchor_quote: unrelated quote should not anchor, got {bogus!r}")
-
-            no_hint = anchor_quote("Zeta Psi Fraternity", None, pdf_text)
-            if no_hint["page_match"] is not None:
-                failures.append(f"anchor_quote: null page_hint should yield page_match=None, got {no_hint!r}")
-
-        empty_text_anchor = anchor_quote("Zeta Psi Fraternity", 1, wf_text)
-        if empty_text_anchor["anchored"]:
-            failures.append("anchor_quote: anchoring against empty text.txt should never anchor")
-
         # ── Normalize run 2: idempotent, nothing new written ─────────────
         norm_results2 = normalize_run.run(prefix="archive/")
         if norm_results2["normalized"] != 0 or norm_results2["skipped"] != 5:
@@ -169,8 +144,6 @@ def main() -> int:
         return 1
     print("ok    normalize run 1: text.txt written for every document, page markers correct")
     print("ok    scanned/no-text-layer PDF yields empty text.txt")
-    print("ok    lib/quotes.anchor_quote: verbatim/reflowed quotes anchor, bad quotes don't,")
-    print("      page hints checked correctly, empty text never anchors")
     print("ok    normalize run 2: idempotent, nothing re-written")
     return 0
 

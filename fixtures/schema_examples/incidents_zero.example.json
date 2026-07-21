@@ -1,13 +1,11 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "is_chtr": true,
   "document": {
-    "title_quote": {"text": "Campus Hazing Transparency Report", "page": 1},
-    "reporting_period_quote": {"text": "January 1 – December 31, 2025", "page": 1},
     "reporting_period_start": "2025-01-01",
     "reporting_period_end": "2025-12-31",
     "publication_date": "2026-01-20",
-    "zero_incidents_quote": {"text": "No hazing incidents were reported during this period.", "page": 1}
+    "zero_incidents_statement": "No hazing incidents were reported during this period."
   },
   "incidents": []
 }

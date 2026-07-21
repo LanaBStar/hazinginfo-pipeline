@@ -2,10 +2,10 @@
 run.py — 03-normalize: produce extracted/text.txt for every document in the archive.
 
 HTML -> text, DOCX -> text, PDF -> text-layer extraction attempt (lib/text.py, built in
-Phase 1). No OCR pipeline: a PDF with no text layer yields an empty text.txt, which
-downstream (04-extract/validate.py) auto-flags for review since anchoring can't run
-against empty text. PDF text includes `[[page N]]` markers so lib/quotes.py's anchoring
-can check a quote's page hint.
+Phase 1). No OCR pipeline: a PDF with no text layer yields an empty text.txt -- the
+extraction agent has nothing to read and reports low/no confidence, which surfaces as a
+flag rather than an anchoring failure (v3.0 -- there's no more anchoring at all). PDF
+text still includes `[[page N]]` markers for the reviewer's own navigation.
 
 Idempotent and resumable: a document that already has extracted/text.txt is skipped.
 

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hazinginfo.org/schemas/pipeline_run.schema.json",
+  "title": "pipeline_runs/{run_id}.json (v3.0)",
+  "description": "One per batch invocation of 02-archive or 04-extract. Per IMPLEMENTATION_PLAN.md §6 and DATABASE_SCHEMA.md's Pipeline-runs table. Not institution-scoped -- lives at the archive root, not under archive/.",
+  "type": "object",
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_id": {"type": "string"},
+    "prompt_version": {"type": "string"},
+    "run_status": {"type": "string", "enum": ["Running", "Complete", "Partial-Error"]},
+    "run_started_at": {"type": "string", "format": "date-time"},
+    "run_completed_at": {"type": ["string", "null"], "format": "date-time"}
+  },
+  "required": [
+    "schema_version",
+    "run_id",
+    "prompt_version",
+    "run_status",
+    "run_started_at",
+    "run_completed_at"
+  ],
+  "additionalProperties": false
+}

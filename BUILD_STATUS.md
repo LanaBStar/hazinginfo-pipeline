@@ -15,6 +15,15 @@ conversational context.
 | 6 | 01-discover: prompt.md, packets, merge.py | done | Smoke check passes (`.venv/bin/python tests/test_phase6_discover.py`) |
 | 7a | Review Worker + ingest.py (review.json write path) | done | Smoke check passes (`.venv/bin/python tests/test_phase7a_review.py`) |
 | 7b | Review UI (Pages + PDF.js + highlights + Access) | done | Smoke check passes (`.venv/bin/python tests/test_phase7b_review_app.py`; `npm --prefix jobs/05-review/app/worker test`) |
+| 9 | v3.0 migration docs: IMPLEMENTATION_PLAN.md, OPERATIONS.md, BUILD_STATUS.md rewritten for the new CHTR Data Dictionary schema | done | No smoke check (pure documentation) |
+| 10 | Schemas: retire anchoring shape, reshape extract/review schemas, add ledger/data_check/pipeline_run | done | Smoke check passes (`.venv/bin/python tests/test_phase0_schemas.py`, now 12 cases) |
+| 11 | 02-archive: Ledger fingerprinting, Data_checks, Pipeline-runs | done | Smoke check passes (`.venv/bin/python tests/test_phase2_archive.py`, extended) |
+| 12 | 01-discover: Airtable cross-check step | done | Smoke check passes (`.venv/bin/python tests/test_phase12_discover_airtable.py`) |
+| 13 | 03-normalize compatibility confirmation | done | No code changes needed; `tests/test_phase3_normalize.py` re-run clean |
+| 14 | 04-extract: drop anchoring/tiers, new incidents.json shape (organization matching/cross-year detection moved to Phase 16 — see notes) | done | Smoke check passes (`.venv/bin/python tests/test_phase4_extract.py`, rewritten in place) |
+| 15 | 05-review: per-field corrections + flags, drop tiers/escalation, organization review screen | done | Smoke check passes (`.venv/bin/python tests/test_phase7a_review.py` + `npm --prefix jobs/05-review/app/worker test`) |
+| 16 | 06-publish: new catalog_schema.sql (15 tables, 2 schemas) + rebuild.py | done | Sanity-checked against a scratch local Postgres DB (see Phase 16 notes) — the official smoke test rewrite is Phase 17 |
+| 17 | Fixtures + full smoke re-run against the new schema | not started | |
 
 ## Phase 0 — done
 
@@ -706,37 +715,473 @@ files), `tests/test_phase8_migration.py`, the `OLD_R2_*`/`OLD_DATABASE_URL` entr
 answer-key (volunteers now calibrate against a shared initial batch of real incidents
 instead). See git history for the removed code if a legacy source ever does turn up.
 
+## Phase 9 — done
+
+Mahir supplied a "CHTR Data Dictionary" Airtable base (tabs: Data Dictionary, Pipeline
+Logic, Controlled Vocabularies — 124 fields / 21 pipeline-logic rules / 53 controlled-vocab
+terms across 15 tables) defining a substantially richer Postgres design than v2.0's
+six-table catalog, and directed a full migration. Pulled via the Airtable API and
+mechanically rendered into **[`DATABASE_SCHEMA.md`](DATABASE_SCHEMA.md)**, which is now
+the authoritative field-by-field reference for the catalog. `IMPLEMENTATION_PLAN.md`
+(now v3.0) and `OPERATIONS.md` were rewritten to match — see `IMPLEMENTATION_PLAN.md`'s
+own v3.0 preamble for the full list of superseded sections (§2 invariant 5, §3, §6, §7,
+§8, §9, §10, §11, §12, §14, §16). No code changed this phase; Phases 10–17 (already
+added to the table above) carry out the actual implementation, one at a time, same
+discipline as Phases 0–8.
+
+### Decisions made during Phase 9 (asked the user, since this was a genuine
+architecture re-litigation, not silence/ambiguity in an already-settled plan)
+
+- **R2 stays the sole source of truth.** Postgres — both a new `staging` schema and
+  `public` — remains a disposable projection, fully dropped and rebuilt from the archive
+  on every publish (invariants 1/2 unchanged, just reshaped to 15 tables). Confirmed
+  explicitly over the alternative (Postgres becoming stateful/authoritative), which
+  would have broken invariant 2 outright.
+- **Quote-anchoring and the fast/flagged/standard tier system are dropped entirely.**
+  `lib/quotes.py`, `schemas/validation.schema.json`'s anchoring shape, and
+  `validate.py`'s tier assignment are retired in favor of the new schema's
+  `extraction_confidence` (per-incident, AI self-reported) + `Staging_incident_review_flags`
+  (typed, resolvable) mechanism. This also retires the dual-review/`escalated`/
+  `second_review` machinery — confirmed as a direct consequence, since the new schema's
+  `human_review_status` enum is only `Pending review / Approved / Rejected` with no
+  second-reviewer field anywhere in the 124-field dictionary. Review is now
+  single-reviewer, flag-informed, not tier-routed.
+- **The review app keeps its current architectural pattern.** It still reads the archive
+  directly (never Postgres — the DB only ever holds already-reviewed rows) and writes
+  validated decision files to R2 through a validating ingest path; Postgres's `staging`
+  schema is just a richer projection of those files, rebuilt the same way `public`
+  already is. This was flagged as open ("decide as part of the plan") and resolved as
+  the natural extension of the R2-authoritative decision above, not a new pattern.
+- **`01-discover` (agent web-search → operator-confirm → `merge.py`) is kept exactly as
+  built.** It's still what determines the confirmed `chtr_url`. Mahir was explicit that
+  the *agent* should keep doing its own discovery, with the existing Airtable
+  schools-registry base (`AIRTABLE_TOKEN`/`AIRTABLE_BASE_ID`/`AIRTABLE_TABLE_NAME`) used
+  only as a cross-check afterward — a mismatch is surfaced for operator attention, never
+  silently overwriting either the agent's finding or Airtable's recorded value. This
+  finishes the in-flight `import_airtable.py` work (see prior "Next session should" notes,
+  now superseded) from a cross-check angle rather than the original backfill-only design;
+  `import_airtable.py` still doesn't exist yet — Phase 12 writes it.
+- **No `reports`/`incident_sanctions` tables in v3.0.** The new schema has no
+  document-level concept at all (reporting period, publication date, is-zero-incident) —
+  it's incident-centric, with `Artifacts` as the only document-level row. This wasn't a
+  question to ask Mahir — it's a direct reading of the data dictionary's own 15-table
+  list, which simply doesn't include those concepts. Recorded as a real design
+  consequence: document-level extracted fields (`reporting_period_start/end`,
+  `publication_date`, `zero_incidents_statement`) stay archive-only in `incidents.json`,
+  with no catalog column, until/unless that turns out to matter for the public site.
+- **The old "CHTR Data Dictionary" Airtable base connection was disconnected** once
+  `DATABASE_SCHEMA.md` was generated from it — confirmed with Mahir that no ongoing sync
+  is needed (it was a one-time schema-design pull, unlike the schools-registry base,
+  which stays live per the discover-cross-check decision above). Removed
+  `DATA_DICT_AIRTABLE_TOKEN`/`DATA_DICT_AIRTABLE_BASE_ID` from `.env`.
+
+## Phase 10 — done
+
+- [x] `schemas/validation.schema.json` — collapsed to `{schema_version: 2, valid,
+      schema_errors}`, dropping the whole anchor_result/tier/crosscheck structure.
+- [x] `jobs/04-extract/schema.json` — incidents.json v2: raw+normalized+precision date
+      triples, independent `alcohol_involved`/`drugs_involved` enums, `determination_status`,
+      an organization proposal (`organization_name_raw/normalized`, `organization_type`),
+      per-incident `extraction_confidence` + `flags[]` (typed `flag_type`/`field_name`/
+      `note`). No more `{text, page}` quote objects anywhere.
+- [x] `schemas/review.schema.json` — review.json v2: `corrections` is now a list (one
+      entry per changed field: `field_name`/`original_value`/`corrected_value`/
+      `correction_type[]`), a new independent `organization_review` object, and `tier`/
+      `escalated`/`second_review` all removed.
+- [x] Three new top-level schemas: `schemas/ledger_entry.schema.json`,
+      `schemas/data_check.schema.json` (includes an `airtable_cross_check` object per
+      IMPLEMENTATION_PLAN.md §7's discover cross-check), `schemas/pipeline_run.schema.json`.
+- [x] `schemas/extract_metadata.schema.json` unchanged — its shape (`model`,
+      `prompt_version`, `created`) didn't need to change.
+- [x] `fixtures/schema_examples/` updated: `incidents.example.json`,
+      `incidents_zero.example.json`, `validation.example.json`, `review.example.json`
+      reshaped to v2; three new example files for the new schemas.
+- [x] Smoke check: `tests/test_phase0_schemas.py` extended with 3 new cases (now 12
+      total) — all pass.
+
+No new design decisions asked of the user this phase — every shape here is a direct,
+mechanical reading of `DATABASE_SCHEMA.md`'s `Staging_incidents`/`Staging_organizations`/
+`Staging_incident_corrections`/`Ledger`/`Data_checks`/`Pipeline-runs` field lists, per
+Phase 9's already-confirmed decisions.
+
+## Phase 11 — done
+
+- [x] `lib/fingerprint.py` — new: `strip_boilerplate_tokens` (regexes for month-day-year,
+      ISO, and slash dates, bare 4-digit years, and "this/current reporting period"
+      phrases), `content_fingerprint` (sha256 of the stripped text — `Ledger.
+      fingerprint_content_hash`), `url_hash16` (stable id for a URL, used as the
+      `ledger/{url_hash16}.json` filename).
+- [x] `jobs/02-archive/run.py` — `write_ledger_entry` (updates in place, preserving
+      `first_seen_date` across re-crawls; PDFs fall back to the raw `content_hash` as
+      their fingerprint since 02-archive has no PDF text layer available — that's
+      03-normalize's job, and duplicating it here would cross the existing fetch/extract
+      boundary), wired into `store_document` so a ledger entry is written for every URL
+      actually archived (dedup or not), independent of the storage decision.
+      `write_data_check` writes `data_check.json` unconditionally for every institution
+      actually processed this cycle (no_url, not-yet-confirmed, or crawled) — mirrors
+      `status.json`'s "absence is data" treatment (invariant 8). `start_pipeline_run`/
+      `complete_pipeline_run` bookend each batch `run()` with a `pipeline_runs/{run_id}
+      .json` record; not institution-scoped, so it lives at the archive root.
+- [x] Smoke check: `tests/test_phase2_archive.py` extended — schema-validates the new
+      `ledger/*.json`/`data_check.json` files (the test's own naive "everything that
+      isn't status.json must be a manifest" dispatcher needed updating too), asserts
+      `data_check.json`'s `pipeline_status`/`chtr_index_url` for both a confirmed and a
+      `no_url` institution, and asserts a re-crawl in a new scrape year (run 3) updates
+      the *same* ledger entry in place (`first_seen_date` unchanged, still exactly one
+      file) rather than creating a second one.
+
+### Decisions made during Phase 11 (not asked separately — direct, low-judgment readings
+of Phase 9's already-confirmed decisions, same bar as every prior phase's "not asked
+separately" notes)
+
+- **`checked_by` and `prompt_version` placeholders:** `data_check.json`'s `checked_by`
+  is hardcoded to `"01-discover-agent"` for now (there's no real human-checker identity
+  flowing through the pipeline yet — that's exactly what Phase 12's Airtable cross-check
+  starts to address, and `airtable_cross_check` is always `null` until then).
+  `pipeline_run.json`'s `prompt_version` is `"n/a"` for 02-archive runs, since it isn't
+  an AI job and has no prompt — the field's real meaning (which extraction prompt ran)
+  applies starting Phase 14.
+- **Ledger entries are only written for URLs actually archived**, not every URL the
+  crawler merely visited without hazing signal — matches the existing crawl's own
+  distinction (only signal-bearing pages/PDFs ever reach `store_document`) rather than
+  inventing a broader "every fetch" ledger.
+- **PDF fingerprinting has no boilerplate-stripping step**, unlike HTML — it falls back
+  to the raw `manifest.json` `sha256`. Text-layer extraction is 03-normalize's job by
+  existing design (Phase 1's decision log); adding it to 02-archive would duplicate that
+  boundary just for this one new signal.
+
+## Phase 12 — done
+
+- [x] `jobs/01-discover/import_airtable.py` — finally written (in progress since before
+      the v3.0 migration, original backfill-only design superseded by Phase 9's
+      cross-check decision). `fetch_airtable_urls()` pulls `UNITID`/`Transparency Report`
+      from the existing schools-registry Airtable base (paginated, ~1,500 rows, cheap
+      enough to pull in full each run — no per-unitid lookup endpoint exists).
+      `cross_check()` compares every `url_status=confirmed` institution's `chtr_url`
+      against Airtable's value; writes `tasks/discover/airtable_cross_check.json`
+      (schema: `jobs/01-discover/airtable_cross_check.schema.json`). Never touches
+      `schools.csv` — confirmed by the smoke check's own before/after comparison.
+- [x] `jobs/02-archive/run.py` — `_load_airtable_cross_check` reads that file once per
+      batch run; `write_data_check` now populates `data_check.json`'s
+      `airtable_cross_check` field from it (still `null` for an institution Airtable
+      hasn't run against, or hasn't confirmed a URL for yet).
+- [x] `jobs/01-discover/RUNBOOK.md` — added step 5.
+- [x] Smoke check: `tests/test_phase12_discover_airtable.py` — monkeypatches
+      `fetch_airtable_urls` so the test never makes a real API call, per the original
+      "stubbed Airtable response" plan. Covers an exact match, a genuine mismatch
+      (Airtable has a URL that differs), an institution Airtable has no row/URL for at
+      all (correctly *not* counted as a mismatch), and confirms an unconfirmed
+      institution is excluded from the cross-check entirely and `schools.csv` is never
+      written to.
+
+### Decisions made during Phase 12 (not asked separately — verified directly against the
+live Airtable base rather than guessed)
+
+- **Real field names confirmed against the live base**, not guessed from the old repo's
+  field list: `UNITID`, `Transparency Report` (this base *also* has a `chtr_index_url`
+  field, verified byte-for-byte identical to `Transparency Report` on every sampled row
+  — read only the latter to avoid depending on two fields that might someday drift).
+  `State`/`City, State` turned out to be linked-record fields (pointing at another
+  table, not plain text), so the state-backfill BUILD_STATUS.md's Phase 6 notes flagged
+  as a future possibility is **not** implemented here — it would need a second lookup
+  against whatever table those linked records resolve to. Recorded as explicitly
+  deferred, not silently dropped.
+- **Match comparison is a plain stripped-string equality check**, not a normalized/fuzzy
+  compare — simplest thing that could work, and the smoke check's mismatch case (a
+  genuinely different path, not just a trailing-slash difference) is the realistic
+  failure mode this guards against. Revisit if real-world false-mismatches from
+  formatting differences turn out to be common.
+
+## Phase 13 — done
+
+`jobs/03-normalize/run.py` needed no code changes — it walks doc dirs for a missing
+`extracted/text.txt` and is untouched by Phase 11's new `ledger/`/`data_check.json` files
+living alongside it in the archive. `tests/test_phase3_normalize.py` re-run clean
+(unchanged). Note: this test still exercises `lib/quotes.anchor_quote` directly — that's
+expected to be removed in Phase 14 when `lib/quotes.py` itself is deleted; leaving it as
+today's still-accurate baseline until then.
+
+## Phase 14 — done
+
+- [x] `lib/quotes.py` deleted entirely, along with `jobs/04-extract/crosscheck_prompt.md`
+      (the second-pass cross-check concept only existed to route incidents into the now
+      -removed `standard` tier — nothing references it anymore).
+- [x] `jobs/04-extract/validate.py` rewritten: schema-conformance check only.
+      `validation.json` is now `{schema_version: 2, valid, schema_errors}` — no
+      anchoring, no tier, no `document`/`incidents` sub-results. Confirmed at this
+      phase (not just asserted in the plan): organization matching and cross-year
+      possible-match detection are **not** implemented here — per invariant 7 and
+      `IMPLEMENTATION_PLAN.md` §9, both are derived by `06-publish/rebuild.py` at
+      publish time, so Phase 14 really is just the extraction-side reshape as
+      flagged last session; that logic now belongs to Phase 16.
+- [x] `jobs/04-extract/prompt.md` rewritten for the v2 shape — organization name
+      raw/normalized rules + tiebreaker priority order, the three alcohol/drugs source
+      patterns and when to flag, `determination_status`, per-field date
+      raw/normalized/precision, `extraction_confidence` (per-incident, correcting the
+      document-level placement `DATABASE_SCHEMA.md` flagged as an open question), and
+      the structured `flags[]` array.
+- [x] `jobs/04-extract/make_packets.py` — bumped `PROMPT_VERSION` to `extract_v2`.
+- [x] `jobs/04-extract/RUNBOOK.md` rewritten to match.
+- [x] Smoke check: `tests/test_phase4_extract.py` rewritten in place (same job, same
+      fixtures, reshaped assertions) — hand-authored v2 `incidents.json` for
+      north-ridge (2 clean incidents with organization proposals), eastview's real
+      CHTR PDF (1 incident carrying a hand-authored flag, proving flags survive
+      schema validation), eastview's decoy PDF (deliberately schema-invalid — an
+      unknown top-level field — proving invalid output still archives with
+      `valid: false` and non-empty `schema_errors`, never silently discarded),
+      westfield's scanned/nothing-readable case, and hillcrest's genuine
+      zero-incident report. `tests/test_phase3_normalize.py` also updated to drop
+      its now-dead `lib.quotes.anchor_quote` assertions (it imported the just-deleted
+      module).
+
+## Phase 15 — done
+
+- [x] `jobs/05-review/ingest.py` rewritten: dropped `lib.quotes.anchor_quote`
+      import and all re-anchoring-on-correction logic (nothing left to anchor
+      against once quotes are gone), dropped `_resolved_decision`'s `second_review`
+      merge (decision is read directly now). Added `CORRECTABLE_FIELDS` (20
+      dot-path field names covering organization name fields, the three raw-text
+      fields, alcohol/drugs/determination_status, and all 12 date sub-fields) and
+      `_validate_corrections()`. Added a check that `organization_review is not
+      None and incident_index is None` raises `IngestError`. No longer requires
+      `extracted/text.txt` to exist at all (only the Pages UI still reads it, for
+      navigation/highlighting).
+- [x] Worker side (`jobs/05-review/app/worker/src/`): `types.ts` rewritten for the
+      v2 shapes (`Flag`, `OrganizationType`, `AlcoholDrugs`, `DeterminationStatus`,
+      `CorrectionEntry`, `OrganizationReview`, simplified `ValidationJson`).
+      `reviewSchema.ts` rewritten (`DECISIONS` drops `escalated`; new
+      `checkCorrections`/`checkOrganizationReview`) — caught and fixed a bug where
+      `checkOrganizationReview` was called with the whole `review` object instead
+      of `review.organization_review`. `ingest.ts` rewritten to match `ingest.py`
+      exactly, dropping its `resolvedDecision` export.
+- [x] `queue.ts` rewritten: dropped `QueueTier`/`TIER_ORDER`/`escalated_pending`
+      entirely (decision is now final — a target with any matching review is just
+      dropped from the queue, no partial-resolution state to track). Targets are
+      now built directly from `incidentsJson.incidents` (each carrying its own
+      `extraction_confidence`) instead of from `validation.json`'s old per-incident
+      tier array, since `ValidationJson` no longer carries incident-level data.
+      Ordering: by `docDir`, then `extraction_confidence` ascending (a
+      document-level zero-incident target has no confidence of its own and sorts
+      first via `?? -Infinity`) — per `IMPLEMENTATION_PLAN.md` §11's wording chosen
+      during planning.
+- [x] `src/quotes.ts` and `test/quotes.test.ts` deleted (the anchoring port has no
+      caller left; `src/hashing.ts` kept as-is, still needed for `file_hash`).
+      `index.ts` simplified: `handleReviewSubmit` no longer has a `second_review`
+      stamping branch, just stamps `reviewer` at the top level unconditionally.
+- [x] `test/queue.test.ts` and `test/ingest.test.ts` rewritten from scratch against
+      the v2 fixture shapes (no more tier/escalation cases; added a
+      "skips a document whose validation.json is invalid" case and an
+      `organization_review` acceptance/rejection pair). `npm --prefix
+      jobs/05-review/app/worker run typecheck` and `test` both clean (16 tests).
+- [x] Pages UI (`app/pages/`) rewritten:
+      - `app.js`: dropped tier badge/escalate button/keyboard shortcut entirely.
+        Field rendering now shows organization type + all raw/normalized fields
+        (declaratively, from small field-list tables, not one-off HTML per field)
+        plus a `flags[]` list. Added a persistent "organization review" panel
+        (decision + `corrected_organization_type`, populated from the 12-value
+        enum) included in every submitted review's `organization_review`, disabled
+        for document-level targets. Correction form rebuilt against
+        `CORRECTABLE_FIELDS` exactly (text/textarea/enum/date-triple/date-pair
+        rows), with one correction-type selector applied to every changed field in
+        a submission (kept deliberately coarse — the schema's grain is per-field,
+        but a per-field type picker in the form itself would be UI complexity this
+        single-reviewer local tool doesn't need yet). Highlighting dropped its
+        page-hint logic (no more page numbers anywhere in the new schema) — now a
+        best-effort whole-page/whole-document text search against the raw fields,
+        explicitly cosmetic only, same as before.
+      - `index.html`: removed `tier-badge`/`escalated-badge`/escalate button, added
+        `confidence-badge` and the `org-review-panel` markup.
+      - `styles.css`: removed tier/escalate color variables and badge classes,
+        added `confidence-high/mid/low` and organization-review-panel styles.
+      - `config.js` needed no changes (workerBaseUrl only).
+- [x] `jobs/05-review/RUNBOOK.md` rewritten throughout: no more
+      tier/escalation/second_review/anchoring language; documents the new
+      `CORRECTABLE_FIELDS`/`organization_review` shape, confidence-ordered queue,
+      and that `extracted/text.txt` is no longer a hard precondition for
+      `ingest_review()` itself.
+- [x] Full smoke re-run, not just this phase's own tests: every
+      `tests/test_phase*.py` (0, 2, 3, 4, 7a, 12) plus `npm --prefix
+      jobs/05-review/app/worker test`/`run typecheck` all pass clean — confirms
+      Phase 15's rewrite didn't regress any earlier phase.
+
+Decisions made this phase (judgment calls, not asked separately — consistent with
+the plan's own "phase-level implementation details are mine to decide" note):
+- Organization review is captured on *every* submitted incident-level review
+  (default `{decision: "approved", corrected_organization_type: null}` if the
+  reviewer never touches the panel), rather than being its own separate
+  submission/screen. Simpler for a single-reviewer tool, and `ingest.ts`/`ingest.py`
+  already treat it as fully independent of the incident's own `decision`.
+- A reviewed queue target is simply removed from `buildQueue()`'s output rather than
+  carrying any "already decided" status field — v3.0 has no unresolved/pending
+  state a decision can be in short of existing or not, so there's nothing left to
+  surface a status enum for (unlike the old `escalated_pending`).
+
+## Phase 16 — done
+
+- [x] `jobs/06-publish/catalog_schema.sql` — rewritten from scratch: 15 tables across
+      two schemas (`staging`: `staging_incidents`, `staging_organizations`,
+      `staging_incident_possible_matches`, `staging_incident_review_flags`,
+      `staging_incident_corrections`; `public`: `institution`, `pipeline_runs`,
+      `data_checks`, `ledger`, `artifacts`, `incidents`, `incident_organizations`,
+      `incident_dates`, `incident_status_history`, `organizations`), ordered as a
+      topological sort of the FK graph rather than `DATABASE_SCHEMA.md`'s own table
+      order (`staging.staging_incidents`/`staging_organizations` have to exist before
+      `public.incidents`/`incident_organizations` can reference them; `public.incidents`
+      has to exist before `staging.staging_incident_possible_matches` can reference it
+      back). Enums are `text` + `CHECK`, matching the six-table schema's existing
+      convention (no native Postgres `ENUM`). Verified by applying it to a scratch local
+      Postgres database and confirming exactly 15 tables (10 `public` + 5 `staging`).
+- [x] `jobs/06-publish/rebuild.py` — rewritten from scratch. `_populate()` walks the
+      archive once, in FK-dependency order: `institution` (from `sources/schools.csv`)
+      → `pipeline_runs` (from `pipeline_runs/*.json`, archive root, not prefix-scoped)
+      → `data_checks` → `ledger` → `artifacts` → then, per doc dir in a deterministic
+      `(unitid, scrape_year, fetched_at)` order, stages every `incidents[]` entry
+      (regardless of review status) and — for `Approved` ones — promotes them per §9's
+      organization-matching and cross-year status-update rules. See
+      `jobs/06-publish/RUNBOOK.md` for the full walk-through.
+- [x] `jobs/05-review/ingest.py` / `jobs/02-archive/run.py` / `schemas/data_check.schema.json`
+      / `fixtures/schema_examples/data_check.example.json` — a real gap found while
+      building this phase, fixed in place (see below): `data_check.json` had no
+      `pipeline_run_id` field, so there was no way for `rebuild.py` to populate
+      `Data_checks.pipeline_run_id` (a required FK per `DATABASE_SCHEMA.md`) at all.
+      `write_data_check()` was already receiving `pipeline_run_id` as a parameter but
+      explicitly discarding it (`_ = pipeline_run_id`, with a comment saying so). Added
+      the field to the schema (required) and the example fixture, and now write_data_check
+      actually stores it. `tests/test_phase2_archive.py` / `test_phase0_schemas.py` /
+      `test_phase12_discover_airtable.py` all still pass after the change — this was a
+      mechanical bug fix (matching invariant 3's "every artifact-writing script validates
+      before writing" bar), not a new design decision.
+- [x] Sanity-checked (not the formal Phase 17 smoke test, which still needs to be
+      written): built a real archive via 02/03/04 against `fixtures/crawl_pages/` (same
+      pattern `test_phase4_extract.py` uses), submitted `approved`/`corrected`/`rejected`
+      reviews via `ingest.py`, hand-added a second-scrape-year re-extraction of the same
+      eastview incident (same `investigation_end_date`, different `determination_status`)
+      to exercise the one genuinely novel code path, and ran `rebuild.py` against a
+      scratch local Postgres database. Confirmed: two full runs produce byte-identical
+      row counts (idempotency); a `corrected` review's field correction lands in both
+      `staging_incidents` and the promoted `incidents` row while leaving `incident_id`
+      computed from the original extraction; a `rejected` incident never reaches
+      `public.incidents`; `Required field missing`/`Low extraction confidence` flags are
+      recomputed correctly from final field values; an AI-reported flag (`Determination
+      unclear`) survives into `staging_incident_review_flags` when nothing corrected it;
+      organization proposals get matched/promoted with the join table correctly
+      populated; and, most importantly, the cross-year update case updates the existing
+      public `incidents` row **in place** (no duplicate), writes one
+      `incident_status_history` row with the right old/new status, keeps
+      `incidents.staging_incident_id` frozen at the *original* promoting extraction (not
+      repointed to the resolving one), and gives each of the two staging extractions
+      (year 1 and year 2) its own `incident_dates` audit-trail row, both pointing at the
+      same public `incident_id`. Caught and fixed one real bug in the process (see
+      below). This round-trip is not a substitute for Phase 17's real fixture-based
+      pytest suite — no automated test file was added this phase.
+- [x] `jobs/06-publish/RUNBOOK.md` rewritten for the 15-table design.
+
+### Bug found and fixed during Phase 16's sanity round-trip
+
+`_process_organization()` read `org_review["reviewer"]` to populate
+`staging_organizations.reviewed_by`, but `review.schema.json`'s `organization_review`
+object only has `decision`/`corrected_organization_type` — it carries no `reviewer`
+field of its own (it's a sub-decision on the same top-level review, not a separate
+review). Every incident with an organization proposal and any `organization_review`
+crashed with `KeyError: 'reviewer'`. Fixed by passing the top-level review's
+`reviewer`/`reviewed_at` into `_process_organization()` explicitly instead of trying to
+read them off the sub-object.
+
+### Decisions made during Phase 16 (not asked separately — these were genuine
+conflicts between `DATABASE_SCHEMA.md`'s literal field tables and either
+`IMPLEMENTATION_PLAN.md` or the already-shipped v3.0 archive schemas, but each one
+resolves cleanly by grounding in text `IMPLEMENTATION_PLAN.md` or the shipped schemas
+already settle, rather than being genuinely open — same bar as every prior phase's
+"not asked separately" notes)
+
+- **ID strategy overrides `DATABASE_SCHEMA.md`'s "Integer, auto-generated" field-table
+  wording entirely.** `DATABASE_SCHEMA.md` describes every primary key as
+  auto-generated/`SERIAL`-style, but invariant 9 ("IDs are content-derived, never
+  SERIAL... including every public ID") is unqualified, and `IMPLEMENTATION_PLAN.md`
+  §12 explicitly gives content-derived hash formulas for `incident_id`/`organization_id`
+  specifically, describing `DATABASE_SCHEMA.md` as authoritative only for "field-by-field
+  reference," with §12 itself covering "what changed structurally." Resolved by treating
+  §12 as the override: every primary key across all 15 tables is a
+  `short_hash(sha256(...))` text id (matching the six-table schema's existing
+  convention), computed from stable inputs (e.g. `staging_incident_id` = hash of
+  `artifact_id` + incident index; `organization_id` = hash of the deterministic
+  comparison key, not the first-seen proposal text, so it's idempotent regardless of
+  processing order — directly per §12's own reasoning). `Institution.unitid` remains the
+  one natural (non-hashed) key, per IPEDS.
+- **Nullability conflicts resolved in favor of the already-shipped, enforced JSON
+  schemas over `DATABASE_SCHEMA.md`'s field tables.** Three fields:
+  `Institution.state_territory` (schema table says `NOT NULL`, but `sources/schools.csv`'s
+  `state` column is blank for every row per Phase 6's decision — no IPEDS backfill has
+  happened), `Staging_organizations.organization_type` (schema table says `NOT NULL`,
+  but its own scope note instructs leaving it `NULL` when unclassifiable, and
+  `jobs/04-extract/schema.json` already ships `organization_type` as nullable for
+  exactly this reason), and `organization_name_raw`/`organization_name_normalized` /
+  `Staging_incident_corrections.original_value` (schema tables say `NOT NULL`, but
+  `jobs/04-extract/schema.json` and `schemas/review.schema.json` both allow null).
+  All four left nullable in `catalog_schema.sql` — the alternative (`NOT NULL`) would
+  make `rebuild.py` unable to insert real archived data at all.
+- **`Staging_incident_review_flags` gets a DB-level `CHECK` enforcing "exactly one of
+  staging_incident_id / staging_organization_id"**, even though `DATABASE_SCHEMA.md`
+  describes this as pipeline-code-only enforcement. Not a contradiction — a stricter
+  constraint than what's described doesn't violate the described behavior, and this
+  schema is fully constrained throughout per the Phase 5 precedent ("NOT NULL wherever
+  the source artifact schema requires the field... indexes on every FK column").
+- **Flags are recomputed fresh every rebuild, never carried over as stored state**,
+  per invariant 7 and `IMPLEMENTATION_PLAN.md` §9's explicit "recomputed by rebuild.py
+  on every rebuild... not tracked as a separate stateful event." Two flag types
+  (`Required field missing`, `Low extraction confidence`) are mechanically recomputed
+  from the *final* (post-correction) field values every time. The other three
+  (`Determination unclear`, `Alcohol/drugs review needed`, `Unrecognized date term`,
+  `Unable to determine organization type`) depend on source-document structure only the
+  AI observed, not any final scalar value, so they can't be mechanically re-derived —
+  these are carried forward from the AI's own `incidents.json` `flags[]` array and
+  dropped only when the reviewer's correction touched that exact field name (Review &
+  Correction pipeline logic: "flags auto-clear when their condition resolves"). A direct
+  consequence: `resolved_at` is always `NULL` in every rebuild — there's no stateful
+  history to preserve across a full drop-and-rebuild architecture, so the column exists
+  for schema fidelity with `DATABASE_SCHEMA.md` but is never actually populated.
+- **Timestamp columns are derived from archived data, never wall-clock-at-rebuild-time**,
+  with one accepted exception (`institution.created_at` — see `catalog_schema.sql`'s
+  header and `RUNBOOK.md`'s postconditions for the full reasoning). This wasn't asked
+  separately — it's a direct, low-judgment extension of invariant 9's "identical archive
+  -> identical catalog" bar, which Phase 5's own smoke check already tested at full-row
+  granularity ("every row and ID is byte-identical between the two runs"), not just IDs.
+- **`data_check.json` gained a required `pipeline_run_id` field** (see the bug-fix note
+  above) — a mechanical fix to close a real gap, not a design decision, but recorded
+  here since it touches an already-shipped Phase 11 artifact schema.
+- **`Artifacts.pipeline_run_id` (frozen-at-creation, per `DATABASE_SCHEMA.md`) is
+  approximated, not exact.** Unlike `data_checks.pipeline_run_id` (now stored directly
+  in `data_check.json`), `manifest.json` has no `pipeline_run_id` field of its own — that
+  would require a second schema change to an artifact-writing script's output for a
+  gap this phase judged non-blocking (it doesn't prevent a correct rebuild of any of the
+  15 tables that actually matter for review/publish, only this one FK's exact accuracy
+  under retries). `rebuild.py` approximates it by finding the pipeline run whose
+  `[run_started_at, run_completed_at]` window brackets the artifact's `fetched_at`,
+  falling back to the most recent run if none bracket cleanly. **Flagged as an open gap,
+  not silently resolved**: if `Artifacts.pipeline_run_id`'s audit-trail accuracy under
+  retried/partial runs ever matters (e.g. for debugging a specific bad extraction back
+  to its exact producing run), `manifest.schema.json` needs its own `pipeline_run_id`
+  field added the same way `data_check.schema.json` just got one.
+
 ## Next session should
 
-All build phases (0 through 7b) are done — no code work is blocking. Real credentials
-landed this session: Mahir provisioned a real Cloudflare R2 bucket and Neon Postgres
-database and put `R2_ENDPOINT_URL`/`R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY`/
-`R2_BUCKET_NAME`/`NEON_DATABASE_URL` into `.env` (confirmed non-placeholder), plus real
-`AIRTABLE_TOKEN`/`AIRTABLE_BASE_ID`/`AIRTABLE_TABLE_NAME` for the old system's
-human-curated institution/URL registry (Airtable — a separate thing from the removed R2/
-Neon legacy migration; see "Phase 8 (removed)" above). There is no old R2 bucket or old
-Neon database to migrate from — confirmed with Mahir this session.
+Start Phase 17: build the new fixture archive + rewrite the official smoke test
+(`tests/test_phase5_publish.py` → likely `tests/test_phase16_publish.py` or similar) —
+Phase 16's sanity round-trip (a throwaway script, not committed) exercised the main
+paths by hand but there is no automated regression coverage for `jobs/06-publish/`
+yet. Cover at minimum: schema-invalid documents are skipped; a rejected incident never
+reaches `public`; a `corrected` review's correction lands in both schemas while
+`incident_id` stays computed from the original extraction; organization matching
+(both "New proposal" and "Matched existing"); the cross-year "Status update to
+existing incident" in-place-update path (the scenario this session's sanity check
+built by hand — see Phase 16 notes); flag recomputation (both the mechanically
+recomputed types and the carried-forward-then-cleared types); and full idempotency
+(two rebuilds of an unchanged archive produce byte-identical rows). Also worth
+deciding in Phase 17: whether to close the `Artifacts.pipeline_run_id` approximation
+gap noted above by adding a `pipeline_run_id` field to `manifest.schema.json`, mirroring
+the `data_check.schema.json` fix this phase already made.
 
-In progress, not yet finished: `jobs/01-discover/import_airtable.py` — pulls
-institutions from Airtable (fields seen in the old repo's `airtable_client.py`: `UNITID`,
-`Institution`, `City, State`, `Transparency Report`), matches by `unitid` against the
-current `sources/schools.csv` (never adds rows — the 1,484-institution scope is fixed),
-backfills the blank `state` column directly where Airtable has one, and for institutions
-with a `Transparency Report` URL and a still-blank `url_status`, writes a
-`candidates.json` + `decisions.json` pair (decisions pre-set to `confirmed` — Mahir
-confirmed treating Airtable's existing human curation as sufficient, no per-row operator
-review needed) into a new `tasks/discover/batch_NNN/` for the *existing*, already-tested
-`merge.py` to apply — no new merge logic, reusing invariant 3's single write path.
-Next session should finish writing this script, add a smoke test with a stubbed Airtable
-response (no real API calls in tests), run it for real, then run `merge.py`.
-
-After that, the mandatory next step per OPERATIONS.md is the fixtures smoke run (now
-actually unblocked — real R2/Neon credentials exist and `jobs/02-archive/run.py` gained
-`--prefix` support this session specifically so the smoke run can target `smoke/` without
-touching the real archive). Only after that passes should the real annual pass
-(discover → archive → normalize → extract → review → publish) begin against whatever of
-the 1,484 institutions Airtable didn't already resolve.
-
-Still separately open: Phase 7b's live deploy (real review-app R2 write credentials
-scoped to `reviews/`, a Cloudflare Access application, `config.js` pointed at the
-deployed Worker) — needed before any volunteer can actually use the review app.
+Still separately open, unrelated to the v3.0 migration: Phase 7b's live deploy (real
+review-app R2 write credentials scoped to `reviews/`, a Cloudflare Access application,
+`config.js` pointed at the deployed Worker) — needed before any volunteer can actually
+use the review app.

@@ -1,47 +1,73 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hazinginfo.org/schemas/jobs/04-extract/incidents.schema.json",
-  "title": "incidents.json (v1)",
-  "description": "04-extract agent output. Per IMPLEMENTATION_PLAN.md §8. Quotes are verbatim substrings of text.txt; validate.py computes offsets, never the AI. Everything nullable except description_quote. Fields are exactly those the Act defines — do not add hazing-type taxonomy, sanction severity, location, is_aggravated, date_reported, or org_type.",
+  "title": "incidents.json (v2 — v3.0 pipeline)",
+  "description": "04-extract agent output. Per IMPLEMENTATION_PLAN.md §8 and DATABASE_SCHEMA.md's Staging_incidents/Staging_organizations. Every raw field is captured verbatim; every normalized field is the AI's own interpretation of that raw text. No page-anchored quotes and no offsets in v3.0 — validate.py only checks schema conformance. Fields are exactly those the Act defines plus the data dictionary's staging fields — do not add hazing-type taxonomy, sanction severity, location, is_aggravated, or date_reported.",
   "$defs": {
-    "quote": {
-      "type": "object",
-      "properties": {
-        "text": {"type": "string"},
-        "page": {"type": ["integer", "null"], "minimum": 1}
-      },
-      "required": ["text", "page"],
-      "additionalProperties": false
-    },
-    "nullable_quote": {
+    "date": {"type": ["string", "null"], "format": "date"},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "alcohol_drugs_enum": {"enum": ["Yes", "No", "Not specified"]},
+    "determination_status_enum": {"enum": ["Pending", "Determined hazing", "Dismissed", "Not specified"]},
+    "date_precision_enum": {"enum": ["Year", "Day", "Academic year", "Academic term", "Month", "Unknown"]},
+    "organization_type_enum": {
       "anyOf": [
-        {"$ref": "#/$defs/quote"},
+        {
+          "enum": [
+            "Fraternity",
+            "Sorority",
+            "Institution Athletic Team",
+            "Club Sport",
+            "Honor/Leadership Society",
+            "Academic/Professional Club",
+            "Performing/Spirit Group",
+            "Military/Cadet Organization",
+            "General Interest/Social Club",
+            "Religious/Faith-Based Organization",
+            "Orientation/Mentorship Program",
+            "Unrecognized Organization"
+          ]
+        },
         {"type": "null"}
       ]
     },
-    "date": {"type": ["string", "null"], "format": "date"}
+    "flag_type_enum": {
+      "enum": [
+        "Required field missing",
+        "Alcohol/drugs review needed",
+        "Determination unclear",
+        "Low extraction confidence",
+        "Unrecognized date term",
+        "Unable to determine organization type"
+      ]
+    },
+    "flag": {
+      "type": "object",
+      "properties": {
+        "flag_type": {"$ref": "#/$defs/flag_type_enum"},
+        "field_name": {"type": "string"},
+        "note": {"type": ["string", "null"]}
+      },
+      "required": ["flag_type", "field_name", "note"],
+      "additionalProperties": false
+    }
   },
   "type": "object",
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "is_chtr": {"type": "boolean"},
     "document": {
       "type": "object",
       "properties": {
-        "title_quote": {"$ref": "#/$defs/nullable_quote"},
-        "reporting_period_quote": {"$ref": "#/$defs/nullable_quote"},
         "reporting_period_start": {"$ref": "#/$defs/date"},
         "reporting_period_end": {"$ref": "#/$defs/date"},
         "publication_date": {"$ref": "#/$defs/date"},
-        "zero_incidents_quote": {"$ref": "#/$defs/nullable_quote"}
+        "zero_incidents_statement": {"type": ["string", "null"]}
       },
       "required": [
-        "title_quote",
-        "reporting_period_quote",
         "reporting_period_start",
         "reporting_period_end",
         "publication_date",
-        "zero_incidents_quote"
+        "zero_incidents_statement"
       ],
       "additionalProperties": false
     },
@@ -50,42 +76,59 @@
       "items": {
         "type": "object",
         "properties": {
-          "organization_quote": {"$ref": "#/$defs/nullable_quote"},
-          "description_quote": {"$ref": "#/$defs/quote"},
-          "findings_quote": {"$ref": "#/$defs/nullable_quote"},
-          "sanction_quotes": {
-            "type": "array",
-            "items": {"$ref": "#/$defs/quote"}
-          },
-          "alcohol_involved": {"type": ["boolean", "null"]},
-          "drugs_involved": {"type": ["boolean", "null"]},
+          "organization_name_raw": {"type": ["string", "null"]},
+          "organization_name_normalized": {"type": ["string", "null"]},
+          "organization_type": {"$ref": "#/$defs/organization_type_enum"},
+          "description_raw": {"type": "string"},
+          "findings_raw": {"type": ["string", "null"]},
+          "sanctions_raw": {"type": ["string", "null"]},
+          "alcohol_involved": {"$ref": "#/$defs/alcohol_drugs_enum"},
+          "drugs_involved": {"$ref": "#/$defs/alcohol_drugs_enum"},
+          "determination_status": {"$ref": "#/$defs/determination_status_enum"},
           "dates": {
             "type": "object",
             "properties": {
-              "incident_quote": {"$ref": "#/$defs/nullable_quote"},
-              "incident_start": {"$ref": "#/$defs/date"},
-              "incident_end": {"$ref": "#/$defs/date"},
-              "investigation_initiated": {"$ref": "#/$defs/date"},
-              "resolved": {"$ref": "#/$defs/date"}
+              "incident_start_raw": {"type": "string"},
+              "incident_start_normalized": {"$ref": "#/$defs/date"},
+              "incident_start_precision": {"$ref": "#/$defs/date_precision_enum"},
+              "incident_end_raw": {"type": "string"},
+              "incident_end_normalized": {"$ref": "#/$defs/date"},
+              "incident_end_precision": {"$ref": "#/$defs/date_precision_enum"},
+              "investigation_start_date_raw": {"type": "string"},
+              "investigation_start_date": {"$ref": "#/$defs/date"},
+              "investigation_end_date_raw": {"type": "string"},
+              "investigation_end_date": {"$ref": "#/$defs/date"},
+              "notice_date_raw": {"type": "string"},
+              "notice_date": {"$ref": "#/$defs/date"}
             },
             "required": [
-              "incident_quote",
-              "incident_start",
-              "incident_end",
-              "investigation_initiated",
-              "resolved"
+              "incident_start_raw", "incident_start_normalized", "incident_start_precision",
+              "incident_end_raw", "incident_end_normalized", "incident_end_precision",
+              "investigation_start_date_raw", "investigation_start_date",
+              "investigation_end_date_raw", "investigation_end_date",
+              "notice_date_raw", "notice_date"
             ],
             "additionalProperties": false
+          },
+          "extraction_confidence": {"$ref": "#/$defs/confidence"},
+          "flags": {
+            "type": "array",
+            "items": {"$ref": "#/$defs/flag"}
           }
         },
         "required": [
-          "organization_quote",
-          "description_quote",
-          "findings_quote",
-          "sanction_quotes",
+          "organization_name_raw",
+          "organization_name_normalized",
+          "organization_type",
+          "description_raw",
+          "findings_raw",
+          "sanctions_raw",
           "alcohol_involved",
           "drugs_involved",
-          "dates"
+          "determination_status",
+          "dates",
+          "extraction_confidence",
+          "flags"
         ],
         "additionalProperties": false
       }

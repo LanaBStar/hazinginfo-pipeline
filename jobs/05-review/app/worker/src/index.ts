@@ -2,7 +2,8 @@
  * index.ts -- the review app's API Worker (Phase 7b, per IMPLEMENTATION_PLAN.md
  * Section 11). Routes:
  *
- *   GET  /api/queue                          -> QueueItem[] (queue.ts, ordered fast -> standard -> flagged)
+ *   GET  /api/queue                          -> QueueItem[] (queue.ts, ordered by document
+ *                                                then extraction_confidence ascending)
  *   GET  /api/document?doc_dir=&incident_index=  -> everything one review screen needs
  *   GET  /api/original?doc_dir=               -> the source document's bytes (PDF as-is;
  *                                                 HTML sanitized via HTMLRewriter, since
@@ -194,20 +195,8 @@ async function handleReviewSubmit(store: ArchiveStore, request: Request, env: En
   // The client-submitted `reviewer` field is never trusted -- Phase 7a's ingest.py
   // deliberately left identity verification to "the future Worker's job" (its
   // RUNBOOK.md/docstring). This is that job: the resolved Access identity always
-  // wins, so a review can never be filed under a spoofed name. A submission that
-  // carries a `second_review` (the Pages UI's shape for resolving an escalation or
-  // giving a flagged-tier item its dual review, per buildReviewPayload in app.js) is
-  // stamping *that* block's reviewer, not the top-level one -- the top-level
-  // `reviewer`/`reviewed_at` there are carried over unchanged from the original
-  // review this request is resolving, already stamped correctly when it was first
-  // submitted. Stamping the top level again in that case would be a no-op at best
-  // and, if the payload's second_review is ever malformed, could silently attribute
-  // someone else's original decision to the current caller.
-  const incomingSecondReview = (payload.review as { second_review?: Record<string, unknown> | null }).second_review;
-  const review =
-    incomingSecondReview != null
-      ? { ...payload.review, second_review: { ...incomingSecondReview, reviewer: identity.reviewer } }
-      : { ...payload.review, reviewer: identity.reviewer };
+  // wins, so a review can never be filed under a spoofed name.
+  const review = { ...payload.review, reviewer: identity.reviewer };
 
   try {
     const key = await ingestReview(store, payload.doc_dir, review);

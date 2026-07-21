@@ -2,11 +2,18 @@
  * queue.ts -- builds the reviewable queue by walking the archive, the same way
  * status.py's walk_archive() derives pipeline state: never stored, always recomputed
  * (invariant 7). This is deliberately NOT read from Postgres: catalog_schema.sql's
- * `reports`/`incidents` tables only ever contain *already-reviewed* (approved/
- * corrected) rows (rebuild.py, Section 12) -- there is no "pending" projection in
- * Postgres to read a queue from, so the archive itself (validation.json's tiers +
- * reviews/*.review.json) is the only source of truth for "what still needs a human."
+ * `Incidents`/`Organizations` tables only ever contain *already-reviewed* (promoted)
+ * rows (rebuild.py) -- there is no "pending" projection in Postgres to read a queue
+ * from, so the archive itself (incidents.json's extraction_confidence + reviews/*
+ * .review.json) is the only source of truth for "what still needs a human."
  * This also means the review app needs no Postgres/Neon credentials at all, only R2.
+ *
+ * v3.0: no more tiers or escalation. A review's decision is a single, final call --
+ * once a matching review.json exists for (file_hash, incident_index), that target is
+ * done and drops out of the queue entirely. Ordering is by document, then by
+ * extraction_confidence ascending within a document (lowest-confidence items surfaced
+ * first) per IMPLEMENTATION_PLAN.md §11 -- a document-level (zero-incident) target has
+ * no confidence of its own and sorts first.
  *
  * Institution display name comes from the doc_dir path's own `{unitid}_{slug}`
  * segment (e.g. "100001_alpha-college" -> slug "alpha-college") rather than a
@@ -15,13 +22,9 @@
  * the only name available to a Worker that only holds R2 credentials.
  */
 import { sha256Hex } from "./hashing";
-import { resolvedDecision } from "./ingest";
 import type { ArchiveStore } from "./store";
 import { getJson } from "./store";
 import type { IncidentsJson, Manifest, ReviewJson, ValidationJson } from "./types";
-
-export type QueueTier = "fast" | "standard" | "flagged";
-export type QueueStatus = "pending" | "escalated_pending";
 
 export interface QueueItem {
   docDir: string;
@@ -30,12 +33,9 @@ export interface QueueItem {
   scrapeYear: number;
   contentType: string;
   incidentIndex: number | null;
-  tier: QueueTier;
+  extractionConfidence: number | null;
   fileHash: string;
-  status: QueueStatus;
 }
-
-const TIER_ORDER: Record<QueueTier, number> = { fast: 0, standard: 1, flagged: 2 };
 
 function docDirsFromKeys(keys: string[]): string[] {
   const dirs = new Set<string>();
@@ -83,16 +83,16 @@ export async function buildQueue(store: ArchiveStore, prefix = "archive/"): Prom
 
     const fileHash = await sha256Hex(incidentsBytes);
     const manifest = await getJson<Manifest>(store, manifestKey);
+    const incidentsJson = JSON.parse(new TextDecoder().decode(incidentsBytes)) as IncidentsJson;
 
     const reviewsPrefix = `${docDir}/reviews/`;
     const reviewKeys = keys.filter((k) => k.startsWith(reviewsPrefix));
     const reviews = await Promise.all(reviewKeys.map((k) => getJson<ReviewJson>(store, k)));
 
-    const targets: Array<{ index: number | null; tier: QueueTier }> = validation.incidents.map((inc) => ({
-      index: inc.index,
-      tier: inc.tier,
-    }));
-    if (validation.document.tier === "fast") targets.push({ index: null, tier: "fast" });
+    const targets: Array<{ index: number | null; confidence: number | null }> = incidentsJson.incidents.map(
+      (inc, i) => ({ index: i, confidence: inc.extraction_confidence })
+    );
+    if (incidentsJson.incidents.length === 0) targets.push({ index: null, confidence: null });
 
     const dirParts = docDir.split("/"); // ["archive", "{unitid}_{slug}", "{year}", "docs", "{hash16}"]
     const instDir = dirParts[1];
@@ -102,25 +102,11 @@ export async function buildQueue(store: ArchiveStore, prefix = "archive/"): Prom
     const scrapeYear = Number(dirParts[2]);
 
     for (const target of targets) {
-      const match = reviews.find(
+      const isReviewed = reviews.some(
         (r) => r.extraction_ref.file_hash === fileHash && r.extraction_ref.incident_index === target.index
       );
-      if (match) {
-        const [decision] = resolvedDecision(match);
-        if (decision !== "escalated") continue; // already terminally decided -- out of the queue
-        items.push({
-          docDir,
-          unitid,
-          institutionSlug,
-          scrapeYear,
-          contentType: manifest.content_type,
-          incidentIndex: target.index,
-          tier: target.tier,
-          fileHash,
-          status: "escalated_pending",
-        });
-        continue;
-      }
+      if (isReviewed) continue; // decision is final -- out of the queue
+
       items.push({
         docDir,
         unitid,
@@ -128,18 +114,17 @@ export async function buildQueue(store: ArchiveStore, prefix = "archive/"): Prom
         scrapeYear,
         contentType: manifest.content_type,
         incidentIndex: target.index,
-        tier: target.tier,
+        extractionConfidence: target.confidence,
         fileHash,
-        status: "pending",
       });
     }
   }
 
   items.sort((a, b) => {
-    const byTier = TIER_ORDER[a.tier] - TIER_ORDER[b.tier];
-    if (byTier !== 0) return byTier;
-    if (a.status !== b.status) return a.status === "escalated_pending" ? -1 : 1; // surface escalations first within a tier
     if (a.docDir !== b.docDir) return a.docDir < b.docDir ? -1 : 1;
+    const ca = a.extractionConfidence ?? -Infinity;
+    const cb = b.extractionConfidence ?? -Infinity;
+    if (ca !== cb) return ca - cb;
     return (a.incidentIndex ?? -1) - (b.incidentIndex ?? -1);
   });
 
@@ -147,8 +132,9 @@ export async function buildQueue(store: ArchiveStore, prefix = "archive/"): Prom
 }
 
 /** Fetches everything one queue item's review screen needs: the current extraction,
- * its validation/anchoring results, the manifest, and the existing review (if any --
- * present only for an escalated item awaiting a second_review). */
+ * its validation result, the manifest, and any existing review for this exact target
+ * (present only if the queue was stale -- normally null, since a reviewed target
+ * already dropped out of buildQueue's output). */
 export async function loadReviewTarget(store: ArchiveStore, docDir: string, incidentIndex: number | null) {
   const keys = await store.listKeys(`${docDir}/`);
   const keySet = new Set(keys);

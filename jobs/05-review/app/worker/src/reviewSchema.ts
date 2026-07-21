@@ -2,17 +2,19 @@
  * Hand-rolled validator for schemas/review.schema.json -- the Worker's bundle stays
  * dependency-free (no ajv) since this schema is small, fixed, and already fully
  * specified; keeping it hand-written also makes it trivial to keep in lockstep with
- * schemas/review.schema.json whenever that file changes (both were extended together
- * in Phase 7b: nullable extraction_ref.incident_index, "escalated" decision).
+ * schemas/review.schema.json whenever that file changes.
  *
  * Mirrors jsonschema.Draft202012Validator(REVIEW_SCHEMA).validate() in ingest.py:
  * same required keys, same additionalProperties: false, same enums.
+ *
+ * v3.0: no more tier, escalated, or second_review -- decision is a single, final call.
+ * corrections is now a list of per-field entries; organization_review is new.
  */
 
-const DECISIONS = ["approved", "rejected", "corrected", "escalated"] as const;
-const SECOND_REVIEW_DECISIONS = ["approved", "rejected", "corrected"] as const;
+const DECISIONS = ["approved", "rejected", "corrected"] as const;
+const ORG_DECISIONS = ["approved", "rejected", "corrected"] as const;
 const REJECTION_REASONS = ["not_hazing", "duplicate", "segmentation_error", "extraction_error"] as const;
-const TIERS = ["fast", "standard", "flagged"] as const;
+const CORRECTION_TYPES = ["Minor cleanup", "Extraction error"] as const;
 
 export class ReviewSchemaError extends Error {}
 
@@ -36,14 +38,6 @@ function checkRequired(obj: Record<string, unknown>, required: readonly string[]
   }
 }
 
-function checkCorrections(value: unknown, where: string): void {
-  if (value === null) return;
-  if (!isPlainObject(value)) fail(`${where}.corrections must be an object or null`);
-  for (const [k, v] of Object.entries(value)) {
-    if (typeof v !== "string") fail(`${where}.corrections[${JSON.stringify(k)}] must be a string`);
-  }
-}
-
 function checkRejectionReason(value: unknown, where: string): void {
   if (value === null) return;
   if (typeof value !== "string" || !(REJECTION_REASONS as readonly string[]).includes(value)) {
@@ -57,19 +51,52 @@ function checkDateTime(value: unknown, where: string): void {
   }
 }
 
+const CORRECTION_ENTRY_REQUIRED = ["field_name", "original_value", "corrected_value", "correction_type"] as const;
+
+function checkCorrections(value: unknown, where: string): void {
+  if (!Array.isArray(value)) fail(`${where}.corrections must be an array`);
+  value.forEach((entry, i) => {
+    const w = `${where}.corrections[${i}]`;
+    if (!isPlainObject(entry)) fail(`${w} must be an object`);
+    checkAdditionalProperties(entry, CORRECTION_ENTRY_REQUIRED, w);
+    checkRequired(entry, CORRECTION_ENTRY_REQUIRED, w);
+    if (typeof entry.field_name !== "string") fail(`${w}.field_name must be a string`);
+    if (entry.original_value !== null && typeof entry.original_value !== "string") {
+      fail(`${w}.original_value must be a string or null`);
+    }
+    if (typeof entry.corrected_value !== "string") fail(`${w}.corrected_value must be a string`);
+    if (!Array.isArray(entry.correction_type) || entry.correction_type.length < 1
+        || !entry.correction_type.every((t: unknown) => (CORRECTION_TYPES as readonly string[]).includes(t as string))) {
+      fail(`${w}.correction_type must be a non-empty array of ${CORRECTION_TYPES.join("/")}`);
+    }
+  });
+}
+
+const ORG_REVIEW_REQUIRED = ["decision", "corrected_organization_type"] as const;
+
+function checkOrganizationReview(value: unknown, where: string): void {
+  if (value === null) return;
+  if (!isPlainObject(value)) fail(`${where}.organization_review must be an object or null`);
+  checkAdditionalProperties(value, ORG_REVIEW_REQUIRED, `${where}.organization_review`);
+  checkRequired(value, ORG_REVIEW_REQUIRED, `${where}.organization_review`);
+  if (typeof value.decision !== "string" || !(ORG_DECISIONS as readonly string[]).includes(value.decision)) {
+    fail(`organization_review.decision must be one of ${ORG_DECISIONS.join("/")}`);
+  }
+  if (value.corrected_organization_type !== null && typeof value.corrected_organization_type !== "string") {
+    fail("organization_review.corrected_organization_type must be a string or null");
+  }
+}
+
 const TOP_LEVEL_REQUIRED = [
   "schema_version",
   "extraction_ref",
-  "tier",
   "decision",
   "rejection_reason",
   "corrections",
+  "organization_review",
   "reviewer",
   "reviewed_at",
-  "second_review",
 ] as const;
-
-const SECOND_REVIEW_REQUIRED = ["decision", "rejection_reason", "corrections", "reviewer", "reviewed_at"] as const;
 
 /** Throws ReviewSchemaError on any violation; returns void (not a type guard) since
  * callers re-wrap into IngestError with a consistent message prefix. */
@@ -78,7 +105,7 @@ export function validateReviewSchema(review: unknown): void {
   checkAdditionalProperties(review, TOP_LEVEL_REQUIRED, "review");
   checkRequired(review, TOP_LEVEL_REQUIRED, "review");
 
-  if (review.schema_version !== 1) fail("schema_version must be 1");
+  if (review.schema_version !== 2) fail("schema_version must be 2");
 
   const ref = review.extraction_ref;
   if (!isPlainObject(ref)) fail("extraction_ref must be an object");
@@ -92,28 +119,12 @@ export function validateReviewSchema(review: unknown): void {
     fail("extraction_ref.incident_index must be a non-negative integer or null");
   }
 
-  if (typeof review.tier !== "string" || !(TIERS as readonly string[]).includes(review.tier)) {
-    fail(`tier must be one of ${TIERS.join("/")}`);
-  }
   if (typeof review.decision !== "string" || !(DECISIONS as readonly string[]).includes(review.decision)) {
     fail(`decision must be one of ${DECISIONS.join("/")}`);
   }
   checkRejectionReason(review.rejection_reason, "review");
   checkCorrections(review.corrections, "review");
+  checkOrganizationReview(review.organization_review, "review");
   if (typeof review.reviewer !== "string") fail("reviewer must be a string");
   checkDateTime(review.reviewed_at, "reviewed_at");
-
-  if (review.second_review !== null) {
-    const sr = review.second_review;
-    if (!isPlainObject(sr)) fail("second_review must be an object or null");
-    checkAdditionalProperties(sr, SECOND_REVIEW_REQUIRED, "second_review");
-    checkRequired(sr, SECOND_REVIEW_REQUIRED, "second_review");
-    if (typeof sr.decision !== "string" || !(SECOND_REVIEW_DECISIONS as readonly string[]).includes(sr.decision)) {
-      fail(`second_review.decision must be one of ${SECOND_REVIEW_DECISIONS.join("/")}`);
-    }
-    checkRejectionReason(sr.rejection_reason, "second_review");
-    checkCorrections(sr.corrections, "second_review");
-    if (typeof sr.reviewer !== "string") fail("second_review.reviewer must be a string");
-    checkDateTime(sr.reviewed_at, "second_review.reviewed_at");
-  }
 }

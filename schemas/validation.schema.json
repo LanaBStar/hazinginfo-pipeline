@@ -1,94 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hazinginfo.org/schemas/validation.schema.json",
-  "title": "ai/extract_vN/validation.json",
-  "description": "validate.py output: schema validation result, per-quote anchoring, and per-incident tier. Per IMPLEMENTATION_PLAN.md §7 (04-extract), §9 (tiers), §11 (offsets for review-app highlighting).",
-  "$defs": {
-    "anchor_result": {
-      "type": ["object", "null"],
-      "properties": {
-        "anchored": {"type": "boolean"},
-        "similarity": {"type": "number", "minimum": 0, "maximum": 1},
-        "offset": {
-          "type": ["array", "null"],
-          "items": {"type": "integer", "minimum": 0},
-          "minItems": 2,
-          "maxItems": 2
-        },
-        "page_match": {"type": ["boolean", "null"]}
-      },
-      "required": ["anchored", "similarity", "offset", "page_match"],
-      "additionalProperties": false
-    }
-  },
+  "title": "ai/extract_vN/validation.json (v2 -- v3.0 pipeline)",
+  "description": "validate.py output: schema-conformance result only. Per IMPLEMENTATION_PLAN.md §7 (04-extract). v3.0 drops anchoring/tier assignment entirely -- extraction_confidence and flags[] (carried in incidents.json itself, see jobs/04-extract/schema.json) replace what this file used to compute.",
   "type": "object",
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "valid": {"type": "boolean"},
     "schema_errors": {
       "type": "array",
       "items": {"type": "string"}
-    },
-    "document": {
-      "type": "object",
-      "properties": {
-        "zero_incidents_quote": {"$ref": "#/$defs/anchor_result"},
-        "tier": {"type": ["string", "null"], "enum": ["fast", "flagged", null]},
-        "flagged_reasons": {
-          "type": "array",
-          "items": {"type": "string"}
-        }
-      },
-      "required": ["zero_incidents_quote", "tier", "flagged_reasons"],
-      "additionalProperties": false
-    },
-    "incidents": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "index": {"type": "integer", "minimum": 0},
-          "tier": {"type": "string", "enum": ["fast", "standard", "flagged"]},
-          "flagged_reasons": {
-            "type": "array",
-            "items": {"type": "string"}
-          },
-          "quotes": {
-            "type": "object",
-            "properties": {
-              "organization_quote": {"$ref": "#/$defs/anchor_result"},
-              "description_quote": {"$ref": "#/$defs/anchor_result"},
-              "findings_quote": {"$ref": "#/$defs/anchor_result"},
-              "sanction_quotes": {
-                "type": "array",
-                "items": {"$ref": "#/$defs/anchor_result"}
-              },
-              "incident_quote": {"$ref": "#/$defs/anchor_result"}
-            },
-            "required": [
-              "organization_quote",
-              "description_quote",
-              "findings_quote",
-              "sanction_quotes",
-              "incident_quote"
-            ],
-            "additionalProperties": false
-          },
-          "crosscheck": {
-            "type": ["object", "null"],
-            "properties": {
-              "agrees": {"type": "boolean"},
-              "notes": {"type": "string"}
-            },
-            "required": ["agrees", "notes"],
-            "additionalProperties": false
-          }
-        },
-        "required": ["index", "tier", "flagged_reasons", "quotes", "crosscheck"],
-        "additionalProperties": false
-      }
     }
   },
-  "required": ["schema_version", "valid", "schema_errors", "document", "incidents"],
+  "required": ["schema_version", "valid", "schema_errors"],
   "additionalProperties": false
 }

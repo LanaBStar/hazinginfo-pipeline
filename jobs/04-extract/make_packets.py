@@ -36,7 +36,9 @@ DEFAULT_TASKS_DIR = ROOT / "tasks" / "extract"
 
 # Bumped whenever prompt.md's instructions change meaningfully -- distinct from the
 # archive's extract_v{N}, which versions *output*, not the prompt that produced it.
-PROMPT_VERSION = "extract_v1"
+# v2: v3.0 pipeline -- raw+normalized fields, extraction_confidence, flags[], organization
+# proposal, determination_status; no more page-anchored quotes.
+PROMPT_VERSION = "extract_v2"
 
 ORIGINAL_EXTENSIONS = {
     "application/pdf": ".pdf",

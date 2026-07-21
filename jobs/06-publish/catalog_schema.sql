@@ -1,77 +1,302 @@
--- catalog_schema.sql -- the six tables from IMPLEMENTATION_PLAN.md §12.
+-- catalog_schema.sql -- the 15 tables (2 schemas: staging / public) from
+-- DATABASE_SCHEMA.md, per IMPLEMENTATION_PLAN.md §12.
 --
--- Applied by rebuild.py inside a freshly recreated `public` schema, every publish run
--- (invariant 2: rebuild is the only write path, no incremental import). Columns are
--- exactly those §12 names -- no invented fields. IDs on institutions/documents/
--- reports/incidents are content-derived hashes, never SERIAL (invariant 9); the two
--- child tables (incident_sanctions, reporting_status) have no independent identity of
--- their own in §12, so they carry no surrogate id column either -- just their FK plus
--- (for reporting_status) a natural composite key.
+-- Applied by rebuild.py inside freshly recreated `staging`/`public` schemas, every
+-- publish run (invariant 2: rebuild is the only write path, no incremental import).
+-- Table order below is a topological sort of the FK graph (not the order
+-- DATABASE_SCHEMA.md lists them in) -- staging.staging_incidents/staging_organizations
+-- have to exist before public.incidents/incident_organizations can reference them, and
+-- public.incidents has to exist before staging.staging_incident_possible_matches can
+-- reference it back.
+--
+-- ID strategy: every primary key is a content-derived text hash (short_hash of a
+-- sha256), never SERIAL/IDENTITY -- invariant 9 ("IDs are content-derived ... rebuilds
+-- must be idempotent: identical archive -> identical catalog, including every public
+-- ID") is unqualified, and IMPLEMENTATION_PLAN.md §12 spells this out explicitly for
+-- incident_id/organization_id specifically. This overrides DATABASE_SCHEMA.md's own
+-- field tables, which describe every PK as "Integer (PK, auto-generated)" -- that
+-- description predates the v3.0 migration decision recorded in IMPLEMENTATION_PLAN.md
+-- §12 ("DATABASE_SCHEMA.md is the authoritative field-by-field reference ... This
+-- section only covers what changed structurally") and is superseded by it for ID typing.
+-- Institution.unitid is the one natural (non-hashed) key, per IPEDS.
+--
+-- Enums are TEXT + CHECK, matching the existing six-table schema's convention (no
+-- native Postgres ENUM type), so the exact controlled-vocabulary term lists live in one
+-- place (this file) and stay easy to diff against DATABASE_SCHEMA.md's own vocab tables.
+--
+-- Nullability corrections vs. DATABASE_SCHEMA.md's literal field tables, recorded in
+-- BUILD_STATUS.md's Phase 16 notes:
+--   - Institution.state_territory: DATABASE_SCHEMA.md says NOT NULL, but
+--     sources/schools.csv's `state` column is blank for every row (Phase 6 decision --
+--     no IPEDS state backfill has happened yet). Left nullable so rebuild.py can
+--     actually populate this table from the real schools.csv.
+--   - Staging_organizations.organization_type: DATABASE_SCHEMA.md's field table says
+--     NOT NULL, but its own scope note instructs leaving it NULL when the AI can't
+--     confidently classify (never a placeholder value) -- and jobs/04-extract/schema.json
+--     already treats organization_type as nullable for this exact reason. The field
+--     table's contradiction is resolved in favor of the shipped, enforced extraction
+--     schema.
+--   - Staging_incidents.organization_name_raw/organization_name_normalized and
+--     Staging_incident_corrections.original_value: same kind of conflict (DATABASE_SCHEMA.md
+--     field tables say NOT NULL; the shipped jobs/04-extract/schema.json and
+--     schemas/review.schema.json both allow null for these). Left nullable to match the
+--     schemas actually enforced by validate.py/ingest.py.
 
-CREATE TABLE institutions (
-    unitid text PRIMARY KEY,
-    name   text NOT NULL,
-    state  text
+CREATE SCHEMA staging;
+
+-- ── public.institution ──────────────────────────────────────────────────────────
+
+CREATE TABLE public.institution (
+    unitid          text PRIMARY KEY,
+    institution     text NOT NULL,
+    state_territory text,
+    region          text,
+    created_at      timestamptz NOT NULL
 );
 
-CREATE TABLE documents (
-    content_hash    text PRIMARY KEY,
-    unitid          text NOT NULL REFERENCES institutions(unitid),
-    storage_key     text NOT NULL,
-    source_url      text NOT NULL,
-    fetched_at      timestamptz NOT NULL,
-    scrape_year     integer NOT NULL,
-    has_text_layer  boolean NOT NULL
+-- ── public.pipeline_runs ─────────────────────────────────────────────────────────
+
+CREATE TABLE public.pipeline_runs (
+    pipeline_run_id  text PRIMARY KEY,
+    prompt_version   text NOT NULL,
+    run_status       text NOT NULL CHECK (run_status IN ('Running', 'Complete', 'Partial-Error')),
+    run_started_at   timestamptz NOT NULL,
+    run_completed_at timestamptz
 );
 
-CREATE INDEX documents_unitid_idx ON documents(unitid);
+-- ── public.data_checks ───────────────────────────────────────────────────────────
 
-CREATE TABLE reports (
-    report_id         text PRIMARY KEY,
-    content_hash      text NOT NULL REFERENCES documents(content_hash),
-    period_start      date,
-    period_end        date,
-    publication_date  date,
-    is_zero_incident  boolean NOT NULL
+CREATE TABLE public.data_checks (
+    data_check_id   text PRIMARY KEY,
+    unitid          text NOT NULL REFERENCES public.institution(unitid),
+    pipeline_run_id text NOT NULL REFERENCES public.pipeline_runs(pipeline_run_id),
+    chtr_index_url  text,
+    checked_by      text NOT NULL,
+    data_check_date date NOT NULL,
+    pipeline_status text NOT NULL CHECK (pipeline_status IN ('Awaiting processing', 'Complete', 'Partial/Error')),
+    created_at      timestamptz NOT NULL
 );
 
-CREATE INDEX reports_content_hash_idx ON reports(content_hash);
+CREATE INDEX data_checks_unitid_idx ON public.data_checks(unitid);
+CREATE INDEX data_checks_pipeline_run_id_idx ON public.data_checks(pipeline_run_id);
 
-CREATE TABLE incidents (
-    incident_id             text PRIMARY KEY,
-    report_id               text NOT NULL REFERENCES reports(report_id),
-    organization_text       text,
-    organization_page       integer,
-    description_text        text NOT NULL,
-    description_page        integer,
-    findings_text           text,
-    findings_page           integer,
-    alcohol_involved        boolean,
-    drugs_involved          boolean,
-    incident_date_text      text,
-    incident_start          date,
-    incident_end            date,
-    investigation_initiated date,
-    resolved                date,
-    reviewer                text NOT NULL,
-    reviewed_at             timestamptz NOT NULL,
-    second_reviewer         text
+-- ── public.ledger ────────────────────────────────────────────────────────────────
+
+CREATE TABLE public.ledger (
+    ledger_id                text PRIMARY KEY,
+    unitid                   text NOT NULL REFERENCES public.institution(unitid),
+    source_url               text NOT NULL,
+    first_seen_date          timestamptz NOT NULL,
+    last_seen_date           timestamptz NOT NULL,
+    fingerprint_content_hash text NOT NULL
 );
 
-CREATE INDEX incidents_report_id_idx ON incidents(report_id);
+CREATE INDEX ledger_unitid_idx ON public.ledger(unitid);
 
-CREATE TABLE incident_sanctions (
-    incident_id   text NOT NULL REFERENCES incidents(incident_id),
-    sanction_text text NOT NULL,
-    page          integer
+-- ── public.artifacts ─────────────────────────────────────────────────────────────
+
+CREATE TABLE public.artifacts (
+    artifact_id           text PRIMARY KEY,
+    ledger_id             text NOT NULL REFERENCES public.ledger(ledger_id),
+    data_check_id         text NOT NULL REFERENCES public.data_checks(data_check_id),
+    pipeline_run_id       text NOT NULL REFERENCES public.pipeline_runs(pipeline_run_id),
+    artifact_location     text NOT NULL,
+    content_hash_snapshot text NOT NULL,
+    artifact_format       text NOT NULL CHECK (artifact_format IN ('HTML', 'PDF', 'Other')),
+    created_at            timestamptz NOT NULL
 );
 
-CREATE INDEX incident_sanctions_incident_id_idx ON incident_sanctions(incident_id);
+CREATE INDEX artifacts_ledger_id_idx ON public.artifacts(ledger_id);
+CREATE INDEX artifacts_data_check_id_idx ON public.artifacts(data_check_id);
+CREATE INDEX artifacts_pipeline_run_id_idx ON public.artifacts(pipeline_run_id);
 
-CREATE TABLE reporting_status (
-    unitid      text NOT NULL REFERENCES institutions(unitid),
-    scrape_year integer NOT NULL,
-    status      text NOT NULL CHECK (status IN ('published', 'published_zero', 'not_found', 'no_url')),
-    source_url  text,
-    PRIMARY KEY (unitid, scrape_year)
+-- ── staging.staging_incidents ────────────────────────────────────────────────────
+
+CREATE TABLE staging.staging_incidents (
+    staging_incident_id          text PRIMARY KEY,
+    artifact_id                  text NOT NULL REFERENCES public.artifacts(artifact_id),
+    institution_unitid           text NOT NULL REFERENCES public.institution(unitid),
+    organization_name_raw        text,
+    organization_name_normalized text,
+    incident_description_raw     text NOT NULL,
+    investigation_start_date_raw text NOT NULL,
+    investigation_start_date     date,
+    investigation_end_date_raw   text NOT NULL,
+    investigation_end_date       date,
+    notice_date_raw              text NOT NULL,
+    notice_date                  date,
+    sanctions_raw                text,
+    findings_raw                 text,
+    determination_status         text NOT NULL CHECK (determination_status IN ('Pending', 'Determined hazing', 'Dismissed', 'Not specified')),
+    alcohol_involved              text NOT NULL CHECK (alcohol_involved IN ('Yes', 'No', 'Not specified')),
+    drugs_involved                text NOT NULL CHECK (drugs_involved IN ('Yes', 'No', 'Not specified')),
+    extraction_confidence          numeric NOT NULL CHECK (extraction_confidence >= 0 AND extraction_confidence <= 1),
+    human_review_status            text NOT NULL DEFAULT 'Pending review' CHECK (human_review_status IN ('Pending review', 'Approved', 'Rejected')),
+    reviewed_by                    text,
+    reviewed_date                  timestamptz,
+    reviewer_notes                 text,
+    created_at                     timestamptz NOT NULL
 );
+
+CREATE INDEX staging_incidents_artifact_id_idx ON staging.staging_incidents(artifact_id);
+CREATE INDEX staging_incidents_institution_unitid_idx ON staging.staging_incidents(institution_unitid);
+
+-- ── staging.staging_organizations ────────────────────────────────────────────────
+
+CREATE TABLE staging.staging_organizations (
+    staging_organization_id text PRIMARY KEY,
+    organization_name       text NOT NULL,
+    organization_type       text CHECK (organization_type IN (
+        'Fraternity', 'Sorority', 'Institution Athletic Team', 'Club Sport',
+        'Honor/Leadership Society', 'Academic/Professional Club', 'Performing/Spirit Group',
+        'Military/Cadet Organization', 'General Interest/Social Club',
+        'Religious/Faith-Based Organization', 'Orientation/Mentorship Program',
+        'Unrecognized Organization'
+    )),
+    match_type          text NOT NULL CHECK (match_type IN ('New proposal', 'Matched existing')),
+    human_review_status text NOT NULL DEFAULT 'Proposed' CHECK (human_review_status IN ('Proposed', 'Approved', 'Rejected')),
+    reviewed_by         text,
+    reviewed_date       timestamptz,
+    reviewer_notes      text,
+    created_at          timestamptz NOT NULL
+);
+
+-- ── public.organizations ─────────────────────────────────────────────────────────
+
+CREATE TABLE public.organizations (
+    organization_id   text PRIMARY KEY,
+    organization_name text NOT NULL,
+    organization_type text NOT NULL CHECK (organization_type IN (
+        'Fraternity', 'Sorority', 'Institution Athletic Team', 'Club Sport',
+        'Honor/Leadership Society', 'Academic/Professional Club', 'Performing/Spirit Group',
+        'Military/Cadet Organization', 'General Interest/Social Club',
+        'Religious/Faith-Based Organization', 'Orientation/Mentorship Program',
+        'Unrecognized Organization'
+    )),
+    created_at timestamptz NOT NULL
+);
+
+-- ── public.incidents ─────────────────────────────────────────────────────────────
+
+CREATE TABLE public.incidents (
+    incident_id                   text PRIMARY KEY,
+    institution_unitid            text NOT NULL REFERENCES public.institution(unitid),
+    staging_incident_id            text NOT NULL REFERENCES staging.staging_incidents(staging_incident_id),
+    incident_description_raw      text NOT NULL,
+    investigation_start_date_raw  text NOT NULL,
+    investigation_start_date      date,
+    investigation_end_date_raw    text NOT NULL,
+    investigation_end_date        date,
+    notice_date_raw                text NOT NULL,
+    notice_date                    date,
+    sanctions_raw                  text,
+    findings_raw                   text,
+    determination_status           text NOT NULL CHECK (determination_status IN ('Pending', 'Determined hazing', 'Dismissed', 'Not specified')),
+    alcohol_involved                text NOT NULL CHECK (alcohol_involved IN ('Yes', 'No', 'Not specified')),
+    drugs_involved                  text NOT NULL CHECK (drugs_involved IN ('Yes', 'No', 'Not specified')),
+    updated_at                      timestamptz NOT NULL
+);
+
+CREATE INDEX incidents_institution_unitid_idx ON public.incidents(institution_unitid);
+CREATE INDEX incidents_staging_incident_id_idx ON public.incidents(staging_incident_id);
+
+-- ── public.incident_organizations ────────────────────────────────────────────────
+
+CREATE TABLE public.incident_organizations (
+    incident_organization_id text PRIMARY KEY,
+    staging_incident_id      text NOT NULL REFERENCES staging.staging_incidents(staging_incident_id),
+    staging_organization_id  text NOT NULL REFERENCES staging.staging_organizations(staging_organization_id),
+    incident_id              text REFERENCES public.incidents(incident_id),
+    organization_id          text REFERENCES public.organizations(organization_id)
+);
+
+CREATE INDEX incident_organizations_staging_incident_id_idx ON public.incident_organizations(staging_incident_id);
+CREATE INDEX incident_organizations_staging_organization_id_idx ON public.incident_organizations(staging_organization_id);
+CREATE INDEX incident_organizations_incident_id_idx ON public.incident_organizations(incident_id);
+CREATE INDEX incident_organizations_organization_id_idx ON public.incident_organizations(organization_id);
+
+-- ── public.incident_dates ────────────────────────────────────────────────────────
+
+CREATE TABLE public.incident_dates (
+    incident_date_id      text PRIMARY KEY,
+    staging_incident_id    text NOT NULL REFERENCES staging.staging_incidents(staging_incident_id),
+    incident_id            text REFERENCES public.incidents(incident_id),
+    start_date_raw          text NOT NULL,
+    start_date_normalized  date,
+    start_date_precision    text NOT NULL CHECK (start_date_precision IN ('Day', 'Month', 'Academic term', 'Academic year', 'Year', 'Unknown')),
+    end_date_raw            text NOT NULL,
+    end_date_normalized    date,
+    end_date_precision      text NOT NULL CHECK (end_date_precision IN ('Day', 'Month', 'Academic term', 'Academic year', 'Year', 'Unknown'))
+);
+
+CREATE INDEX incident_dates_staging_incident_id_idx ON public.incident_dates(staging_incident_id);
+CREATE INDEX incident_dates_incident_id_idx ON public.incident_dates(incident_id);
+
+-- ── public.incident_status_history ───────────────────────────────────────────────
+
+CREATE TABLE public.incident_status_history (
+    incident_status_history_id text PRIMARY KEY,
+    incident_id                 text NOT NULL REFERENCES public.incidents(incident_id),
+    staging_incident_id         text NOT NULL REFERENCES staging.staging_incidents(staging_incident_id),
+    old_status                  text NOT NULL CHECK (old_status IN ('Pending', 'Determined hazing', 'Dismissed', 'Not specified')),
+    new_status                  text NOT NULL CHECK (new_status IN ('Pending', 'Determined hazing', 'Dismissed', 'Not specified')),
+    changed_at                  timestamptz NOT NULL
+);
+
+CREATE INDEX incident_status_history_incident_id_idx ON public.incident_status_history(incident_id);
+CREATE INDEX incident_status_history_staging_incident_id_idx ON public.incident_status_history(staging_incident_id);
+
+-- ── staging.staging_incident_possible_matches ────────────────────────────────────
+
+CREATE TABLE staging.staging_incident_possible_matches (
+    match_id              text PRIMARY KEY,
+    candidate_incident_id text NOT NULL REFERENCES staging.staging_incidents(staging_incident_id),
+    existing_incident_id  text NOT NULL REFERENCES public.incidents(incident_id),
+    match_basis           text NOT NULL CHECK (match_basis IN ('Duplicate match', 'Status update to existing incident')),
+    created_at             timestamptz NOT NULL
+);
+
+CREATE INDEX staging_incident_possible_matches_candidate_idx ON staging.staging_incident_possible_matches(candidate_incident_id);
+CREATE INDEX staging_incident_possible_matches_existing_idx ON staging.staging_incident_possible_matches(existing_incident_id);
+
+-- ── staging.staging_incident_review_flags ────────────────────────────────────────
+-- Exactly one of staging_incident_id / staging_organization_id is set per row (a flag
+-- is about an incident or an organization proposal, never both/neither) -- enforced
+-- here with a CHECK, strengthening DATABASE_SCHEMA.md's stated "pipeline-code-only"
+-- enforcement rather than contradicting it (this schema is fully constrained
+-- throughout, per the Phase 5 precedent).
+
+CREATE TABLE staging.staging_incident_review_flags (
+    flag_id                 text PRIMARY KEY,
+    staging_incident_id     text REFERENCES staging.staging_incidents(staging_incident_id),
+    staging_organization_id text REFERENCES staging.staging_organizations(staging_organization_id),
+    flag_type               text NOT NULL CHECK (flag_type IN (
+        'Required field missing', 'Alcohol/drugs review needed', 'Determination unclear',
+        'Low extraction confidence', 'Unrecognized date term', 'Unable to determine organization type'
+    )),
+    field_name  text NOT NULL,
+    resolved_at timestamptz,
+    created_at  timestamptz NOT NULL,
+    CHECK (
+        (staging_incident_id IS NOT NULL AND staging_organization_id IS NULL)
+        OR (staging_incident_id IS NULL AND staging_organization_id IS NOT NULL)
+    )
+);
+
+CREATE INDEX staging_incident_review_flags_incident_idx ON staging.staging_incident_review_flags(staging_incident_id);
+CREATE INDEX staging_incident_review_flags_organization_idx ON staging.staging_incident_review_flags(staging_organization_id);
+
+-- ── staging.staging_incident_corrections ─────────────────────────────────────────
+
+CREATE TABLE staging.staging_incident_corrections (
+    staging_incident_correction_id text PRIMARY KEY,
+    staging_incident_id             text NOT NULL REFERENCES staging.staging_incidents(staging_incident_id),
+    field_name                      text NOT NULL,
+    original_value                  text,
+    corrected_value                 text NOT NULL,
+    correction_type                 text[] NOT NULL CHECK (correction_type <@ ARRAY['Minor cleanup', 'Extraction error']),
+    corrected_by                    text NOT NULL,
+    corrected_at                    timestamptz NOT NULL
+);
+
+CREATE INDEX staging_incident_corrections_staging_incident_id_idx ON staging.staging_incident_corrections(staging_incident_id);

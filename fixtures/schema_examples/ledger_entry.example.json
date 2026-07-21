@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "unitid": "100001",
+  "source_url": "https://example.edu/chtr/2025-report.pdf",
+  "fingerprint_content_hash": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6a7",
+  "first_seen_date": "2025-06-01T00:00:00Z",
+  "last_seen_date": "2026-06-01T00:00:00Z"
+}

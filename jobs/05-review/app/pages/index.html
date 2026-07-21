@@ -27,8 +27,7 @@
     <div id="review-topbar">
       <div id="review-context">
         <span id="institution-name"></span>
-        <span id="tier-badge" class="badge"></span>
-        <span id="escalated-badge" class="badge badge-escalated" hidden>escalated — needs a second review</span>
+        <span id="confidence-badge" class="badge" hidden></span>
         <span id="position-indicator"></span>
       </div>
     </div>
@@ -47,7 +46,7 @@
           </div>
           <p id="pdf-no-text-note" hidden>
             This document has no extractable text layer (scanned PDF). Nothing is
-            auto-highlighted — compare the quotes on the right against this page image
+            auto-highlighted — compare the fields on the right against this page image
             by eye.
           </p>
         </div>
@@ -64,13 +63,30 @@
           <pre id="nav-text"></pre>
         </details>
 
+        <div id="org-review-panel" hidden>
+          <h3>Organization review</h3>
+          <div class="correction-row">
+            <div>
+              <label>Decision</label>
+              <select id="org-review-decision">
+                <option value="approved">approved</option>
+                <option value="corrected">corrected</option>
+                <option value="rejected">rejected</option>
+              </select>
+            </div>
+            <div>
+              <label>Corrected organization type</label>
+              <select id="org-review-type" disabled></select>
+            </div>
+          </div>
+        </div>
+
         <div id="correction-form" hidden></div>
 
         <div id="decision-bar">
           <button id="btn-approve" class="btn btn-approve" title="Approve (A)">Approve <kbd>A</kbd></button>
           <button id="btn-fix" class="btn btn-fix" title="Fix / correct (F)">Fix <kbd>F</kbd></button>
           <button id="btn-reject" class="btn btn-reject" title="Reject (X)">Reject <kbd>X</kbd></button>
-          <button id="btn-escalate" class="btn btn-escalate" title="Escalate (E)">Escalate <kbd>E</kbd></button>
         </div>
         <div id="submit-status" role="status"></div>
       </section>
@@ -85,7 +101,6 @@
       <dt><kbd>A</kbd></dt><dd>Approve</dd>
       <dt><kbd>F</kbd></dt><dd>Fix (open correction form)</dd>
       <dt><kbd>X</kbd></dt><dd>Reject</dd>
-      <dt><kbd>E</kbd></dt><dd>Escalate (punt to a second reviewer)</dd>
       <dt><kbd>&larr;</kbd> / <kbd>&rarr;</kbd></dt><dd>Previous / next PDF page</dd>
       <dt><kbd>Esc</kbd></dt><dd>Close correction form / this panel</dd>
       <dt><kbd>?</kbd></dt><dd>Toggle this panel</dd>

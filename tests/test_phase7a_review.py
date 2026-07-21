@@ -1,33 +1,29 @@
-"""Phase 7a smoke check: jobs/05-review/ingest.py (the review.json write path).
+"""Phase 7a / Phase 15 smoke check: jobs/05-review/ingest.py (the review.json write path,
+v3.0 -- no tier, no escalation, no second_review, no quote-anchoring on correction).
 
-Builds a real archive the same way test_phase4_extract.py / test_phase5_publish.py
-do (crawl + normalize fixtures/crawl_pages/, make_packets + hand-authored
-incidents.json standing in for the agent, then validate.py) so ingest.py is tested
-against genuine extract_v1/incidents.json + extracted/text.txt, not synthetic
-stand-ins. Only north-ridge (HTML, 2 incidents) and eastview's real CHTR PDF (1
-incident) are finished/validated -- that's enough surface for every ingest.py path.
+Builds a real archive the same way test_phase4_extract.py does (crawl + normalize
+fixtures/crawl_pages/, make_packets + hand-authored v2 incidents.json standing in for
+the agent, then validate.py) so ingest.py is tested against genuine
+extract_v1/incidents.json, not synthetic stand-ins. north-ridge (HTML, 2 incidents),
+eastview's real CHTR PDF (1 incident), and eastview's non-CHTR index page (0 incidents,
+used for the document-level review cases) are finished/validated.
 
-Exercises, all via ingest.ingest_review() directly (no live R2, no Worker -- per
-BUILD_STATUS.md's Phase 7a decision, this phase is pure Python testable locally):
+Exercises, all via ingest.ingest_review() directly (no live R2, no Worker):
   - a valid `approved` review lands at the expected reviews/ key, with the expected
     reviewer-slug/ts filename derivation, and byte-identical content;
   - a review whose extraction_ref.file_hash matches nothing under doc_dir/ai/ is
-    rejected, nothing written (invariant 9's pinning is actually enforced, not just
-    trusted);
+    rejected, nothing written (invariant 9's pinning is actually enforced);
   - an out-of-range incident_index is rejected;
-  - a review that fails schema.json (bad decision enum, missing required key) is
-    rejected;
-  - a `corrected` review whose corrected quote still anchors in the document text
+  - a review that fails schema.json (bad decision enum, unknown field) is rejected;
+  - a `corrected` review whose correction targets a known correctable field succeeds;
+  - a `corrected` review whose correction targets an unknown/uncorrectable field_name
+    is rejected, nothing written;
+  - a document-level (incident_index null) review of a genuine zero-incident document
     succeeds;
-  - a `corrected` review whose corrected quote does NOT anchor is rejected, nothing
-    written (Section 10: reviewers can never introduce unanchored text);
-  - second_review's decision overriding a first review's `corrected` to `approved`
-    skips re-anchoring entirely (matches jobs/06-publish/rebuild.py's
-    _resolved_decision rule -- corrections attached to a non-"corrected" resolved
-    decision are never applied);
-  - second_review's correction, when both first and second correct the *same* field
-    to different values, is the one re-anchored (last-write-wins) -- a second
-    reviewer approving a bad correction still gets caught.
+  - a document-level review resolving to `corrected` is rejected (no per-field
+    correction vocabulary for the document object);
+  - `organization_review` on a document-level review is rejected (nothing to review);
+  - `organization_review` on a normal incident review is accepted and stored as-is.
 
 Run with: .venv/bin/python tests/test_phase7a_review.py
 """
@@ -71,14 +67,16 @@ def _start_server(directory: Path):
     return server, thread
 
 
-_QUOTE = lambda text, page=None: {"text": text, "page": page}  # noqa: E731
 _NULL_DATES = {
-    "incident_quote": None, "incident_start": None, "incident_end": None,
-    "investigation_initiated": None, "resolved": None,
+    "incident_start_raw": "", "incident_start_normalized": None, "incident_start_precision": "Unknown",
+    "incident_end_raw": "", "incident_end_normalized": None, "incident_end_precision": "Unknown",
+    "investigation_start_date_raw": "", "investigation_start_date": None,
+    "investigation_end_date_raw": "", "investigation_end_date": None,
+    "notice_date_raw": "", "notice_date": None,
 }
 _EMPTY_DOCUMENT = {
-    "title_quote": None, "reporting_period_quote": None, "reporting_period_start": None,
-    "reporting_period_end": None, "publication_date": None, "zero_incidents_quote": None,
+    "reporting_period_start": None, "reporting_period_end": None,
+    "publication_date": None, "zero_incidents_statement": None,
 }
 
 
@@ -87,57 +85,56 @@ def _incidents_for(manifest: dict) -> dict | None:
 
     if unitid == "200001":  # north-ridge: two incidents
         return {
-            "schema_version": 1, "is_chtr": True,
+            "schema_version": 2, "is_chtr": True,
             "document": {**_EMPTY_DOCUMENT, "reporting_period_start": "2025-01-01", "reporting_period_end": "2025-12-31"},
             "incidents": [
                 {
-                    "organization_quote": _QUOTE("Sigma Alpha Fraternity"),
-                    "description_quote": _QUOTE(
-                        "new members of Sigma Alpha Fraternity were required to "
-                        "perform physically demanding tasks late at night as part "
-                        "of an unofficial initiation ritual."
-                    ),
-                    "findings_quote": _QUOTE("The organization was found responsible for hazing."),
-                    "sanction_quotes": [_QUOTE("Sanction: probation through Fall 2026.")],
-                    "alcohol_involved": False, "drugs_involved": False,
-                    "dates": {**_NULL_DATES, "incident_quote": _QUOTE("September 2025"), "incident_start": "2025-09-01"},
+                    "organization_name_raw": "Sigma Alpha Fraternity", "organization_name_normalized": "Sigma Alpha",
+                    "organization_type": "Fraternity",
+                    "description_raw": "new members of Sigma Alpha Fraternity were required to perform "
+                                        "physically demanding tasks late at night as part of an unofficial "
+                                        "initiation ritual.",
+                    "findings_raw": "The organization was found responsible for hazing.",
+                    "sanctions_raw": "Sanction: probation through Fall 2026.",
+                    "alcohol_involved": "No", "drugs_involved": "No", "determination_status": "Determined hazing",
+                    "dates": {**_NULL_DATES, "incident_start_raw": "September 2025", "incident_start_normalized": "2025-09-01"},
+                    "extraction_confidence": 0.9, "flags": [],
                 },
                 {
-                    "organization_quote": _QUOTE("Women's Club Rowing"),
-                    "description_quote": _QUOTE(
-                        "members of the Women's Club Rowing team required new "
-                        "members to consume alcohol at a team event."
-                    ),
-                    "findings_quote": _QUOTE("The organization was found responsible for hazing."),
-                    "sanction_quotes": [_QUOTE("Sanction: loss of club-sport funding for one year.")],
-                    "alcohol_involved": True, "drugs_involved": None,
-                    "dates": {**_NULL_DATES, "incident_quote": _QUOTE("October 2025")},
+                    "organization_name_raw": "Women's Club Rowing", "organization_name_normalized": "Women's Club Rowing",
+                    "organization_type": "Club Sport",
+                    "description_raw": "members of the Women's Club Rowing team required new members to "
+                                        "consume alcohol at a team event.",
+                    "findings_raw": "The organization was found responsible for hazing.",
+                    "sanctions_raw": "Sanction: loss of club-sport funding for one year.",
+                    "alcohol_involved": "Yes", "drugs_involved": "Not specified", "determination_status": "Determined hazing",
+                    "dates": {**_NULL_DATES, "incident_start_raw": "October 2025"},
+                    "extraction_confidence": 0.8, "flags": [],
                 },
             ],
         }
 
     if unitid == "200002" and content_type == "application/pdf" and "decoy" not in source_url:
         return {  # eastview's real CHTR PDF -- one incident
-            "schema_version": 1, "is_chtr": True,
-            "document": {**_EMPTY_DOCUMENT, "title_quote": _QUOTE("Campus Hazing Transparency Report", 1),
-                         "reporting_period_start": "2025-01-01", "reporting_period_end": "2025-12-31"},
+            "schema_version": 2, "is_chtr": True,
+            "document": {**_EMPTY_DOCUMENT, "reporting_period_start": "2025-01-01", "reporting_period_end": "2025-12-31"},
             "incidents": [
                 {
-                    "organization_quote": _QUOTE("Zeta Psi Fraternity", 1),
-                    "description_quote": _QUOTE(
-                        "During Fall 2025 recruitment, new members were required to "
-                        "consume alcohol during a pledge event.", 1,
-                    ),
-                    "findings_quote": _QUOTE("The organization was investigated and found responsible for hazing.", 1),
-                    "sanction_quotes": [_QUOTE("Sanction: suspension through Spring 2027.", 1)],
-                    "alcohol_involved": True, "drugs_involved": None,
-                    "dates": {**_NULL_DATES, "incident_quote": _QUOTE("Fall 2025", 1)},
+                    "organization_name_raw": "Zeta Psi Fraternity", "organization_name_normalized": "Zeta Psi",
+                    "organization_type": "Fraternity",
+                    "description_raw": "During Fall 2025 recruitment, new members were required to consume "
+                                        "alcohol during a pledge event.",
+                    "findings_raw": "The organization was investigated and found responsible for hazing.",
+                    "sanctions_raw": "Sanction: suspension through Spring 2027.",
+                    "alcohol_involved": "Yes", "drugs_involved": "Not specified", "determination_status": "Determined hazing",
+                    "dates": {**_NULL_DATES, "incident_start_raw": "Fall 2025", "incident_start_precision": "Academic term"},
+                    "extraction_confidence": 0.7, "flags": [],
                 }
             ],
         }
 
-    if unitid == "200002":  # eastview's decoy PDF / index page -- not a CHTR
-        return {"schema_version": 1, "is_chtr": False, "document": dict(_EMPTY_DOCUMENT), "incidents": []}
+    if unitid == "200002":  # eastview's decoy PDF / index page -- not a CHTR, zero incidents
+        return {"schema_version": 2, "is_chtr": False, "document": dict(_EMPTY_DOCUMENT), "incidents": []}
 
     return None  # westfield / others: leave unfinished, not needed by this test
 
@@ -168,17 +165,16 @@ def _hash16_for(archive_local_root: Path, inst_dir: str, *, predicate=None) -> s
     raise AssertionError(f"no document under {inst_dir} matched predicate")
 
 
-def _base_review(file_hash: str, index: int, **overrides) -> dict:
+def _base_review(file_hash: str, index: int | None, **overrides) -> dict:
     review = {
-        "schema_version": 1,
+        "schema_version": 2,
         "extraction_ref": {"file_hash": file_hash, "incident_index": index},
-        "tier": "flagged",
         "decision": "approved",
         "rejection_reason": None,
-        "corrections": None,
+        "corrections": [],
+        "organization_review": None,
         "reviewer": "jane-reviewer",
         "reviewed_at": "2026-02-10T18:00:00Z",
-        "second_review": None,
     }
     review.update(overrides)
     return review
@@ -223,8 +219,13 @@ def main() -> int:
             f"archive/200002_eastview-university/2026/docs/"
             f"{_hash16_for(archive_local_root, '200002_eastview-university', predicate=lambda m: m['content_type'] == 'application/pdf' and 'decoy' not in m['source_url'])}"
         )
+        ev_index_dir = (
+            f"archive/200002_eastview-university/2026/docs/"
+            f"{_hash16_for(archive_local_root, '200002_eastview-university', predicate=lambda m: m['content_type'] == 'text/html')}"
+        )
         nr_hash = sha256_bytes(r2.get_bytes(f"{nr_dir}/ai/extract_v1/incidents.json"))
         ev_hash = sha256_bytes(r2.get_bytes(f"{ev_dir}/ai/extract_v1/incidents.json"))
+        ev_index_hash = sha256_bytes(r2.get_bytes(f"{ev_index_dir}/ai/extract_v1/incidents.json"))
 
         def reviews_of(doc_dir: str) -> list[str]:
             return [k for k in r2.list_keys(f"{doc_dir}/reviews/")]
@@ -271,58 +272,67 @@ def main() -> int:
         except ingest.IngestError:
             pass
 
-        # ── 5. corrected review whose corrected quote still anchors -> succeeds ──
+        # ── 5. corrected review targeting a known correctable field -> succeeds ──
         good_correction = _base_review(
             ev_hash, 0, decision="corrected", reviewer="jane-reviewer", reviewed_at="2026-02-10T19:00:00Z",
-            corrections={"organization_quote.text": "Eastview University", "organization_quote.page": "1"},
+            corrections=[{"field_name": "dates.incident_start_normalized", "original_value": None,
+                          "corrected_value": "2025-10-01", "correction_type": ["Minor cleanup"]}],
         )
         key5 = ingest.ingest_review(ev_dir, good_correction)
         if not r2.exists(key5):
             failures.append("5: valid corrected review was not written")
 
-        # ── 6. corrected review whose corrected quote does NOT anchor -> rejected ──
+        # ── 6. corrected review targeting an unknown field_name -> rejected ──
         before = reviews_of(ev_dir)
         bad_correction = _base_review(
             ev_hash, 0, decision="corrected", reviewer="jane-reviewer", reviewed_at="2026-02-10T19:05:00Z",
-            corrections={"organization_quote.text": "This text does not appear anywhere in the document at all."},
+            corrections=[{"field_name": "not_a_real_field", "original_value": None,
+                          "corrected_value": "x", "correction_type": ["Minor cleanup"]}],
         )
         try:
             ingest.ingest_review(ev_dir, bad_correction)
-            failures.append("6: expected IngestError for an unanchored corrected quote, none raised")
+            failures.append("6: expected IngestError for an uncorrectable field_name, none raised")
         except ingest.IngestError:
             pass
         if reviews_of(ev_dir) != before:
             failures.append("6: a rejected corrected review was written anyway")
 
-        # ── 7. second_review overriding "corrected" -> "approved" skips re-anchoring ──
-        overridden = _base_review(
-            ev_hash, 0, decision="corrected", reviewer="jane-reviewer", reviewed_at="2026-02-10T19:10:00Z",
-            corrections={"organization_quote.text": "garbage text nowhere in the document"},
-            second_review={
-                "decision": "approved", "rejection_reason": None, "corrections": None,
-                "reviewer": "john-reviewer", "reviewed_at": "2026-02-11T09:00:00Z",
-            },
-        )
-        try:
-            ingest.ingest_review(ev_dir, overridden)
-        except ingest.IngestError as e:
-            failures.append(f"7: second_review's approved should skip re-anchoring the first review's bad correction, but got: {e}")
+        # ── 7. document-level review of a genuine zero-incident document -> succeeds ──
+        doc_review = _base_review(ev_index_hash, None, reviewer="jane-reviewer", reviewed_at="2026-02-10T20:00:00Z")
+        key7 = ingest.ingest_review(ev_index_dir, doc_review)
+        if "document_" not in key7 or not r2.exists(key7):
+            failures.append(f"7: document-level review not written as expected, got key {key7!r}")
 
-        # ── 8. second_review's correction (not first's) is the one re-anchored ──
-        second_wins_good_then_bad = _base_review(
-            ev_hash, 0, decision="corrected", reviewer="jane-reviewer", reviewed_at="2026-02-10T19:15:00Z",
-            corrections={"organization_quote.text": "Eastview University"},  # valid on its own
-            second_review={
-                "decision": "corrected", "rejection_reason": None,
-                "corrections": {"organization_quote.text": "still nowhere in the document"},  # invalid, should win
-                "reviewer": "john-reviewer", "reviewed_at": "2026-02-11T09:05:00Z",
-            },
-        )
+        # ── 8. document-level review resolving to "corrected" -> rejected ──
         try:
-            ingest.ingest_review(ev_dir, second_wins_good_then_bad)
-            failures.append("8: expected second_review's invalid correction to win and be rejected, but it succeeded")
+            ingest.ingest_review(ev_index_dir, _base_review(
+                ev_index_hash, None, decision="corrected", reviewed_at="2026-02-10T20:05:00Z",
+                corrections=[{"field_name": "description_raw", "original_value": None,
+                              "corrected_value": "x", "correction_type": ["Minor cleanup"]}],
+            ))
+            failures.append("8: expected IngestError for a document-level 'corrected' review, none raised")
         except ingest.IngestError:
             pass
+
+        # ── 9. organization_review on a document-level review -> rejected ──
+        try:
+            ingest.ingest_review(ev_index_dir, _base_review(
+                ev_index_hash, None, reviewed_at="2026-02-10T20:10:00Z",
+                organization_review={"decision": "approved", "corrected_organization_type": None},
+            ))
+            failures.append("9: expected IngestError for organization_review on a document-level review, none raised")
+        except ingest.IngestError:
+            pass
+
+        # ── 10. organization_review on a normal incident review -> accepted, stored ──
+        org_review = _base_review(
+            nr_hash, 0, reviewer="jane-reviewer", reviewed_at="2026-02-10T20:15:00Z",
+            organization_review={"decision": "corrected", "corrected_organization_type": "Honor/Leadership Society"},
+        )
+        key10 = ingest.ingest_review(nr_dir, org_review)
+        stored = json.loads(r2.get_bytes(key10))
+        if stored.get("organization_review") != org_review["organization_review"]:
+            failures.append(f"10: organization_review not stored as submitted, got {stored.get('organization_review')!r}")
 
     finally:
         server.shutdown()
@@ -344,10 +354,11 @@ def main() -> int:
     print("ok    file_hash pinned to no extraction under doc_dir is rejected, nothing written")
     print("ok    out-of-range incident_index is rejected")
     print("ok    schema-invalid reviews (bad enum, unknown field) are rejected")
-    print("ok    corrected review with an anchorable correction succeeds")
-    print("ok    corrected review with an unanchorable correction is rejected, nothing written")
-    print("ok    second_review overriding to approved skips re-anchoring the first review's correction")
-    print("ok    second_review's correction (not first's) is the one re-anchored, last-write-wins")
+    print("ok    corrected review targeting a known correctable field succeeds")
+    print("ok    corrected review targeting an unknown field_name is rejected, nothing written")
+    print("ok    document-level review of a genuine zero-incident document succeeds")
+    print("ok    document-level review resolving to 'corrected' is rejected")
+    print("ok    organization_review is rejected on a document-level review, accepted on a normal one")
     return 0
 
 

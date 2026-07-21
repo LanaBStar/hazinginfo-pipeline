@@ -1,22 +1,24 @@
-"""Phase 4 smoke check: jobs/04-extract/make_packets.py + validate.py.
+"""Phase 4 / Phase 14 smoke check: jobs/04-extract/make_packets.py + validate.py (v3.0).
 
 Builds a real archive by crawling and normalizing fixtures/crawl_pages/ (same pattern
 as test_phase2_archive.py / test_phase3_normalize.py), then hand-adds one more document
-directly to the archive -- a genuine zero-incident report with anchorable text -- since
-crawl_pages has no such fixture and adding one there would change the exact document
-counts test_phase2_archive.py / test_phase3_normalize.py assert on. This document skips
-02/03 (it's created already-normalized) but is otherwise a normal archived document as
-far as 04-extract is concerned.
+directly to the archive -- a genuine zero-incident report -- since crawl_pages has no
+such fixture and adding one there would change the exact document counts
+test_phase2_archive.py / test_phase3_normalize.py assert on. This document skips 02/03
+(it's created already-normalized) but is otherwise a normal archived document as far as
+04-extract is concerned.
 
-Runs make_packets.py over the resulting archive, hand-writes an incidents.json into
-each packet (standing in for the agent) covering: two clean incidents (north-ridge),
-one incident with a suspension sanction (eastview's real CHTR PDF), a non-CHTR PDF and
-a non-CHTR index page (both eastview), a zero-incident report with unanchorable text
-because its text.txt is empty (westfield, scanned), and a zero-incident report with
-anchorable text (the hand-added document) -- then runs validate.py and asserts the
-resulting validation.json for each lands on the expected tier, including one flagged
-case and one fast case per the plan's smoke-check requirement. Also checks both
-make_packets.py and validate.py are idempotent on a second run.
+Runs make_packets.py over the resulting archive, hand-writes an incidents.json (v2
+shape -- raw+normalized fields, extraction_confidence, flags[], organization proposal,
+determination_status; no more page-anchored quotes) into each packet (standing in for
+the agent), then runs validate.py and asserts: schema-valid documents archive with
+valid:true and their confidence/flags/organization fields intact; a deliberately
+schema-invalid document (an unknown flag_type) still archives, marked valid:false, with
+its schema_errors recorded -- never silently discarded. Also checks both make_packets.py
+and validate.py are idempotent on a second run.
+
+v3.0: there is no more tier assignment or anchoring here -- validation.json is now just
+{schema_version, valid, schema_errors}. See BUILD_STATUS.md's Phase 14 notes for why.
 
 Run with: python tests/test_phase4_extract.py
 """
@@ -61,8 +63,7 @@ def _start_server(directory: Path):
 
 
 def _add_hillcrest(archive_root: Path) -> str:
-    """Hand-adds a genuine zero-incident report directly to the archive -- the "fast"
-    tier fixture. Returns its doc_dir key (relative to the archive local root)."""
+    """Hand-adds a genuine zero-incident report directly to the archive."""
     text = (
         "Campus Hazing Transparency Report\n"
         "Reporting period: January 1, 2025 - December 31, 2025\n"
@@ -100,14 +101,32 @@ def _add_hillcrest(archive_root: Path) -> str:
     return doc_dir
 
 
-_QUOTE = lambda text, page=None: {"text": text, "page": page}  # noqa: E731
 _NULL_DATES = {
-    "incident_quote": None,
-    "incident_start": None,
-    "incident_end": None,
-    "investigation_initiated": None,
-    "resolved": None,
+    "incident_start_raw": "", "incident_start_normalized": None, "incident_start_precision": "Unknown",
+    "incident_end_raw": "", "incident_end_normalized": None, "incident_end_precision": "Unknown",
+    "investigation_start_date_raw": "", "investigation_start_date": None,
+    "investigation_end_date_raw": "", "investigation_end_date": None,
+    "notice_date_raw": "", "notice_date": None,
 }
+
+
+def _incident(organization_name_raw, organization_name_normalized, organization_type,
+              description_raw, findings_raw, sanctions_raw, alcohol_involved, drugs_involved,
+              determination_status, dates, extraction_confidence, flags):
+    return {
+        "organization_name_raw": organization_name_raw,
+        "organization_name_normalized": organization_name_normalized,
+        "organization_type": organization_type,
+        "description_raw": description_raw,
+        "findings_raw": findings_raw,
+        "sanctions_raw": sanctions_raw,
+        "alcohol_involved": alcohol_involved,
+        "drugs_involved": drugs_involved,
+        "determination_status": determination_status,
+        "dates": {**_NULL_DATES, **dates},
+        "extraction_confidence": extraction_confidence,
+        "flags": flags,
+    }
 
 
 def _incidents_for(doc_dir: str, manifest: dict) -> dict:
@@ -117,123 +136,109 @@ def _incidents_for(doc_dir: str, manifest: dict) -> dict:
 
     if unitid == "200001":  # north-ridge: two clean incidents
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "is_chtr": True,
             "document": {
-                "title_quote": _QUOTE("Campus Hazing Transparency Report"),
-                "reporting_period_quote": _QUOTE("Reporting period: January 1, 2025 - December 31, 2025"),
                 "reporting_period_start": "2025-01-01",
                 "reporting_period_end": "2025-12-31",
                 "publication_date": None,
-                "zero_incidents_quote": None,
+                "zero_incidents_statement": None,
             },
             "incidents": [
-                {
-                    "organization_quote": _QUOTE("Sigma Alpha Fraternity"),
-                    "description_quote": _QUOTE(
-                        "new members of Sigma Alpha Fraternity were required to "
-                        "perform physically demanding tasks late at night as part "
-                        "of an unofficial initiation ritual."
-                    ),
-                    "findings_quote": _QUOTE(
-                        "The organization was investigated and found responsible for hazing."
-                    ),
-                    "sanction_quotes": [_QUOTE("Sanction: probation through Fall 2026.")],
-                    "alcohol_involved": False,
-                    "drugs_involved": False,
-                    "dates": {**_NULL_DATES, "incident_quote": _QUOTE("September 2025"), "incident_start": "2025-09-01"},
-                },
-                {
-                    "organization_quote": _QUOTE("Women's Club Rowing"),
-                    "description_quote": _QUOTE(
-                        "members of the Women's Club Rowing team required new "
-                        "members to consume alcohol at a team event."
-                    ),
-                    "findings_quote": _QUOTE("The organization was found responsible for hazing."),
-                    "sanction_quotes": [_QUOTE("Sanction: loss of club-sport funding for one year.")],
-                    "alcohol_involved": True,
-                    "drugs_involved": None,
-                    "dates": {**_NULL_DATES, "incident_quote": _QUOTE("October 2025")},
-                },
+                _incident(
+                    "Sigma Alpha Fraternity", "Sigma Alpha", "Fraternity",
+                    "new members of Sigma Alpha Fraternity were required to perform "
+                    "physically demanding tasks late at night as part of an unofficial "
+                    "initiation ritual.",
+                    "The organization was investigated and found responsible for hazing.",
+                    "Sanction: probation through Fall 2026.",
+                    "No", "No", "Determined hazing",
+                    {"incident_start_raw": "September 2025", "incident_start_normalized": "2025-09-01",
+                     "incident_start_precision": "Month"},
+                    0.95, [],
+                ),
+                _incident(
+                    "Women's Club Rowing", "Women's Club Rowing", "Club Sport",
+                    "members of the Women's Club Rowing team required new members to "
+                    "consume alcohol at a team event.",
+                    "The organization was found responsible for hazing.",
+                    "Sanction: loss of club-sport funding for one year.",
+                    "Yes", "Not specified", "Determined hazing",
+                    {"incident_start_raw": "October 2025"},
+                    0.88, [],
+                ),
             ],
         }
 
     if unitid == "200002" and content_type == "application/pdf" and "decoy" not in source_url:
-        # eastview's real CHTR PDF -- one incident, sanction wording triggers flagged.
+        # eastview's real CHTR PDF -- one incident, sanction wording mentions suspension
+        # (no special flag_type for this in v3.0's vocab -- just stored content now).
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "is_chtr": True,
             "document": {
-                "title_quote": _QUOTE("Campus Hazing Transparency Report", 1),
-                "reporting_period_quote": _QUOTE("Reporting period: January 1, 2025 - December 31, 2025", 1),
                 "reporting_period_start": "2025-01-01",
                 "reporting_period_end": "2025-12-31",
                 "publication_date": None,
-                "zero_incidents_quote": None,
+                "zero_incidents_statement": None,
             },
             "incidents": [
-                {
-                    "organization_quote": _QUOTE("Zeta Psi Fraternity", 1),
-                    "description_quote": _QUOTE(
-                        "During Fall 2025 recruitment, new members were required to "
-                        "consume alcohol during a pledge event.",
-                        1,
-                    ),
-                    "findings_quote": _QUOTE(
-                        "The organization was investigated and found responsible for hazing.", 1
-                    ),
-                    "sanction_quotes": [_QUOTE("Sanction: suspension through Spring 2027.", 1)],
-                    "alcohol_involved": True,
-                    "drugs_involved": None,
-                    "dates": {**_NULL_DATES, "incident_quote": _QUOTE("Fall 2025", 1)},
-                }
+                _incident(
+                    "Zeta Psi Fraternity", "Zeta Psi", "Fraternity",
+                    "During Fall 2025 recruitment, new members were required to consume "
+                    "alcohol during a pledge event.",
+                    "The organization was investigated and found responsible for hazing.",
+                    "Sanction: suspension through Spring 2027.",
+                    "Yes", "Not specified", "Determined hazing",
+                    {"incident_start_raw": "Fall 2025", "incident_start_precision": "Academic term"},
+                    0.5, [{"flag_type": "Low extraction confidence", "field_name": "extraction_confidence",
+                           "note": "Sanction wording is terse; moderate confidence in segmentation."}],
+                )
             ],
         }
 
     if unitid == "200002":
         # eastview's decoy menu PDF, or its own index/listing page -- neither is a CHTR.
-        return {
-            "schema_version": 1,
+        # The decoy PDF is the deliberately-invalid case: an unknown flag_type value,
+        # which schema.json must reject (exercises "invalid output archived too").
+        is_decoy = "decoy" in source_url
+        doc = {
+            "schema_version": 2,
             "is_chtr": False,
             "document": {
-                "title_quote": None,
-                "reporting_period_quote": None,
                 "reporting_period_start": None,
                 "reporting_period_end": None,
                 "publication_date": None,
-                "zero_incidents_quote": None,
+                "zero_incidents_statement": None,
+            },
+            "incidents": [],
+        }
+        if is_decoy:
+            doc["unexpected_top_level_field"] = "this violates additionalProperties: false"
+        return doc
+
+    if unitid == "200003":  # westfield: scanned, nothing readable
+        return {
+            "schema_version": 2,
+            "is_chtr": True,
+            "document": {
+                "reporting_period_start": None,
+                "reporting_period_end": None,
+                "publication_date": None,
+                "zero_incidents_statement": None,
             },
             "incidents": [],
         }
 
-    if unitid == "200003":  # westfield: scanned, zero_incidents_quote can't anchor
+    if unitid == "200006":  # hillcrest: genuine zero-incident report
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "is_chtr": True,
             "document": {
-                "title_quote": None,
-                "reporting_period_quote": None,
-                "reporting_period_start": None,
-                "reporting_period_end": None,
-                "publication_date": None,
-                "zero_incidents_quote": _QUOTE(
-                    "No hazing incidents were reported during the 2025 reporting period.", 1
-                ),
-            },
-            "incidents": [],
-        }
-
-    if unitid == "200006":  # hillcrest: genuine zero-incident report, anchorable
-        return {
-            "schema_version": 1,
-            "is_chtr": True,
-            "document": {
-                "title_quote": _QUOTE("Campus Hazing Transparency Report"),
-                "reporting_period_quote": _QUOTE("Reporting period: January 1, 2025 - December 31, 2025"),
                 "reporting_period_start": "2025-01-01",
                 "reporting_period_end": "2025-12-31",
                 "publication_date": None,
-                "zero_incidents_quote": _QUOTE("No hazing incidents were reported during this reporting period."),
+                "zero_incidents_statement": "No hazing incidents were reported during this reporting period.",
             },
             "incidents": [],
         }
@@ -308,66 +313,84 @@ def main() -> int:
 
         # ── validate run 1 ───────────────────────────────────────────────
         validate_results = validate.run(tasks_dir=tasks_dir)
+        # 5 valid documents archive clean; eastview's decoy PDF is deliberately invalid
+        # but still archives (marked invalid, never discarded) -- "failed" only counts a
+        # script-level exception, which this isn't.
         if validate_results != {"archived": 6, "skipped": 0, "pending": 0, "failed": 0}:
             failures.append(f"validate run 1: unexpected results {validate_results!r}")
 
+        def _extract_v1_dir(inst_dir: str, hash16: str) -> Path:
+            return archive_local_root / "archive" / inst_dir / "2026" / "docs" / hash16 / "ai" / "extract_v1"
+
         def _validation_for(inst_dir: str, hash16: str) -> dict:
-            path = archive_local_root / "archive" / inst_dir / "2026" / "docs" / hash16 / "ai" / "extract_v1" / "validation.json"
-            return json.loads(path.read_text())
+            return json.loads((_extract_v1_dir(inst_dir, hash16) / "validation.json").read_text())
+
+        def _incidents_json_for(inst_dir: str, hash16: str) -> dict:
+            return json.loads((_extract_v1_dir(inst_dir, hash16) / "incidents.json").read_text())
 
         def _hash16_for(inst_dir: str) -> str:
             status = json.loads((archive_local_root / "archive" / inst_dir / "2026" / "status.json").read_text())
             return short_hash(status["documents"][0])
 
-        # north-ridge: both incidents anchor cleanly, but with no crosscheck wired up
-        # yet neither can reach "standard" -- both land "flagged" with no reasons.
+        # north-ridge: both incidents valid, carry organization proposal + confidence + no flags
         nr_hash = _hash16_for("200001_north-ridge-college")
-        nr = _validation_for("200001_north-ridge-college", nr_hash)
-        if not nr["valid"]:
-            failures.append(f"north-ridge: expected valid incidents.json, got errors {nr['schema_errors']!r}")
-        if len(nr["incidents"]) != 2 or any(inc["tier"] != "flagged" for inc in nr["incidents"]):
-            failures.append(f"north-ridge: expected 2 incidents both tier=flagged, got {nr['incidents']!r}")
-        if any(inc["flagged_reasons"] for inc in nr["incidents"]):
-            failures.append(f"north-ridge: expected no flagged_reasons (clean anchoring), got {[inc['flagged_reasons'] for inc in nr['incidents']]!r}")
-        if not all(inc["quotes"]["organization_quote"]["anchored"] for inc in nr["incidents"]):
-            failures.append("north-ridge: expected both organization_quotes to anchor")
+        nr_validation = _validation_for("200001_north-ridge-college", nr_hash)
+        nr_incidents = _incidents_json_for("200001_north-ridge-college", nr_hash)
+        if not nr_validation["valid"] or nr_validation["schema_errors"]:
+            failures.append(f"north-ridge: expected valid incidents.json, got {nr_validation!r}")
+        if "tier" in nr_validation or "document" in nr_validation:
+            failures.append(f"north-ridge validation.json: v3.0 has no tier/document/quotes fields, got {nr_validation!r}")
+        incidents = nr_incidents["incidents"]
+        if len(incidents) != 2 or any(inc["flags"] for inc in incidents):
+            failures.append(f"north-ridge: expected 2 incidents with no flags, got {incidents!r}")
+        if incidents[0]["organization_type"] != "Fraternity" or incidents[1]["organization_type"] != "Club Sport":
+            failures.append(f"north-ridge: organization_type mismatch: {[i['organization_type'] for i in incidents]!r}")
+        if not all(isinstance(inc["extraction_confidence"], float) for inc in incidents):
+            failures.append(f"north-ridge: expected float extraction_confidence, got {[i['extraction_confidence'] for i in incidents]!r}")
 
         # eastview: 3 documents (index page, real CHTR PDF, decoy PDF)
         ev_status = json.loads((archive_local_root / "archive" / "200002_eastview-university" / "2026" / "status.json").read_text())
-        ev_validations = [_validation_for("200002_eastview-university", short_hash(h)) for h in ev_status["documents"]]
-        chtr_validation = next((v for v in ev_validations if v["incidents"]), None)
-        if chtr_validation is None:
-            failures.append("eastview: expected exactly one document with a non-empty incidents array")
+        ev_hashes = [short_hash(h) for h in ev_status["documents"]]
+        ev_validations = {h: _validation_for("200002_eastview-university", h) for h in ev_hashes}
+
+        invalid = [v for v in ev_validations.values() if not v["valid"]]
+        if len(invalid) != 1:
+            failures.append(f"eastview: expected exactly 1 invalid document (the decoy), got {len(invalid)}")
+        elif not invalid[0]["schema_errors"]:
+            failures.append("eastview: invalid document should have non-empty schema_errors")
+        elif "unexpected_top_level_field" not in invalid[0]["schema_errors"][0]:
+            failures.append(f"eastview: expected schema_errors to mention the offending field, got {invalid[0]['schema_errors']!r}")
+
+        valid_docs = {h: v for h, v in ev_validations.items() if v["valid"]}
+        if len(valid_docs) != 2:
+            failures.append(f"eastview: expected exactly 2 valid documents, got {len(valid_docs)}")
+        chtr_hash = next((h for h in valid_docs if _incidents_json_for("200002_eastview-university", h)["incidents"]), None)
+        if chtr_hash is None:
+            failures.append("eastview: expected exactly one valid document with a non-empty incidents array")
         else:
-            if chtr_validation["incidents"][0]["tier"] != "flagged":
-                failures.append(f"eastview CHTR PDF: expected tier=flagged, got {chtr_validation['incidents'][0]!r}")
-            if "sanction_contains_suspension_or_expulsion" not in chtr_validation["incidents"][0]["flagged_reasons"]:
-                failures.append(
-                    f"eastview CHTR PDF: expected suspension flag, got {chtr_validation['incidents'][0]['flagged_reasons']!r}"
-                )
-        non_chtr = [v for v in ev_validations if v is not chtr_validation]
-        if len(non_chtr) != 2 or any(v["incidents"] or v["document"]["tier"] is not None for v in non_chtr):
-            failures.append(f"eastview: expected the other 2 documents to be non-CHTR (tier=None, incidents=[]), got {non_chtr!r}")
+            chtr_incident = _incidents_json_for("200002_eastview-university", chtr_hash)["incidents"][0]
+            if "suspension" not in chtr_incident["sanctions_raw"]:
+                failures.append(f"eastview CHTR PDF: expected suspension wording in sanctions_raw, got {chtr_incident['sanctions_raw']!r}")
+            if not chtr_incident["flags"]:
+                failures.append("eastview CHTR PDF: expected the hand-authored low-confidence flag to survive schema validation")
 
-        # westfield: scanned, zero_incidents_quote can't anchor against empty text
+        # westfield: scanned/nothing-readable zero-incident document -- still schema-valid
         wf_hash = _hash16_for("200003_westfield-institute")
-        wf = _validation_for("200003_westfield-institute", wf_hash)
-        if wf["document"]["tier"] != "flagged":
-            failures.append(f"westfield: expected document.tier=flagged, got {wf['document']!r}")
-        if "empty_text_layer" not in wf["document"]["flagged_reasons"]:
-            failures.append(f"westfield: expected empty_text_layer flagged reason, got {wf['document']['flagged_reasons']!r}")
-        if wf["document"]["zero_incidents_quote"]["anchored"]:
-            failures.append("westfield: zero_incidents_quote should not anchor against empty text.txt")
+        wf_validation = _validation_for("200003_westfield-institute", wf_hash)
+        wf_incidents = _incidents_json_for("200003_westfield-institute", wf_hash)
+        if not wf_validation["valid"]:
+            failures.append(f"westfield: expected valid incidents.json even with nothing readable, got {wf_validation!r}")
+        if wf_incidents["incidents"] != [] or wf_incidents["document"]["zero_incidents_statement"] is not None:
+            failures.append(f"westfield: expected zero incidents and null zero_incidents_statement, got {wf_incidents!r}")
 
-        # hillcrest: genuine zero-incident report, anchorable -- the "fast" tier case
+        # hillcrest: genuine zero-incident report
         hc_hash = _hash16_for("200006_hillcrest-academy")
-        hc = _validation_for("200006_hillcrest-academy", hc_hash)
-        if hc["document"]["tier"] != "fast":
-            failures.append(f"hillcrest: expected document.tier=fast, got {hc['document']!r}")
-        if hc["document"]["flagged_reasons"]:
-            failures.append(f"hillcrest: expected no flagged_reasons for a fast-tier report, got {hc['document']['flagged_reasons']!r}")
-        if not hc["document"]["zero_incidents_quote"]["anchored"]:
-            failures.append("hillcrest: zero_incidents_quote should anchor cleanly against its own text.txt")
+        hc_validation = _validation_for("200006_hillcrest-academy", hc_hash)
+        hc_incidents = _incidents_json_for("200006_hillcrest-academy", hc_hash)
+        if not hc_validation["valid"]:
+            failures.append(f"hillcrest: expected valid incidents.json, got {hc_validation!r}")
+        if hc_incidents["document"]["zero_incidents_statement"] is None:
+            failures.append("hillcrest: expected a non-null zero_incidents_statement")
 
         # ── idempotency: second runs write nothing new ──────────────────
         packet_results2 = make_packets.run(prefix="archive/", tasks_dir=tasks_dir)
@@ -394,11 +417,11 @@ def main() -> int:
             print(f"      {f}")
         return 1
     print("ok    make_packets run 1: one packet per normalized document (6), all fields present")
-    print("ok    validate run 1: schema validation + anchoring + tiering all correct")
-    print("ok    north-ridge: clean incidents land flagged (no crosscheck wired up yet), not standard")
-    print("ok    eastview: real CHTR PDF flagged for suspension sanction; decoy PDF + index page non-CHTR")
-    print("ok    westfield: scanned/empty-text zero-incident report flagged, not fast")
-    print("ok    hillcrest: anchorable zero-incident report lands fast")
+    print("ok    validate run 1: schema validation only (no tier/anchoring in v3.0)")
+    print("ok    north-ridge: 2 valid incidents with organization proposal + confidence, no flags")
+    print("ok    eastview: real CHTR PDF valid with a flag; decoy PDF invalid (archived anyway); index page non-CHTR")
+    print("ok    westfield: scanned/nothing-readable document still schema-valid, zero incidents")
+    print("ok    hillcrest: genuine zero-incident report schema-valid with a real zero_incidents_statement")
     print("ok    make_packets / validate run 2: idempotent, nothing re-written")
     return 0
 

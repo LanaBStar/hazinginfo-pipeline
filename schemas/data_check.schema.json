@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hazinginfo.org/schemas/data_check.schema.json",
+  "title": "{scrape_year}/data_check.json (v3.0)",
+  "description": "One per institution per scrape cycle, written unconditionally regardless of whether a URL was found. Per IMPLEMENTATION_PLAN.md §6/§7 and DATABASE_SCHEMA.md's Data_checks table. chtr_index_url/checked_by are resolved by 01-discover's confirm+merge step, cross-checked against the Airtable schools-registry base (§7) before this is written.",
+  "type": "object",
+  "properties": {
+    "schema_version": {"const": 1},
+    "unitid": {"type": "string"},
+    "scrape_year": {"type": "integer"},
+    "pipeline_run_id": {"type": "string"},
+    "chtr_index_url": {"type": ["string", "null"], "format": "uri"},
+    "checked_by": {"type": "string"},
+    "data_check_date": {"type": "string", "format": "date"},
+    "pipeline_status": {
+      "type": "string",
+      "enum": ["Awaiting processing", "Complete", "Partial/Error"]
+    },
+    "airtable_cross_check": {
+      "type": ["object", "null"],
+      "description": "null if the institution has no row in the Airtable schools-registry base yet.",
+      "properties": {
+        "matched": {"type": "boolean"},
+        "airtable_url": {"type": ["string", "null"], "format": "uri"}
+      },
+      "required": ["matched", "airtable_url"],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "unitid",
+    "scrape_year",
+    "pipeline_run_id",
+    "chtr_index_url",
+    "checked_by",
+    "data_check_date",
+    "pipeline_status",
+    "airtable_cross_check"
+  ],
+  "additionalProperties": false
+}

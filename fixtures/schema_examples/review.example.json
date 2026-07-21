@@ -1,14 +1,20 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "extraction_ref": {
     "file_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
     "incident_index": 0
   },
-  "tier": "flagged",
   "decision": "corrected",
   "rejection_reason": null,
-  "corrections": {"dates.incident_start": "2025-10-01"},
+  "corrections": [
+    {
+      "field_name": "dates.incident_start_normalized",
+      "original_value": "2025-09-01",
+      "corrected_value": "2025-10-01",
+      "correction_type": ["Minor cleanup"]
+    }
+  ],
+  "organization_review": {"decision": "approved", "corrected_organization_type": null},
   "reviewer": "jane-reviewer",
-  "reviewed_at": "2026-02-10T18:04:00Z",
-  "second_review": null
+  "reviewed_at": "2026-02-10T18:04:00Z"
 }

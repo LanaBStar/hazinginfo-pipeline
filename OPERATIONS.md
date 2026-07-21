@@ -38,14 +38,16 @@ script reads; a chat answer is not a decision.
 {
   "scrape_year": 2026,
   "smoke_run": {"done_this_year": false},
-  "discover":  {"confirmed_urls": 1391, "pending_candidates": 12, "no_url": 81},
+  "discover":  {"confirmed_urls": 1391, "pending_candidates": 12, "no_url": 81, "airtable_mismatches": 4},
   "archive":   {"institutions_done": 1391, "pending": 93, "documents": 2140},
   "normalize": {"pending_documents": 14, "no_text_layer": 63},
-  "extract":   {"packets_total": 68, "packets_done": 52, "awaiting_validation": 1},
-  "review":    {"fast_lane": 812, "standard": 141, "flagged": 46, "decided": 655, "escalated_pending": 9},
+  "extract":   {"packets_total": 68, "packets_done": 52, "awaiting_validation": 1, "low_confidence": 9},
+  "review":    {"incidents_pending": 141, "incidents_decided": 655, "organizations_pending": 18},
   "publish":   {"last_rebuild": "2026-06-02", "approved_unpublished": 118}
 }
 ```
+
+(v3.0: no more tier-based review counts — see `IMPLEMENTATION_PLAN.md` §9/§5.)
 
 This is the shape, not exhaustive — `status.py` may add fields as later phases land, but
 never remove the ones the menu depends on.
@@ -56,16 +58,19 @@ never remove the ones the menu depends on.
 sources/schools.csv (1,484 institutions, versioned in repo)
         │
   01-discover    agent: verify/find CHTR URLs → candidates file → human confirms → merge.py
-        │
-  02-archive     python: fetch originals + assets → R2 (manifest.json per doc, status.json per school-year)
-        │
+        │        → cross-check against the Airtable schools-registry base (v3.0)
+  02-archive     python: fetch originals + assets → R2 (manifest.json per doc, status.json
+        │        per school-year, ledger entry per URL, data_check per institution-cycle)
   03-normalize   python: extracted text for every document (incl. PDF text layers) → R2
         │
-  04-extract     agent packets: is_chtr + incidents.json → validate.py (schema + anchoring + tier) → R2
-        │
-  05-review      volunteers via web app → review.json → R2   (operator reviews in the SAME app)
-        │
-  06-publish     python: full catalog rebuild from R2 → Neon → public site
+  04-extract     agent packets: is_chtr + incidents.json (raw+normalized fields, per-
+        │        incident confidence + flags, organization proposal) → validate.py
+        │        (schema conformance only, v3.0) → R2
+  05-review      volunteers via web app → review.json (single decision + per-field
+        │        corrections + independent organization decision) → R2 (operator reviews
+        │        in the SAME app)
+  06-publish     python: full catalog rebuild from R2 → Neon (staging + public schemas,
+                 organization matching, cross-year status resolution) → public site
 ```
 
 Each menu item corresponds to a job directory under `jobs/`. Every job directory has a
@@ -77,34 +82,42 @@ the runbook before acting and follows it — it does not invent steps.
   data. See `IMPLEMENTATION_PLAN.md` §14.
 - **1. Discover** — batches of ~25–50 schools get candidate URLs from the agent; the
   operator confirms via chat, which the agent writes to a decisions file; `merge.py`
-  validates and merges into `sources/schools.csv`.
+  validates and merges into `sources/schools.csv`. The agent then cross-checks the
+  confirmed URL against the existing Airtable schools-registry base's `Transparency
+  Report` field for that institution; a mismatch is surfaced in the menu
+  (`discover.airtable_mismatches`) for the operator to look at — neither source is ever
+  silently overwritten by the other.
 - **2. Archive** — `jobs/02-archive/run.py` fetches originals for institutions whose
-  current-year `status.json` doesn't yet exist. Resumable by construction.
+  current-year `status.json` doesn't yet exist. Resumable by construction. Also writes
+  the new `ledger/` fingerprint entries and one `data_check.json` per institution per
+  cycle.
 - **3. Normalize** — `jobs/03-normalize/run.py` extracts text for every archived document
   lacking one.
 - **4. Extract** — `make_packets.py` builds one task packet per document lacking a
   current-version extraction; the agent works a packet via its `prompt.md`; `validate.py`
-  checks schema, anchoring, and tier before archiving.
+  checks schema conformance only (v3.0 — no anchoring, no tier) before archiving.
 - **5. Review** — status only, rendered read-only in the menu. Reviewing itself — by
   volunteers or the operator — happens in the review web app (`jobs/05-review/app/`),
-  never in chat, so every decision produces the same `review.json` audit trail.
-  `review.escalated_pending` (a reviewer looked and couldn't decide) needs the operator's
-  own pass through the same app to resolve via a `second_review` — flag it in the menu
-  when nonzero.
-- **6. Publish** — `jobs/06-publish/rebuild.py` drops and rebuilds the entire catalog from
-  the archive. Run after every review batch.
+  never in chat, so every decision produces the same `review.json` audit trail. Incidents
+  and their proposed organizations are reviewed together but decided independently
+  (`review.organizations_pending` tracks the organization queue separately). There is no
+  escalation queue in v3.0 — an item a reviewer can't decide just stays `Pending review`
+  for another volunteer or the operator.
+- **6. Publish** — `jobs/06-publish/rebuild.py` drops and rebuilds the entire catalog
+  (`staging` + `public` schemas) from the archive. Run after every review batch.
 
 ## Preconditions and transitions
 
 - Discover candidates can't be merged until the operator has confirmed them (chat →
-  decisions file → `merge.py`).
+  decisions file → `merge.py`); the Airtable cross-check runs after merge, never before.
 - Archive only fetches institutions with a confirmed URL (or explicitly records
   `no_url`/`not_found`).
 - Normalize only runs on documents that archive has fetched.
 - Extract packets are only built for normalized documents lacking a current extraction
   version.
-- Review tiers (`fast`/`standard`/`flagged`) are assigned by `validate.py`, not the agent
-  or the operator — see `IMPLEMENTATION_PLAN.md` §9.
+- There are no review tiers in v3.0 — every incident and every organization proposal
+  gets the same single-reviewer policy, informed by the AI's own `extraction_confidence`
+  and `flags[]` rather than routed by them. See `IMPLEMENTATION_PLAN.md` §9.
 - Publish is safe to run at any time; it is a pure function of the archive and always
   fully rebuilds rather than incrementally updating.
 
