@@ -1,15 +1,15 @@
-"""lib/fingerprint.py — content fingerprinting for the Ledger (v3.0).
+"""lib/fingerprint.py — content fingerprinting for the Ledger.
 
 Strips boilerplate/date tokens from fetched text before hashing, so an institution's
 annual re-post of the same "no violations found as of <date>" template registers as
-unchanged even though the embedded date differs across years. Per IMPLEMENTATION_PLAN.md
-§6's ledger entry and DATABASE_SCHEMA.md's Pipeline Logic "Boilerplate/date-token
-stripping before hashing" entry. Runs unconditionally on every fetched document, not just
-ones already known to reuse boilerplate.
+unchanged even though the embedded date differs across years. See DATABASE_SCHEMA.md's
+Pipeline Logic "Boilerplate/date-token stripping before hashing" entry. Runs
+unconditionally on every fetched document, not just ones already known to reuse
+boilerplate.
 
 Distinct from manifest.json's sha256, which hashes the raw stored bytes verbatim — that
-one exists to prove the archive holds exactly what was fetched (invariant 4), so it must
-never be normalized.
+one exists to prove the archive holds exactly what was fetched, so it must never be
+normalized.
 """
 import re
 

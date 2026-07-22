@@ -3,9 +3,8 @@
 ## Purpose
 
 Find each tracked institution's official CHTR URL and get it confirmed into
-`sources/schools.csv`, without ever letting the agent write that file directly.
-Per IMPLEMENTATION_PLAN.md §7 (01-discover) and invariant 3 (only validating scripts
-write) / invariant 6 (human decisions are artifacts).
+`sources/schools.csv`, without ever letting the agent write that file directly (only
+validating scripts write; human decisions are artifacts — see `CLAUDE.md`).
 
 ## Preconditions
 
@@ -48,7 +47,7 @@ write) / invariant 6 (human decisions are artifacts).
    yet) is just recorded for the operator to look at; `02-archive`'s `write_data_check`
    reads this same file to populate each `data_check.json`'s `airtable_cross_check`
    field. Safe to re-run any time — it's a derived comparison recomputed fresh each run,
-   not an append-only artifact (invariant 7).
+   not an append-only artifact.
 
 ## Postconditions
 

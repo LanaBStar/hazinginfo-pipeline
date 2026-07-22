@@ -6,14 +6,14 @@ Fetch every institution's CHTR original(s) from the web and preserve them perman
 R2, before any AI runs. No relevance judgment happens here — the crawl archives every
 document that could plausibly be a CHTR (keyword heuristics only); 04-extract's `is_chtr`
 field is the actual classification. Writes one `manifest.json` per document and one
-`status.json` per institution-year (§6), including the `not_found` / `no_url` cases —
-absence is data (invariant 8).
+`status.json` per institution-year, including the `not_found` / `no_url` cases — absence
+is data (see CLAUDE.md).
 
 ## Preconditions
 
 - `sources/schools.csv` exists and has at least one row with `url_status=confirmed` and a
-  non-empty `chtr_url` (produced by 01-discover; until that phase exists, use a hand-made
-  CSV in the same shape for the fixtures smoke run).
+  non-empty `chtr_url` (produced by 01-discover; the fixtures smoke run uses a hand-made
+  CSV in the same shape instead of running 01-discover for real).
 - No write credentials are required from the agent — this is a plain Python script; set
   `ARCHIVE_LOCAL_ROOT` for a local/fixtures run, or the `R2_*` env vars for a real run.
 

@@ -1,6 +1,6 @@
 """Text extraction for 03-normalize: HTML -> text, DOCX -> text, PDF -> text with page
-markers. No OCR - a PDF with no text layer yields "" (per IMPLEMENTATION_PLAN.md §7),
-which downstream auto-flags for review since anchoring can't run against empty text.
+markers. No OCR - a PDF with no text layer yields "" (the extraction agent has nothing
+to read and reports its own low/no confidence and a flag on that document instead).
 """
 import io
 import zipfile

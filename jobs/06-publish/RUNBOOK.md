@@ -2,9 +2,8 @@
 
 ## Purpose
 
-Rebuild the catalog (Neon Postgres) from the archive. Per invariant 1 (R2 is the sole
-source of truth; Postgres is a disposable projection) and invariant 2 (rebuild is the
-only write path — no incremental import), this job never updates a live database
+Rebuild the catalog (Neon Postgres) from the archive. R2 is the sole source of truth and
+Postgres is a disposable projection, so this job never updates a live database
 incrementally: every run drops both the `staging` and `public` schemas, recreates them
 from `catalog_schema.sql`, and repopulates all 15 tables from a full walk of the
 archive. Run it after every review batch.
@@ -12,8 +11,8 @@ archive. Run it after every review batch.
 `staging` holds every AI-extracted candidate incident/organization, regardless of
 review status (`human_review_status`: `Pending review` / `Approved` / `Rejected`).
 `public` holds only what an `Approved` (or corrected-and-`Approved`) decision promoted.
-See `DATABASE_SCHEMA.md` for the authoritative field-by-field reference and
-`IMPLEMENTATION_PLAN.md` §9/§12 for the review/matching/promotion model.
+See `DATABASE_SCHEMA.md` for the authoritative field-by-field reference and `CLAUDE.md`
+for the review/matching/promotion model.
 
 ## Preconditions
 
@@ -51,8 +50,8 @@ See `DATABASE_SCHEMA.md` for the authoritative field-by-field reference and
        (`approved`/`corrected` → `Approved`, `rejected` → `Rejected`); no matching
        review leaves it `Pending review`. A `corrected` review's `corrections[]` are
        applied to a copy of the raw extraction before anything is stored — the *raw*
-       extraction is still used to compute `incident_id` (§12: corrections never
-       change an incident's public id), and every applied field is logged to
+       extraction is still used to compute `incident_id` (corrections never change an
+       incident's public id), and every applied field is logged to
        `staging_incident_corrections`.
      - One `staging_organizations` row per incident that names an organization
        (`organization_name_raw` not null) — matched against already-*approved*
@@ -60,7 +59,7 @@ See `DATABASE_SCHEMA.md` for the authoritative field-by-field reference and
        lowercase/trim/punctuation-stripped comparison key. An incident naming no
        organization gets no `staging_organizations`/`incident_organizations` row.
      - `staging_incident_review_flags` are recomputed fresh every rebuild, never
-       carried over as stored state (invariant 7): `Required field missing` and `Low
+       carried over as stored state: `Required field missing` and `Low
        extraction confidence` (<0.7, provisional) are checked mechanically against
        the *final* (post-correction) field values; the remaining flag types
        (`Determination unclear`, `Alcohol/drugs review needed`, `Unrecognized date
@@ -98,14 +97,13 @@ See `DATABASE_SCHEMA.md` for the authoritative field-by-field reference and
   run.
 - Every id (`incident_id`, `organization_id`, `staging_incident_id`, `artifact_id`,
   `ledger_id`, ...) is a content-derived hash, identical to the previous run's,
-  provided the archive is unchanged (invariant 9) — corrections change what's stored
-  in a row, never its id.
+  provided the archive is unchanged — corrections change what's stored in a row, never
+  its id.
 - **Known, accepted exception:** `institution.created_at` is *not* reproducible across
   separate rebuild invocations — `sources/schools.csv` carries no "institution first
   tracked" timestamp, so this one column is stamped with the rebuild's own wall-clock
-  time (a single value per run, not per row). See `BUILD_STATUS.md`'s Phase 16 notes.
-  Every other timestamp column is derived from a timestamp already recorded in some
-  archived JSON file, so it *is* reproducible.
+  time (a single value per run, not per row). Every other timestamp column is derived
+  from a timestamp already recorded in some archived JSON file, so it *is* reproducible.
 
 ## Failure modes
 

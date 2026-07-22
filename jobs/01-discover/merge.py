@@ -1,10 +1,10 @@
 """merge.py -- 01-discover: merge operator-confirmed CHTR URLs into sources/schools.csv.
 
-Per IMPLEMENTATION_PLAN.md Section 7 (01-discover) and invariant 6 (human decisions are
-artifacts). Reads, for each batch under tasks/discover/{batch}/, the agent's
-candidates.json and the operator's decisions.json (written by the console, never by
-chat), and merges confirmed URLs into sources/schools.csv. Never edits schools.csv from
-anywhere else -- this script is the only write path invariant 3 permits.
+Reads, for each batch under tasks/discover/{batch}/, the agent's candidates.json and the
+operator's decisions.json (written by the console, never by chat), and merges confirmed
+URLs into sources/schools.csv. Never edits schools.csv from anywhere else -- this script
+is the only write path (see CLAUDE.md: only validating scripts write, human decisions are
+artifacts).
 
 Validates before merging:
   (a) candidates.json against jobs/01-discover/schema.json;

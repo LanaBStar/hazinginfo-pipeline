@@ -5,7 +5,7 @@ the smoke run exercise the real fetch/keyword/BFS path with no live network).
 Asserts: correct archive layout is produced, absence (not_found/no_url) is recorded,
 manifest.json/status.json validate against their schemas, a re-run is fully resumable with
 zero network calls, and an unchanged document is deduped (not re-stored) across scrape
-years. Per IMPLEMENTATION_PLAN.md §16.
+years.
 
 Run with: python tests/test_phase2_archive.py
 """
@@ -215,7 +215,7 @@ def main() -> int:
             failures.append("north-ridge ledger entry: first_seen_date should stay fixed across the 2027 re-crawl")
 
         # ── Run 4: --prefix smoke — the fixtures smoke run must land under smoke/,
-        # never mixed into archive/ (IMPLEMENTATION_PLAN.md §14) ──
+        # never mixed into archive/ ──
         fetch_calls.clear()
         results4 = run.run(schools_csv=schools_csv, year=2099, prefix="smoke")
         if results4 != expected_results:

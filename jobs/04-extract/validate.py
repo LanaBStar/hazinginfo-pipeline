@@ -1,24 +1,23 @@
 """
-validate.py -- 04-extract: validate and archive incidents.json packets (v3.0).
+validate.py -- 04-extract: validate and archive incidents.json packets.
 
-Per IMPLEMENTATION_PLAN.md Section 7 (validation) and Section 9 (review model). Walks
-every packet under tasks/extract/ the agent has finished (incidents.json written, and
-metadata.json's `model`/`created` filled in), and for each:
+Walks every packet under tasks/extract/ the agent has finished (incidents.json written,
+and metadata.json's `model`/`created` filled in), and for each:
 
   (a) strict JSON-schema validation of incidents.json against schema.json (unknown
-      fields rejected, per Section 8's excluded-fields list) -- invalid output is
+      fields rejected, per schema.json's excluded-fields list) -- invalid output is
       archived too, never silently discarded;
   (b) archives incidents.json + metadata.json + validation.json under
       {doc_dir}/ai/extract_v{N}/, where doc_dir and N come from the packet's
       metadata.json stub (written by make_packets.py), not re-derived here.
 
-v3.0 drops anchoring and tier assignment entirely (IMPLEMENTATION_PLAN.md Section 9):
-validation.json is now just {schema_version, valid, schema_errors}. Per-incident
-extraction_confidence and flags[] are carried in incidents.json itself (schema.json),
-not computed here -- the AI reports them, this script only checks conformance.
-Organization matching and cross-year incident-status resolution are also not this job's
-concern: they're derived by 06-publish/rebuild.py at publish time (invariant 7 -- state
-is derived, never stored), not something 04-extract needs to compute or store.
+There is no anchoring or tier assignment: validation.json is just
+{schema_version, valid, schema_errors}. Per-incident extraction_confidence and flags[]
+are carried in incidents.json itself (schema.json), not computed here -- the AI reports
+them, this script only checks conformance. Organization matching and cross-year
+incident-status resolution are also not this job's concern: they're derived by
+06-publish/rebuild.py at publish time (state is derived, never stored -- see CLAUDE.md),
+not something 04-extract needs to compute or store.
 
 Idempotent/resumable: a packet whose target {doc_dir}/ai/extract_v{N}/incidents.json
 already exists in the archive is skipped.

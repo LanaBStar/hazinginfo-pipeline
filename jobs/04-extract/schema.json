@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hazinginfo.org/schemas/jobs/04-extract/incidents.schema.json",
   "title": "incidents.json (v2 — v3.0 pipeline)",
-  "description": "04-extract agent output. Per IMPLEMENTATION_PLAN.md §8 and DATABASE_SCHEMA.md's Staging_incidents/Staging_organizations. Every raw field is captured verbatim; every normalized field is the AI's own interpretation of that raw text. No page-anchored quotes and no offsets in v3.0 — validate.py only checks schema conformance. Fields are exactly those the Act defines plus the data dictionary's staging fields — do not add hazing-type taxonomy, sanction severity, location, is_aggravated, or date_reported.",
+  "description": "04-extract agent output. See DATABASE_SCHEMA.md's Staging_incidents/Staging_organizations. Every raw field is captured verbatim; every normalized field is the AI's own interpretation of that raw text. No page-anchored quotes and no offsets -- validate.py only checks schema conformance. Fields are exactly those the Act defines plus the data dictionary's staging fields — do not add hazing-type taxonomy, sanction severity, location, is_aggravated, or date_reported.",
   "$defs": {
     "date": {"type": ["string", "null"], "format": "date"},
     "confidence": {"type": "number", "minimum": 0, "maximum": 1},

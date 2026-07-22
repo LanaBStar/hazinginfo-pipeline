@@ -1,9 +1,8 @@
 """Phase 6 smoke check: jobs/01-discover/make_batches.py + merge.py.
 
 Builds a small synthetic sources/schools.csv copy (5 schools, matching the pattern
-every prior phase's smoke check uses -- a throwaway CSV, never the real 1,484-row
-sources/schools.csv) and exercises the full candidate -> confirm -> merge round trip
-per IMPLEMENTATION_PLAN.md Section 16:
+every other test in this suite uses -- a throwaway CSV, never the real 1,484-row
+sources/schools.csv) and exercises the full candidate -> confirm -> merge round trip:
 
   1. make_batches.py slices the 5 eligible (blank url_status) schools into batches of
      3, marking batched rows "pending"; a second run batches nothing new.

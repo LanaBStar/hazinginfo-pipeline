@@ -1,9 +1,9 @@
 /**
- * Reviewer identity, per IMPLEMENTATION_PLAN.md Section 11 ("reviewer identity from
- * the Access JWT"). Once this Worker's route is behind a Cloudflare Access
- * application (not done this phase -- deploy is local/test-only, confirmed with the
- * user), Access verifies the request at the edge before it ever reaches this Worker
- * and forwards the verified identity in the `Cf-Access-Jwt-Assertion` header. We only
+ * Reviewer identity, resolved from the Access JWT. Once this Worker's route is behind
+ * a Cloudflare Access application (not done this phase -- deploy is local/test-only,
+ * confirmed with the user), Access verifies the request at the edge before it ever
+ * reaches this Worker and forwards the verified identity in the
+ * `Cf-Access-Jwt-Assertion` header. We only
  * decode that header's payload (base64url) to read the `email` claim -- we do NOT
  * verify its signature ourselves, because the whole point of Access is that it already
  * did, and a Worker re-implementing JWKS verification is exactly the kind of

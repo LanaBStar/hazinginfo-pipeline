@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hazinginfo.org/schemas/status.schema.json",
   "title": "status.json",
-  "description": "Per institution-year status, written by 02-archive. Always written, even when nothing found. Per IMPLEMENTATION_PLAN.md §6.",
+  "description": "Per institution-year status, written by 02-archive. Always written, even when nothing found.",
   "type": "object",
   "properties": {
     "schema_version": {"const": 1},

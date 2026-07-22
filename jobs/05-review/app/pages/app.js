@@ -1,5 +1,5 @@
 /**
- * app.js -- jobs/05-review/app/pages: the review app's static UI (Section 11).
+ * app.js -- jobs/05-review/app/pages: the review app's static UI.
  *
  * One incident (or, for a zero-incident report, the whole document) per screen. The
  * original document (PDF.js canvas for PDFs, a sanitized-HTML iframe for HTML) is the

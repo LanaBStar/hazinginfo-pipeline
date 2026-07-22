@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hazinginfo.org/schemas/review.schema.json",
   "title": "review.json (v2 — v3.0 pipeline)",
-  "description": "Human review decision, written synchronously at decision time via the review Worker's ingest.py. Per IMPLEMENTATION_PLAN.md §10. No tier, no escalation, no second_review in v3.0 -- every incident and organization proposal gets exactly one reviewer decision. corrections is a list, one entry per changed field (matching Staging_incident_corrections' one-row-per-field grain), not a dotted-path dict.",
+  "description": "Human review decision, written synchronously at decision time via the review Worker's ingest.py. No tier, no escalation, no second_review -- every incident and organization proposal gets exactly one reviewer decision. corrections is a list, one entry per changed field (matching Staging_incident_corrections' one-row-per-field grain), not a dotted-path dict.",
   "$defs": {
     "correction_type_enum": {"enum": ["Minor cleanup", "Extraction error"]},
     "correction_entry": {
@@ -51,7 +51,7 @@
     },
     "organization_review": {
       "type": ["object", "null"],
-      "description": "Independent of decision -- the incident and its proposed organization can each be approved/rejected/corrected without waiting on the other (IMPLEMENTATION_PLAN.md §9). null means this screen's reviewer didn't touch the organization decision.",
+      "description": "Independent of decision -- the incident and its proposed organization can each be approved/rejected/corrected without waiting on the other. null means this screen's reviewer didn't touch the organization decision.",
       "properties": {
         "decision": {"type": "string", "enum": ["approved", "rejected", "corrected"]},
         "corrected_organization_type": {"type": ["string", "null"]}

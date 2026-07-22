@@ -1,10 +1,10 @@
 """
-rebuild.py -- 06-publish: full catalog rebuild from the archive (v3.0, 15 tables across
-`staging`/`public` — see DATABASE_SCHEMA.md and IMPLEMENTATION_PLAN.md §12).
+rebuild.py -- 06-publish: full catalog rebuild from the archive (15 tables across
+`staging`/`public` — see DATABASE_SCHEMA.md and CLAUDE.md's "Catalog" section).
 
-Per invariant 2 (rebuild is the only write path to production -- no incremental import):
-drops and recreates both `staging` and `public` schemas from catalog_schema.sql, then
-walks the *entire* archive and repopulates every table, in FK-dependency order:
+Rebuild is the only write path to production -- no incremental import: drops and
+recreates both `staging` and `public` schemas from catalog_schema.sql, then walks the
+*entire* archive and repopulates every table, in FK-dependency order:
 
   institution <- sources/schools.csv
   pipeline_runs <- every pipeline_runs/{run_id}.json (archive root, not prefix-scoped --
@@ -14,24 +14,25 @@ walks the *entire* archive and repopulates every table, in FK-dependency order:
       hash16, already a stable per-URL fingerprint -- lib.fingerprint.url_hash16)
   artifacts <- every doc dir with a manifest.json (one artifact per unique captured
       snapshot, since 02-archive already dedupes unchanged content at write time --
-      §6/§11 "Artifact FKs set at creation, not deferred")
+      artifact FKs are set at creation, not deferred)
   staging_incidents / staging_organizations <- every doc dir's CURRENT extract_v{N}
       incidents.json, one staging_incidents row per incidents[] entry (regardless of
       review status -- staging holds every candidate, not just approved ones) and one
       staging_organizations row per incident that names an organization. human_review_status
       defaults to "Pending review"/"Proposed" and is resolved from the incident's
-      reviews/*.review.json if one exists (§10).
+      reviews/*.review.json if one exists.
   incidents / incident_dates / incident_organizations / incident_status_history /
       organizations / staging_incident_possible_matches / staging_incident_review_flags /
-      staging_incident_corrections <- derived from the above per §9's promotion,
-      organization-matching, and cross-year status-update rules (see _promote_all below)
+      staging_incident_corrections <- derived from the above per the promotion,
+      organization-matching, and cross-year status-update rules described in CLAUDE.md
+      (see _promote_all below)
 
 Pure function of the archive: run twice against an unchanged archive and every ID and
-every row comes out identical (invariant 9). IDs are content-derived text hashes
-throughout, never SERIAL — see catalog_schema.sql's header for why this overrides
-DATABASE_SCHEMA.md's own "Integer, auto-generated" field-table wording.
+every row comes out identical. IDs are content-derived text hashes throughout, never
+SERIAL — see catalog_schema.sql's header for why this overrides DATABASE_SCHEMA.md's own
+"Integer, auto-generated" field-table wording.
 
-Timestamps are likewise never wall-clock-at-rebuild-time (that would break invariant 9's
+Timestamps are likewise never wall-clock-at-rebuild-time (that would break the
 "identical archive -> identical catalog" bar row-for-row, not just ID-for-ID) — every
 `created_at`/`reviewed_date`/`updated_at`/etc. column is derived from a timestamp already
 recorded in some archived JSON file (manifest.fetched_at, extract_v{N}/metadata.json's
@@ -39,8 +40,7 @@ recorded in some archived JSON file (manifest.fetched_at, extract_v{N}/metadata.
 unavoidable exception is `institution.created_at`: sources/schools.csv carries no
 "institution first tracked" timestamp at all, so this column is computed once per
 `_populate()` call (not per row) and will differ across separate rebuild invocations —
-recorded as a known, accepted gap in BUILD_STATUS.md's Phase 16 notes, not silently
-glossed over.
+a known, accepted gap, not silently glossed over.
 
 Run: python jobs/06-publish/rebuild.py [--prefix archive/] [--schools-csv PATH]
 """
@@ -119,7 +119,7 @@ def _db_url() -> str:
 
 def _hash(*parts) -> str:
     """A stable, content-derived id -- short_hash(sha256(...)) of every part joined by
-    '|', matching every prior phase's incident_id/report_id convention (invariant 9)."""
+    '|', matching the archive's incident_id/report_id convention (see CLAUDE.md)."""
     key = "|".join("" if p is None else str(p) for p in parts)
     return short_hash(sha256_bytes(key.encode("utf-8")))
 
@@ -236,7 +236,7 @@ def _artifact_rows(keys: set[str]) -> tuple[list[tuple], dict[str, str]]:
     return rows, doc_dir_to_artifact_id
 
 
-# ── Flags (recomputed fresh every rebuild, per invariant 7 -- see module docstring) ─
+# ── Flags (recomputed fresh every rebuild -- see module docstring) ─────────────────
 
 def _recompute_flags(final_incident: dict, ai_flags: list[dict], corrected_fields: set[str]) -> list[tuple]:
     """Returns [(flag_type, field_name)]. 'Required field missing' and 'Low extraction
@@ -304,7 +304,7 @@ def _apply_corrections(raw_incident: dict, corrections: list[dict]) -> tuple[dic
 
 def _incident_row_key(unitid: str, incident: dict) -> str:
     """incident_id -- computed from the ORIGINAL, uncorrected extraction so a reviewer's
-    typo fix never changes an incident's public id (IMPLEMENTATION_PLAN.md §12)."""
+    typo fix never changes an incident's public id."""
     org = incident.get("organization_name_normalized") or ""
     start = incident["dates"]["incident_start_raw"]
     desc = incident["description_raw"][:200]
@@ -313,8 +313,7 @@ def _incident_row_key(unitid: str, incident: dict) -> str:
 
 def _org_row_key(comparison_key: str) -> str:
     """organization_id -- hash of the deterministic comparison key, not the first-seen
-    proposal's exact text, so it's idempotent regardless of processing order
-    (IMPLEMENTATION_PLAN.md §12)."""
+    proposal's exact text, so it's idempotent regardless of processing order."""
     return _hash("org", comparison_key)
 
 
@@ -646,7 +645,7 @@ def _populate(cur, prefix: str, schools_csv: Path) -> dict:
 
     # Deterministic processing order: by unitid, then by scrape_year/fetched_at, so
     # earlier-year candidates are promoted before later re-scrapes of the same
-    # institution can match against them (§9's cross-year status-update logic).
+    # institution can match against them (see CLAUDE.md's cross-year status-update logic).
     doc_dirs_ordered = sorted(
         _doc_dirs(keys),
         key=lambda d: (json.loads(r2.get_bytes(f"{d}/manifest.json"))["unitid"],

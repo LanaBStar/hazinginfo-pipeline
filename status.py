@@ -1,7 +1,6 @@
 """Derives all pipeline state by walking the archive - never stored, always recomputed
-(IMPLEMENTATION_PLAN.md invariant 7). This is the only source of truth the operator
-console is allowed to consult; per OPERATIONS.md, every menu render is a fresh call to
-this script.
+(see CLAUDE.md). This is the only source of truth the operator console is allowed to
+consult; per OPERATIONS.md, every menu render is a fresh call to this script.
 
 Run: python status.py
 """

@@ -1,7 +1,6 @@
 """
 ingest.py -- 05-review: validate and archive one review.json (the review Worker's
-write path). Per IMPLEMENTATION_PLAN.md Section 10 (review.json), Section 11 (review
-app), Section 15 (credentials), and Section 16's Phase 7a/7b/15 smoke checks.
+write path).
 
 This module is the settled validation/write logic; jobs/05-review/app/worker/src/
 ingest.ts is a line-for-line TypeScript port of it, since a Cloudflare Worker can't run
@@ -9,24 +8,24 @@ Python. Both are tested against the same fixture archive shape and must reject/a
 identically -- treat this file, not the port, as the source of truth when the two ever
 appear to disagree.
 
-v3.0 (Phase 15): no more tiers, escalation, second_review, or quote-anchoring on
-correction -- there's nothing left to anchor against once quotes themselves are gone
-(IMPLEMENTATION_PLAN.md Section 9/10). `decision` is a single, final call:
-approved/rejected/corrected. `corrections` is a list, one entry per changed field
-(matching Staging_incident_corrections' one-row-per-field grain); `organization_review`
-is an independent decision on the incident's proposed organization.
+There are no tiers, escalation, second_review, or quote-anchoring on correction --
+there's nothing left to anchor against once quotes themselves are gone. `decision` is a
+single, final call: approved/rejected/corrected. `corrections` is a list, one entry per
+changed field (matching Staging_incident_corrections' one-row-per-field grain);
+`organization_review` is an independent decision on the incident's proposed
+organization.
 
-`ingest_review(doc_dir, review_json)` does exactly what Section 10/16 require, in
-order, and never partially writes:
+`ingest_review(doc_dir, review_json)` does the following, in order, and never partially
+writes:
   1. Validates `review_json` against schemas/review.schema.json (unknown fields
      rejected, since that schema is `additionalProperties: false`).
   2. Confirms `extraction_ref.file_hash` really is the sha256 of some
      `ai/extract_v{N}/incidents.json` under `doc_dir` -- pinning the decision to
-     that exact extraction (invariant 9): a later re-extraction writes a *new*
-     version file, so an old review's file_hash still resolves to the exact bytes
-     it reviewed, never silently reassigned to the new one. Searches every version
-     under `doc_dir`, not just the current one, since the review may have been
-     submitted against an older extraction than whatever is "current" now.
+     that exact extraction: a later re-extraction writes a *new* version file, so
+     an old review's file_hash still resolves to the exact bytes it reviewed, never
+     silently reassigned to the new one. Searches every version under `doc_dir`,
+     not just the current one, since the review may have been submitted against an
+     older extraction than whatever is "current" now.
   3. Confirms `extraction_ref.incident_index` is in range for that extraction's
      `incidents[]` -- or, if null, that the extraction really is a zero-incident
      report with no incidents[] to index (null means "the whole document").
@@ -41,7 +40,7 @@ order, and never partially writes:
   5. If `organization_review` is present: confirms `incident_index` is not null (a
      zero-incident document has no organization to review).
   6. Writes the review to `{doc_dir}/reviews/{incident_index}_{reviewer-slug}_{ts}
-     .review.json` (Section 6) -- or `{doc_dir}/reviews/document_{reviewer-slug}_{ts}
+     .review.json` -- or `{doc_dir}/reviews/document_{reviewer-slug}_{ts}
      .review.json` for a document-level (null incident_index) review. Never
      overwrites: the archive is append-only.
 
@@ -53,7 +52,7 @@ Reviewer identity: `ingest_review()` trusts whatever `reviewer` string it's hand
 the Worker overwrites it with the resolved Access/DEV_MODE identity before calling this,
 per jobs/05-review/app/worker/src/index.ts.
 
-reviewer-slug / ts (Section 6's filename): lowercase `reviewer`, non-alphanumeric runs
+reviewer-slug / ts (the filename tokens above): lowercase `reviewer`, non-alphanumeric runs
 collapsed to a single `-`, leading/trailing `-` stripped; `ts` is `reviewed_at`
 reformatted to a compact filename-safe UTC form (colons/punctuation stripped), e.g.
 "jane@x.edu" + "2026-07-12T15:30:00Z" -> "jane-x-edu" + "20260712T153000Z".

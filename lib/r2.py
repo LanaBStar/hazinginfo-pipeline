@@ -1,5 +1,5 @@
 """R2 (Cloudflare, S3-compatible) archive access, with a local-filesystem fallback for
-tests and the fixtures smoke run (IMPLEMENTATION_PLAN.md §14).
+tests and the fixtures smoke run.
 
 If ARCHIVE_LOCAL_ROOT is set, every function below reads/writes that directory instead of
 calling R2 - the local directory mirrors the R2 key layout exactly (a key is just a path

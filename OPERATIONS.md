@@ -1,9 +1,9 @@
 # Operations
 
 This is the state machine for the HazingInfo.org CHTR archival pipeline, in prose. It is
-followed by whichever agent (Claude Cowork or Codex) is acting as the operator console —
-see `CLAUDE.md` / `AGENTS.md` for the boot instruction, and `IMPLEMENTATION_PLAN.md` for
-the full design (this file operationalizes IMPLEMENTATION_PLAN.md §5).
+agent-agnostic — followed by whichever AI agent is acting as the operator console for a
+session. See `CLAUDE.md` for the full architecture (this file operationalizes it into a
+runnable menu).
 
 ## The three console rules (verbatim)
 
@@ -47,7 +47,7 @@ script reads; a chat answer is not a decision.
 }
 ```
 
-(v3.0: no more tier-based review counts — see `IMPLEMENTATION_PLAN.md` §9/§5.)
+(No tier-based review counts — review is single-reviewer, flag-informed; see `CLAUDE.md`.)
 
 This is the shape, not exhaustive — `status.py` may add fields as later phases land, but
 never remove the ones the menu depends on.
@@ -79,7 +79,7 @@ the runbook before acting and follows it — it does not invent steps.
 
 - **0. Smoke run** (mandatory first step when `smoke_run.done_this_year` is false) — runs
   the full pipeline over `fixtures/` into a `smoke/` archive prefix, never mixed with real
-  data. See `IMPLEMENTATION_PLAN.md` §14.
+  data.
 - **1. Discover** — batches of ~25–50 schools get candidate URLs from the agent; the
   operator confirms via chat, which the agent writes to a decisions file; `merge.py`
   validates and merges into `sources/schools.csv`. The agent then cross-checks the
@@ -115,9 +115,9 @@ the runbook before acting and follows it — it does not invent steps.
 - Normalize only runs on documents that archive has fetched.
 - Extract packets are only built for normalized documents lacking a current extraction
   version.
-- There are no review tiers in v3.0 — every incident and every organization proposal
-  gets the same single-reviewer policy, informed by the AI's own `extraction_confidence`
-  and `flags[]` rather than routed by them. See `IMPLEMENTATION_PLAN.md` §9.
+- There are no review tiers — every incident and every organization proposal gets the
+  same single-reviewer policy, informed by the AI's own `extraction_confidence` and
+  `flags[]` rather than routed by them. See `CLAUDE.md`'s "05-review" section.
 - Publish is safe to run at any time; it is a pure function of the archive and always
   fully rebuilds rather than incrementally updating.
 

@@ -1,23 +1,21 @@
 """import_airtable.py -- 01-discover: cross-check confirmed CHTR URLs against the existing
 schools-registry Airtable base.
 
-Per IMPLEMENTATION_PLAN.md Section 7 (01-discover) and the Phase 9 decision log in
-BUILD_STATUS.md: the agent still discovers and confirms each institution's chtr_url on its
-own (prompt.md -> candidates.json -> operator decision -> merge.py, unchanged). This script
+The agent still discovers and confirms each institution's chtr_url on its own
+(prompt.md -> candidates.json -> operator decision -> merge.py, unchanged). This script
 runs *after* merge.py and only ever cross-checks -- it never writes chtr_url/url_status/
 evidence, and it never edits schools.csv at all. A mismatch (or an institution Airtable has
 no opinion on) is recorded, not resolved automatically; the operator decides what to do
 with it.
 
-Airtable fields used (confirmed against the live base, not the old repo's field list --
-`Transparency Report` and `chtr_index_url` are kept in lockstep in this base, so only the
-former is read): `UNITID`, `Transparency Report`. `State`/`City, State` are linked-record
-fields in this base (not plain text), so this script does not attempt the state-backfill
-IMPLEMENTATION_PLAN.md/BUILD_STATUS.md's Phase 6 notes flagged as a future possibility --
-that would need a second lookup against whatever table those linked records point to, out
-of scope here.
+Airtable fields used (confirmed against the live base, not the predecessor repo's field
+list -- `Transparency Report` and `chtr_index_url` are kept in lockstep in this base, so
+only the former is read): `UNITID`, `Transparency Report`. `State`/`City, State` are
+linked-record fields in this base (not plain text), so this script does not attempt a
+state backfill for `schools.csv`'s currently-blank `state` column -- that would need a
+second lookup against whatever table those linked records point to, out of scope here.
 
-Output is a derived comparison (invariant 7: state is derived, never stored) -- a re-run
+Output is a derived comparison (state is derived, never stored, per CLAUDE.md) -- a re-run
 just recomputes tasks/discover/airtable_cross_check.json from schools.csv's current state,
 it is not an append-only archive artifact and carries no merged.json-style dedup tracking.
 

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hazinginfo.org/schemas/ledger_entry.schema.json",
   "title": "ledger/{url_hash16}.json (v3.0)",
-  "description": "One per distinct URL ever seen for an institution, across scrape years. Per IMPLEMENTATION_PLAN.md §6 and DATABASE_SCHEMA.md's Ledger table. Updated in place on a re-seen URL (last_seen_date/fingerprint_content_hash change; first_seen_date is fixed at creation) -- the one archive file exempt from invariant 1's append-only rule, since it's dedup bookkeeping, not archived content.",
+  "description": "One per distinct URL ever seen for an institution, across scrape years. See DATABASE_SCHEMA.md's Ledger table. Updated in place on a re-seen URL (last_seen_date/fingerprint_content_hash change; first_seen_date is fixed at creation) -- the one archive file exempt from the archive's usual immutable/append-only rule (see CLAUDE.md), since it's dedup bookkeeping, not archived content.",
   "type": "object",
   "properties": {
     "schema_version": {"const": 1},

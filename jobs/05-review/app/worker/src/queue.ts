@@ -1,19 +1,19 @@
 /**
  * queue.ts -- builds the reviewable queue by walking the archive, the same way
- * status.py's walk_archive() derives pipeline state: never stored, always recomputed
- * (invariant 7). This is deliberately NOT read from Postgres: catalog_schema.sql's
+ * status.py's walk_archive() derives pipeline state: never stored, always recomputed.
+ * This is deliberately NOT read from Postgres: catalog_schema.sql's
  * `Incidents`/`Organizations` tables only ever contain *already-reviewed* (promoted)
  * rows (rebuild.py) -- there is no "pending" projection in Postgres to read a queue
  * from, so the archive itself (incidents.json's extraction_confidence + reviews/*
  * .review.json) is the only source of truth for "what still needs a human."
  * This also means the review app needs no Postgres/Neon credentials at all, only R2.
  *
- * v3.0: no more tiers or escalation. A review's decision is a single, final call --
+ * There are no tiers or escalation. A review's decision is a single, final call --
  * once a matching review.json exists for (file_hash, incident_index), that target is
  * done and drops out of the queue entirely. Ordering is by document, then by
  * extraction_confidence ascending within a document (lowest-confidence items surfaced
- * first) per IMPLEMENTATION_PLAN.md §11 -- a document-level (zero-incident) target has
- * no confidence of its own and sorts first.
+ * first) -- a document-level (zero-incident) target has no confidence of its own and
+ * sorts first.
  *
  * Institution display name comes from the doc_dir path's own `{unitid}_{slug}`
  * segment (e.g. "100001_alpha-college" -> slug "alpha-college") rather than a

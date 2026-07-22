@@ -4,8 +4,8 @@
 # `wrangler dev` runs this against Miniflare's local R2 simulator by default -- no real
 # R2 credentials or account_id are needed for local development or the smoke check.
 # Before a real deploy: uncomment/fill `account_id`, point [[r2_buckets]] at the real
-# `hazinginfo-archive` bucket with a narrowly-scoped (reviews/ prefix only, per §15)
-# write token, and put this Worker's route behind a Cloudflare Access application.
+# `hazinginfo-archive` bucket with a narrowly-scoped (reviews/ prefix only) write
+# token, and put this Worker's route behind a Cloudflare Access application.
 
 name = "hazinginfo-review-worker"
 main = "src/index.ts"

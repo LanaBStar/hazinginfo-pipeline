@@ -11,7 +11,7 @@ lib/r2.py instead of Postgres rows) and the status vocabulary (see status.schema
 No AI runs here. clean-up / relevance is decided later, at 04-extract's is_chtr field —
 every document that could plausibly be a CHTR gets archived.
 
-Status vocabulary written by this job (see decisions recorded in BUILD_STATUS.md):
+Status vocabulary written by this job:
   - "no_url":     sources/schools.csv marks this institution's url_status as "no_url"
                   (no confirmed URL exists at all) - never fetched.
   - "not_found":  a confirmed URL existed but the crawl stored zero documents (covers both
@@ -22,13 +22,13 @@ Status vocabulary written by this job (see decisions recorded in BUILD_STATUS.md
   explicit zero-incident statement), which is only knowable at 04-extract time.
 
 Resumable: an institution whose status.json already exists for the current scrape year is
-skipped entirely (per IMPLEMENTATION_PLAN.md §7's 02-archive spec).
+skipped entirely.
 
 --prefix defaults to "archive" (the real archive) but, like every other job's --prefix
 flag (03-normalize, 04-extract/make_packets.py, 06-publish/rebuild.py), can be pointed at
 "smoke" instead — this is what makes the annual pass's mandatory first step (the fixtures
-smoke run into a sandboxed smoke/ prefix, IMPLEMENTATION_PLAN.md §14) possible without
-mixing smoke and real archive data in the same live R2 bucket.
+smoke run into a sandboxed smoke/ prefix) possible without mixing smoke and real archive
+data in the same live R2 bucket.
 
 Run: python jobs/02-archive/run.py [--schools-csv PATH] [--year YYYY] [--prefix archive]
 """
@@ -150,7 +150,7 @@ def _candidate_links(links: list[dict], page_has_signal: bool, home_domain: str)
 
 def _existing_hashes(prefix: str, inst_dir: str) -> set[str]:
     """The 16-char doc-dir names already archived for this institution, across every prior
-    scrape year (§6 dedup: an unchanged document is never re-stored)."""
+    scrape year (dedup: an unchanged document is never re-stored)."""
     keys = r2.list_keys(f"{prefix}/{inst_dir}/")
     hashes = set()
     for key in keys:
@@ -217,7 +217,7 @@ def write_status(prefix: str, inst_dir: str, unitid: str, year: int, status: str
 def write_ledger_entry(prefix: str, inst_dir: str, unitid: str, url: str, fetched_text: str | None,
                         content_hash: str) -> None:
     """One entry per distinct URL, across scrape years. Updated in place on a re-seen URL
-    (§6: the one archive file exempt from the append-only rule — it's dedup bookkeeping,
+    (the one archive file exempt from the append-only rule — it's dedup bookkeeping,
     not archived content). fetched_text is the page's plain text for boilerplate/date-token
     stripping (HTML); pass None for PDFs, where run.py has no text layer available yet
     (03-normalize's job) and the raw content_hash is used as the fingerprint instead."""
@@ -253,17 +253,15 @@ def _load_airtable_cross_check(tasks_dir: Path) -> dict[str, dict]:
 def write_data_check(prefix: str, inst_dir: str, unitid: str, year: int, chtr_index_url: str | None,
                       pipeline_status: str, pipeline_run_id: str,
                       airtable_cross_check: dict[str, dict] | None = None) -> None:
-    """One per institution per scrape cycle, written unconditionally regardless of outcome
-    (§6/§7). checked_by is a placeholder (§7's discover step is what will eventually carry
-    a real checker identity through). airtable_cross_check comes from Phase 12's
-    import_airtable.py output, keyed by unitid — null if that hasn't run this cycle, or
-    this institution has no confirmed URL to cross-check yet. pipeline_run_id (Phase 16
-    fix — was previously discarded here, leaving no way for 06-publish/rebuild.py to
-    populate Data_checks.pipeline_run_id, a required FK per DATABASE_SCHEMA.md) is the
-    id of the batch run that (re)processed this institution this cycle — RE-POINTABLE,
-    NOT FROZEN: a retry of a Partial/Error row overwrites this field with the later run's
-    id, since this row is updated in place, not recreated per attempt (contrast
-    Artifacts.pipeline_run_id, frozen at artifact creation)."""
+    """One per institution per scrape cycle, written unconditionally regardless of outcome.
+    checked_by is a placeholder (there's no real per-checker identity flowing through the
+    pipeline yet). airtable_cross_check comes from import_airtable.py's output, keyed by
+    unitid — null if that hasn't run this cycle, or this institution has no confirmed URL
+    to cross-check yet. pipeline_run_id is the id of the batch run that (re)processed this
+    institution this cycle — RE-POINTABLE, NOT FROZEN: a retry of a Partial/Error row
+    overwrites this field with the later run's id, since this row is updated in place, not
+    recreated per attempt (contrast Artifacts.pipeline_run_id, frozen at artifact
+    creation). Required per DATABASE_SCHEMA.md's Data_checks.pipeline_run_id FK."""
     doc = {
         "schema_version": 1,
         "unitid": unitid,
@@ -397,9 +395,9 @@ def process_institution(prefix: str, row: dict, year: int, pipeline_run_id: str,
                          airtable_cross_check: dict[str, dict]) -> str | None:
     """Returns the outcome ("published" | "not_found" | "no_url" | "skipped"), or None if
     the institution isn't actionable yet (e.g. discover hasn't confirmed a URL). Writes a
-    data_check.json every time this institution is actually processed this cycle (v3.0,
-    §6/§7) — unconditionally, regardless of outcome, mirroring status.json's own
-    "absence is data" treatment (invariant 8)."""
+    data_check.json every time this institution is actually processed this cycle --
+    unconditionally, regardless of outcome, mirroring status.json's own
+    "absence is data" treatment."""
     unitid = row["unitid"]
     name = row["name"]
     url_status = (row.get("url_status") or "").strip()

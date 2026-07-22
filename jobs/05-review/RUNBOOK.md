@@ -3,7 +3,7 @@
 ## Purpose
 
 Write a human reviewer's decision (`review.json`) to the archive, synchronously at
-decision time, per Section 10/11. This is the only place in the pipeline that writes
+decision time. This is the only place in the pipeline that writes
 under `{doc_dir}/reviews/` — it is deliberately the sole gate between "a reviewer
 clicked approve/fix/reject in the app" and a fact landing in the immutable archive,
 since `06-publish/rebuild.py` later trusts whatever it finds there without
@@ -19,7 +19,7 @@ The validation/write logic exists in two places that must agree:
 
 ## The review app (Phase 7b)
 
-`jobs/05-review/app/` is the actual review UI from Section 11:
+`jobs/05-review/app/` is the actual review UI:
 
 ```
 app/
@@ -91,10 +91,9 @@ whole document) per screen:
   shortcut legend. The old `E` escalate shortcut is gone — decision is a single, final
   call in v3.0.
 - Scanned-PDF (empty `extracted/text.txt`) view: PDF.js still renders the page's
-  visual content regardless of text layer, so the "page image beside the fields"
-  requirement from Section 11 falls out of the same PDF.js canvas — no separate
-  page-image pipeline needed. No highlight overlay is drawn (nothing to search text
-  against), and a note says so.
+  visual content regardless of text layer, so "page image beside the fields" falls out
+  of the same PDF.js canvas — no separate page-image pipeline needed. No highlight
+  overlay is drawn (nothing to search text against), and a note says so.
 
 Run locally: `python3 -m http.server 8788 --directory jobs/05-review/app/pages` (or
 via `.claude/launch.json`'s `review-pages` config) with `review-worker` also running.
@@ -152,9 +151,9 @@ In both paths, the validating logic does, in order, never partially writing:
 - Validates the review against `schemas/review.schema.json`.
 - Confirms `extraction_ref.file_hash` matches the sha256 of some
   `ai/extract_v{N}/incidents.json` under `doc_dir` (searches every version, not just
-  the current one — invariant 9), and that `extraction_ref.incident_index` is either
-  in range for that extraction's `incidents[]`, or `null` for a genuine zero-incident
-  extraction.
+  the current one — a review against an older extraction still pins correctly), and
+  that `extraction_ref.incident_index` is either in range for that extraction's
+  `incidents[]`, or `null` for a genuine zero-incident extraction.
 - If `decision == "corrected"`: confirms `incident_index` is not null (a
   document-level review can never be `corrected`) and every correction's `field_name`
   is one of `CORRECTABLE_FIELDS`.
@@ -183,7 +182,7 @@ In both paths, the validating logic does, in order, never partially writing:
 ## Real deploy, later
 
 Confirmed with the user this phase stays local/test-only. Going live needs, at
-minimum: a real `R2_*` credential set scoped to `reviews/` writes (Section 15) bound
+minimum: a real `R2_*` credential set scoped to `reviews/` writes bound
 into `wrangler.toml`, a Cloudflare Access application gating the Worker's route (with
 `DEV_MODE` removed from its vars), and `config.js`'s `workerBaseUrl` pointed at the
 deployed Worker. None of that is code — it's Cloudflare dashboard/wrangler

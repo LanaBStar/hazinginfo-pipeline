@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hazinginfo.org/schemas/jobs/01-discover/airtable_cross_check.schema.json",
   "title": "tasks/discover/airtable_cross_check.json (v3.0)",
-  "description": "Aggregate result of import_airtable.py's cross-check: for every institution with url_status=confirmed in schools.csv, whether the confirmed chtr_url matches the existing Airtable schools-registry base's 'Transparency Report' field. Per IMPLEMENTATION_PLAN.md §7. Read by 02-archive's write_data_check to populate data_check.json's airtable_cross_check field, and by status.py to report discover.airtable_mismatches.",
+  "description": "Aggregate result of import_airtable.py's cross-check: for every institution with url_status=confirmed in schools.csv, whether the confirmed chtr_url matches the existing Airtable schools-registry base's 'Transparency Report' field. Read by 02-archive's write_data_check to populate data_check.json's airtable_cross_check field, and by status.py to report discover.airtable_mismatches.",
   "$defs": {
     "cross_check_result": {
       "type": "object",

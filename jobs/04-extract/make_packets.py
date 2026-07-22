@@ -2,10 +2,9 @@
 make_packets.py -- 04-extract: build one AI task packet per document that has
 extracted/text.txt but no current-version extraction yet.
 
-Per IMPLEMENTATION_PLAN.md Section 7. Each packet lives at
-tasks/extract/{unitid}_{hash16}/ and contains prompt.md, the original document,
-text.txt, schema.json, and a metadata.json stub. The packet dirname (fixed by the
-plan) carries only unitid + hash16 -- not the institution slug, scrape_year, or which
+Each packet lives at tasks/extract/{unitid}_{hash16}/ and contains prompt.md, the
+original document, text.txt, schema.json, and a metadata.json stub. The packet dirname
+carries only unitid + hash16 -- not the institution slug, scrape_year, or which
 extract_v{N} this packet targets -- so the metadata.json stub also carries `doc_dir`
 (the full archive path) and `target_version`, snapshotted once at packet-creation
 time. validate.py reads those straight back rather than re-deriving them from the

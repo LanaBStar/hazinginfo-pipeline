@@ -17,8 +17,8 @@ schema-invalid document (an unknown flag_type) still archives, marked valid:fals
 its schema_errors recorded -- never silently discarded. Also checks both make_packets.py
 and validate.py are idempotent on a second run.
 
-v3.0: there is no more tier assignment or anchoring here -- validation.json is now just
-{schema_version, valid, schema_errors}. See BUILD_STATUS.md's Phase 14 notes for why.
+There is no tier assignment or anchoring here -- validation.json is just
+{schema_version, valid, schema_errors}; see validate.py's module docstring for why.
 
 Run with: python tests/test_phase4_extract.py
 """

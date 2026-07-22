@@ -3,10 +3,9 @@
  * that's reviewSchema.ts for review.json, and the archive's writers are trusted to have
  * already validated everything else against its schema before archiving it).
  *
- * v3.0: no more page-anchored Quote objects, tiers, or crosscheck -- every raw field is
+ * There are no page-anchored Quote objects, tiers, or crosscheck -- every raw field is
  * verbatim text, every non-raw field is the AI's own interpretation, and each incident
- * carries its own extraction_confidence + flags[] instead. See IMPLEMENTATION_PLAN.md
- * §8/§9/§10. */
+ * carries its own extraction_confidence + flags[] instead. */
 
 export interface Manifest {
   schema_version: 1;

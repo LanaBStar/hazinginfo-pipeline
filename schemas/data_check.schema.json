@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hazinginfo.org/schemas/data_check.schema.json",
   "title": "{scrape_year}/data_check.json (v3.0)",
-  "description": "One per institution per scrape cycle, written unconditionally regardless of whether a URL was found. Per IMPLEMENTATION_PLAN.md §6/§7 and DATABASE_SCHEMA.md's Data_checks table. chtr_index_url/checked_by are resolved by 01-discover's confirm+merge step, cross-checked against the Airtable schools-registry base (§7) before this is written.",
+  "description": "One per institution per scrape cycle, written unconditionally regardless of whether a URL was found. See DATABASE_SCHEMA.md's Data_checks table. chtr_index_url/checked_by are resolved by 01-discover's confirm+merge step, cross-checked against the Airtable schools-registry base before this is written.",
   "type": "object",
   "properties": {
     "schema_version": {"const": 1},

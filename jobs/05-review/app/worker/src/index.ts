@@ -1,6 +1,5 @@
 /**
- * index.ts -- the review app's API Worker (Phase 7b, per IMPLEMENTATION_PLAN.md
- * Section 11). Routes:
+ * index.ts -- the review app's API Worker. Routes:
  *
  *   GET  /api/queue                          -> QueueItem[] (queue.ts, ordered by document
  *                                                then extraction_confidence ascending)
@@ -12,10 +11,10 @@
  *   POST /api/review  {doc_dir, review}       -> ingest.ts's ingestReview()
  *
  * The Pages static UI (../pages/) is the only intended caller. This Worker never
- * writes catalog rows (Section 11: "the app never writes catalog rows" -- it is
- * untrusted by construction) and needs no Postgres/Neon credentials at all, only its
- * own narrowly-scoped R2 binding (Section 15: reviews/ prefix only for the write
- * path -- reads span the whole archive, since the queue has to be derived from it).
+ * writes catalog rows -- it is untrusted by construction -- and needs no Postgres/Neon
+ * credentials at all, only its own narrowly-scoped R2 binding (reviews/ prefix only
+ * for the write path -- reads span the whole archive, since the queue has to be
+ * derived from it).
  */
 import { resolveReviewer, NoReviewerIdentityError } from "./access";
 import { IngestError, ingestReview } from "./ingest";
@@ -57,8 +56,8 @@ function parseIncidentIndex(raw: string | null): number | null {
 /** HTML sanitization for the review UI's iframe. Uses the Workers runtime's built-in
  * streaming HTMLRewriter rather than a hand-rolled regex parser -- strips anything
  * that could execute or navigate, since the archived HTML is copied verbatim from an
- * arbitrary institution's website (invariant 4: we archive exactly what was fetched,
- * we don't get to assume it's safe). This is defense-in-depth: the Pages UI is also
+ * arbitrary institution's website (we archive exactly what was fetched, we don't get
+ * to assume it's safe). This is defense-in-depth: the Pages UI is also
  * expected to render it inside a `sandbox` iframe with no `allow-scripts`.
  */
 class StripElement {

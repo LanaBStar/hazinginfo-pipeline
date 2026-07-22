@@ -2,12 +2,14 @@
 
 > **Source of truth.** This file is a mechanical export of the "CHTR Data Dictionary" Airtable
 > base (tabs: Data Dictionary, Pipeline Logic, Controlled Vocabularies), pulled via the Airtable
-> API on 2026-07-18. It documents the schema for the **new** Postgres catalog design — a
-> two-schema (`public` / `staging`) architecture that supersedes the six-table catalog described
-> in `IMPLEMENTATION_PLAN.md` §12 and currently implemented in `jobs/06-publish/catalog_schema.sql`.
-> Reconciling the two is separate, not-yet-scoped work; treat this file as authoritative for the
-> field-level design, and the Airtable base itself as authoritative over this file if they ever
-> diverge (re-run the pull script to refresh).
+> API on 2026-07-18. It documents the two-schema (`public` / `staging`) Postgres catalog design
+> that `jobs/06-publish/catalog_schema.sql` and `rebuild.py` implement (see `CLAUDE.md`'s
+> "Catalog" section for the behavior). Treat this file as authoritative for the field-level
+> design. This was a one-time export, not a live sync: the Airtable connection used to pull it
+> was intentionally disconnected afterward, and there is no pull script in this repo --
+> refreshing this file means re-pulling from the Airtable base by hand and re-exporting. Where
+> `catalog_schema.sql` intentionally deviates from a field table here (ID typing, nullability),
+> that file's own header comment explains why.
 
 ## How the schema is laid out
 

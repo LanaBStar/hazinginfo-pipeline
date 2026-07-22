@@ -1,35 +1,29 @@
--- catalog_schema.sql -- the 15 tables (2 schemas: staging / public) from
--- DATABASE_SCHEMA.md, per IMPLEMENTATION_PLAN.md §12.
+-- catalog_schema.sql -- the 15 tables (2 schemas: staging / public), field-level
+-- design from DATABASE_SCHEMA.md.
 --
 -- Applied by rebuild.py inside freshly recreated `staging`/`public` schemas, every
--- publish run (invariant 2: rebuild is the only write path, no incremental import).
--- Table order below is a topological sort of the FK graph (not the order
--- DATABASE_SCHEMA.md lists them in) -- staging.staging_incidents/staging_organizations
--- have to exist before public.incidents/incident_organizations can reference them, and
--- public.incidents has to exist before staging.staging_incident_possible_matches can
--- reference it back.
+-- publish run (rebuild is the only write path, no incremental import). Table order
+-- below is a topological sort of the FK graph (not the order DATABASE_SCHEMA.md lists
+-- them in) -- staging.staging_incidents/staging_organizations have to exist before
+-- public.incidents/incident_organizations can reference them, and public.incidents has
+-- to exist before staging.staging_incident_possible_matches can reference it back.
 --
 -- ID strategy: every primary key is a content-derived text hash (short_hash of a
--- sha256), never SERIAL/IDENTITY -- invariant 9 ("IDs are content-derived ... rebuilds
--- must be idempotent: identical archive -> identical catalog, including every public
--- ID") is unqualified, and IMPLEMENTATION_PLAN.md §12 spells this out explicitly for
--- incident_id/organization_id specifically. This overrides DATABASE_SCHEMA.md's own
+-- sha256), never SERIAL/IDENTITY -- rebuilds must be idempotent: identical archive ->
+-- identical catalog, including every public ID. This overrides DATABASE_SCHEMA.md's own
 -- field tables, which describe every PK as "Integer (PK, auto-generated)" -- that
--- description predates the v3.0 migration decision recorded in IMPLEMENTATION_PLAN.md
--- §12 ("DATABASE_SCHEMA.md is the authoritative field-by-field reference ... This
--- section only covers what changed structurally") and is superseded by it for ID typing.
--- Institution.unitid is the one natural (non-hashed) key, per IPEDS.
+-- description predates this catalog's move to content-derived IDs and is superseded by
+-- it for ID typing. Institution.unitid is the one natural (non-hashed) key, per IPEDS.
 --
--- Enums are TEXT + CHECK, matching the existing six-table schema's convention (no
--- native Postgres ENUM type), so the exact controlled-vocabulary term lists live in one
--- place (this file) and stay easy to diff against DATABASE_SCHEMA.md's own vocab tables.
+-- Enums are TEXT + CHECK, matching the original catalog design's convention (no native
+-- Postgres ENUM type), so the exact controlled-vocabulary term lists live in one place
+-- (this file) and stay easy to diff against DATABASE_SCHEMA.md's own vocab tables.
 --
--- Nullability corrections vs. DATABASE_SCHEMA.md's literal field tables, recorded in
--- BUILD_STATUS.md's Phase 16 notes:
+-- Nullability corrections vs. DATABASE_SCHEMA.md's literal field tables:
 --   - Institution.state_territory: DATABASE_SCHEMA.md says NOT NULL, but
---     sources/schools.csv's `state` column is blank for every row (Phase 6 decision --
---     no IPEDS state backfill has happened yet). Left nullable so rebuild.py can
---     actually populate this table from the real schools.csv.
+--     sources/schools.csv's `state` column is blank for every row (no IPEDS state
+--     backfill has happened yet). Left nullable so rebuild.py can actually populate
+--     this table from the real schools.csv.
 --   - Staging_organizations.organization_type: DATABASE_SCHEMA.md's field table says
 --     NOT NULL, but its own scope note instructs leaving it NULL when the AI can't
 --     confidently classify (never a placeholder value) -- and jobs/04-extract/schema.json
@@ -264,7 +258,7 @@ CREATE INDEX staging_incident_possible_matches_existing_idx ON staging.staging_i
 -- is about an incident or an organization proposal, never both/neither) -- enforced
 -- here with a CHECK, strengthening DATABASE_SCHEMA.md's stated "pipeline-code-only"
 -- enforcement rather than contradicting it (this schema is fully constrained
--- throughout, per the Phase 5 precedent).
+-- throughout, matching this file's usual convention).
 
 CREATE TABLE staging.staging_incident_review_flags (
     flag_id                 text PRIMARY KEY,

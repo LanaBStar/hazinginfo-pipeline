@@ -1,7 +1,6 @@
 """make_batches.py -- 01-discover: batch sources/schools.csv into task packets of
 ~25-50 schools each for the agent to search.
 
-Per IMPLEMENTATION_PLAN.md Section 7 (01-discover) and Section 16's smoke check.
 Mirrors 04-extract/make_packets.py's packet-directory convention: each batch lives at
 tasks/discover/{batch}/ and contains prompt.md, schema.json, and this batch's slice of
 schools.csv (schools_slice.csv).

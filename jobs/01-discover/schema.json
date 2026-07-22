@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hazinginfo.org/schemas/jobs/01-discover/candidates.schema.json",
   "title": "candidates.json",
-  "description": "01-discover agent output: one file per batch, proposing CHTR URLs for operator confirmation. Never edits schools.csv directly. Per IMPLEMENTATION_PLAN.md §7 (01-discover).",
+  "description": "01-discover agent output: one file per batch, proposing CHTR URLs for operator confirmation. Never edits schools.csv directly.",
   "type": "object",
   "properties": {
     "schema_version": {"const": 1},

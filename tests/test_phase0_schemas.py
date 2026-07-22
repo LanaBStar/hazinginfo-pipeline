@@ -1,7 +1,6 @@
-"""Phase 0 smoke check: schemas validate the example documents in the plan.
-
-Per IMPLEMENTATION_PLAN.md §16, Phase 0's smoke check is that all seven schemas validate
-their example documents. Run with: python tests/test_phase0_schemas.py
+"""Schema smoke check: every schema in schemas/ and each job's own schema.json validates
+its example document(s) in fixtures/schema_examples/. Run with:
+python tests/test_phase0_schemas.py
 """
 import json
 import sys

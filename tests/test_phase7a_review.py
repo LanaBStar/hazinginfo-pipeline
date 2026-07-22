@@ -12,7 +12,7 @@ Exercises, all via ingest.ingest_review() directly (no live R2, no Worker):
   - a valid `approved` review lands at the expected reviews/ key, with the expected
     reviewer-slug/ts filename derivation, and byte-identical content;
   - a review whose extraction_ref.file_hash matches nothing under doc_dir/ai/ is
-    rejected, nothing written (invariant 9's pinning is actually enforced);
+    rejected, nothing written (the hash-pinning is actually enforced);
   - an out-of-range incident_index is rejected;
   - a review that fails schema.json (bad decision enum, unknown field) is rejected;
   - a `corrected` review whose correction targets a known correctable field succeeds;

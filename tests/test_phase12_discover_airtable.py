@@ -1,8 +1,7 @@
-"""Phase 12 smoke check: 01-discover's Airtable cross-check.
+"""Smoke check: 01-discover's Airtable cross-check (import_airtable.py).
 
 No real Airtable API calls -- fetch_airtable_urls() is monkeypatched with a fixed dict so
-this test never depends on live credentials or network. Per IMPLEMENTATION_PLAN.md §7 and
-BUILD_STATUS.md's Phase 12 notes.
+this test never depends on live credentials or network.
 
 Run with: python tests/test_phase12_discover_airtable.py
 """

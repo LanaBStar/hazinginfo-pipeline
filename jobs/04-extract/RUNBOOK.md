@@ -2,18 +2,17 @@
 
 ## Purpose
 
-Turn every archived, normalized document into structured incident data, per
-IMPLEMENTATION_PLAN.md Section 8. Classification (`is_chtr`) happens as part of
-extraction -- there is no separate cleaning job. The agent never writes to the archive
-directly (invariant 3): it fills in a packet, and only `validate.py` writes
+Turn every archived, normalized document into structured incident data. Classification
+(`is_chtr`) happens as part of extraction -- there is no separate cleaning job. The agent
+never writes to the archive directly: it fills in a packet, and only `validate.py` writes
 `incidents.json` / `metadata.json` / `validation.json` into R2, after schema validation.
 
-v3.0: there is no more quote-anchoring or tier assignment here (`lib/quotes.py` was
-deleted). Instead, the agent reports its own per-incident `extraction_confidence` and a
-structured `flags[]` array directly in `incidents.json`; a human reviewer always makes
-the final call regardless of confidence (IMPLEMENTATION_PLAN.md Section 9). The old
+There is no quote-anchoring or tier assignment here (that mechanism, and `lib/quotes.py`
+along with it, was retired). Instead, the agent reports its own per-incident
+`extraction_confidence` and a structured `flags[]` array directly in `incidents.json`; a
+human reviewer always makes the final call regardless of confidence. The old
 `crosscheck_prompt.md` second-pass verification concept (tied to the now-removed
-`standard` tier) was removed along with it -- see BUILD_STATUS.md's Phase 14 notes.
+`standard` tier) was retired along with it.
 
 ## Preconditions
 
@@ -54,7 +53,7 @@ the final call regardless of confidence (IMPLEMENTATION_PLAN.md Section 9). The 
 
 Organization matching (against the public `Organizations` registry) and cross-year
 incident-status resolution are **not** this job's concern -- both are derived by
-`06-publish/rebuild.py` at publish time (invariant 7), not computed or stored here.
+`06-publish/rebuild.py` at publish time, not computed or stored here.
 
 ## Postconditions
 

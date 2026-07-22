@@ -1,5 +1,5 @@
-"""Phase 1 smoke check: status.py against a hand-made local mini archive
-(fixtures/mini_archive/), with no live R2 credentials. Per IMPLEMENTATION_PLAN.md §16.
+"""Smoke check: status.py against a hand-made local mini archive
+(fixtures/mini_archive/), with no live R2 credentials.
 
 Run with: python tests/test_phase1_status.py
 """
