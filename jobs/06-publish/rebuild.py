@@ -49,6 +49,7 @@ import csv
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,18 +83,17 @@ CORRECTABLE_FIELDS = {
     "alcohol_involved",
     "drugs_involved",
     "determination_status",
-    "dates.incident_start_raw",
-    "dates.incident_start_normalized",
-    "dates.incident_start_precision",
-    "dates.incident_end_raw",
-    "dates.incident_end_normalized",
-    "dates.incident_end_precision",
+    "institutional_recognition_status",
     "dates.investigation_start_date_raw",
     "dates.investigation_start_date",
     "dates.investigation_end_date_raw",
     "dates.investigation_end_date",
     "dates.notice_date_raw",
     "dates.notice_date",
+    # NOTE: incident_dates[] entries (per-occurrence start/end/precision/year/month/
+    # academic_term) are corrected via a separate index-aware field_name pattern --
+    # "incident_dates[N].subfield" -- not this fixed whitelist, since N varies per
+    # incident. See _INCIDENT_DATES_FIELD_RE / _apply_corrections below.
 }
 
 # field_name -> the raw text field whose "Not specified"/None value means "Required
@@ -282,22 +282,35 @@ def _find_review(reviews: list[dict], file_hash: str, incident_index: int) -> di
     return max(matches, key=lambda r: r["reviewed_at"])
 
 
+_INCIDENT_DATES_FIELD_RE = re.compile(r"^incident_dates\[(\d+)\]\.([a-z_]+)$")
+
+
 def _apply_corrections(raw_incident: dict, corrections: list[dict]) -> tuple[dict, set[str]]:
     """Returns (final_incident, corrected_field_names) -- a deep copy of raw_incident
     with every corrections[] entry applied. Unsupported field_name values are rejected
-    (ingest.py already validates this at write time, per CORRECTABLE_FIELDS, so this is
-    a defense-in-depth check, not the primary gate)."""
+    (ingest.py already validates this at write time, per CORRECTABLE_FIELDS plus the
+    incident_dates[N].subfield pattern, so this is a defense-in-depth check, not the
+    primary gate)."""
     final = json.loads(json.dumps(raw_incident))
     corrected_fields: set[str] = set()
     for correction in corrections:
         field_name = correction["field_name"]
-        if field_name not in CORRECTABLE_FIELDS:
-            raise ValueError(f"correction targets unknown field_name {field_name!r}")
         value = correction["corrected_value"]
-        if field_name.startswith("dates."):
-            final["dates"][field_name[len("dates."):]] = value
+        if field_name in CORRECTABLE_FIELDS:
+            if field_name.startswith("dates."):
+                final["dates"][field_name[len("dates."):]] = value
+            else:
+                final[field_name] = value
         else:
-            final[field_name] = value
+            m = _INCIDENT_DATES_FIELD_RE.match(field_name)
+            if m is None:
+                raise ValueError(f"correction targets unknown field_name {field_name!r}")
+            index, subfield = int(m.group(1)), m.group(2)
+            if index >= len(final.get("incident_dates") or []):
+                raise ValueError(
+                    f"correction field_name {field_name!r} indexes incident_dates[{index}], out of range"
+                )
+            final["incident_dates"][index][subfield] = value
         corrected_fields.add(field_name)
     return final, corrected_fields
 
@@ -389,10 +402,16 @@ def _process_organization(state: _RebuildState, staging_incident_id: str, final:
         org_decision = org_review["decision"]
         org_human_status = "Approved" if org_decision in ("approved", "corrected") else "Rejected"
         corrected_type = org_review.get("corrected_organization_type")
+        corrected_gender_composition = org_review.get("corrected_membership_gender_composition")
     else:
         org_human_status = "Proposed"
         corrected_type = None
+        corrected_gender_composition = None
     resolved_org_type = corrected_type if corrected_type is not None else final.get("organization_type")
+    membership_gender_composition = (
+        corrected_gender_composition if corrected_gender_composition is not None
+        else final.get("membership_gender_composition")
+    )
 
     if existing_org_id is not None:
         organizations_row = state.organizations[existing_org_id]
@@ -405,6 +424,7 @@ def _process_organization(state: _RebuildState, staging_incident_id: str, final:
 
     state.staging_organizations.append((
         staging_organization_id, org_name, resolved_org_type, match_type,
+        membership_gender_composition,
         org_human_status, org_reviewed_by, org_reviewed_date, None, extracted_at,
     ))
 
@@ -422,7 +442,9 @@ def _process_organization(state: _RebuildState, staging_incident_id: str, final:
         else:
             organization_id = _org_row_key(comparison_key)
             if resolved_org_type is not None:
-                state.organizations[organization_id] = (organization_id, org_name, resolved_org_type, reviewed_at)
+                state.organizations[organization_id] = (
+                    organization_id, org_name, resolved_org_type, membership_gender_composition, reviewed_at,
+                )
                 state.register_organization(comparison_key, organization_id)
 
     return staging_organization_id, organization_id
@@ -483,6 +505,7 @@ def _stage_one_incident(state: _RebuildState, doc_dir: str, artifact_id: str, un
         final = raw_incident
 
     dates = final["dates"]
+    incident_dates_list = final["incident_dates"]
     flags = _recompute_flags(final, raw_incident.get("flags") or [], corrected_fields)
 
     state.staging_incidents.append((
@@ -493,7 +516,8 @@ def _stage_one_incident(state: _RebuildState, doc_dir: str, artifact_id: str, un
         dates["investigation_end_date_raw"], dates["investigation_end_date"],
         dates["notice_date_raw"], dates["notice_date"],
         final.get("sanctions_raw"), final.get("findings_raw"),
-        final["determination_status"], final["alcohol_involved"], final["drugs_involved"],
+        final["determination_status"], final["institutional_recognition_status"],
+        final["alcohol_involved"], final["drugs_involved"],
         final["extraction_confidence"], human_review_status,
         reviewed_by, reviewed_date, reviewer_notes, extracted_at,
     ))
@@ -518,7 +542,11 @@ def _stage_one_incident(state: _RebuildState, doc_dir: str, artifact_id: str, un
             state, staging_incident_id, final, org_review, reviewed_by, reviewed_date, extracted_at,
         )
 
-    incident_date_id = _hash(staging_incident_id, "dates")
+    # Matching uses the FIRST incident_dates entry's start_normalized as the incident's
+    # "primary" occurrence date -- a judgment call, since an incident can now have
+    # multiple genuinely distinct occurrence dates (see rule 10/prompt.md). The first
+    # entry is whichever the extraction listed first, typically the earliest.
+    primary_start_normalized = incident_dates_list[0]["start_normalized"] if incident_dates_list else None
     org_comparison_key = (
         _comparison_key_str(final["organization_name_normalized"] or final["organization_name_raw"])
         if final.get("organization_name_raw") is not None else None
@@ -527,7 +555,7 @@ def _stage_one_incident(state: _RebuildState, doc_dir: str, artifact_id: str, un
     incident_id: str | None = None
     if human_review_status == "Approved":
         hits = state.find_possible_matches(
-            unitid, org_comparison_key, dates["investigation_end_date"], dates["incident_start_normalized"],
+            unitid, org_comparison_key, dates["investigation_end_date"], primary_start_normalized,
         )
         best_hit = None
         for existing_incident_id in hits:
@@ -563,17 +591,21 @@ def _stage_one_incident(state: _RebuildState, doc_dir: str, artifact_id: str, un
                 dates["investigation_end_date_raw"], dates["investigation_end_date"],
                 dates["notice_date_raw"], dates["notice_date"],
                 final.get("sanctions_raw"), final.get("findings_raw"),
-                final["determination_status"], final["alcohol_involved"], final["drugs_involved"],
+                final["determination_status"], final["institutional_recognition_status"],
+                final["alcohol_involved"], final["drugs_involved"],
                 reviewed_date,
             ]
             state.register_incident(unitid, incident_id, org_comparison_key,
-                                     dates["investigation_end_date"], dates["incident_start_normalized"])
+                                     dates["investigation_end_date"], primary_start_normalized)
 
-    state.incident_dates.append((
-        incident_date_id, staging_incident_id, incident_id,
-        dates["incident_start_raw"], dates["incident_start_normalized"], dates["incident_start_precision"],
-        dates["incident_end_raw"], dates["incident_end_normalized"], dates["incident_end_precision"],
-    ))
+    for i, d in enumerate(incident_dates_list):
+        state.incident_dates.append((
+            _hash(staging_incident_id, "dates", i), staging_incident_id, incident_id,
+            d["start_raw"], d["start_normalized"], d["start_precision"],
+            d["start_year"], d["start_month"], d["start_academic_term"],
+            d["end_raw"], d["end_normalized"], d["end_precision"],
+            d["end_year"], d["end_month"], d["end_academic_term"],
+        ))
 
     if staging_organization_id is not None:
         state.incident_organizations.append((
@@ -663,21 +695,23 @@ def _populate(cur, prefix: str, schools_csv: Path) -> dict:
         "(staging_incident_id, artifact_id, institution_unitid, organization_name_raw, organization_name_normalized, "
         " incident_description_raw, investigation_start_date_raw, investigation_start_date, "
         " investigation_end_date_raw, investigation_end_date, notice_date_raw, notice_date, "
-        " sanctions_raw, findings_raw, determination_status, alcohol_involved, drugs_involved, "
+        " sanctions_raw, findings_raw, determination_status, institutional_recognition_status, "
+        " alcohol_involved, drugs_involved, "
         " extraction_confidence, human_review_status, reviewed_by, reviewed_date, reviewer_notes, created_at) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         state.staging_incidents,
     )
     cur.executemany(
         "INSERT INTO staging.staging_organizations "
-        "(staging_organization_id, organization_name, organization_type, match_type, human_review_status, "
-        " reviewed_by, reviewed_date, reviewer_notes, created_at) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        "(staging_organization_id, organization_name, organization_type, match_type, membership_gender_composition, "
+        " human_review_status, reviewed_by, reviewed_date, reviewer_notes, created_at) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         state.staging_organizations,
     )
     cur.executemany(
-        "INSERT INTO public.organizations (organization_id, organization_name, organization_type, created_at) "
-        "VALUES (%s,%s,%s,%s)",
+        "INSERT INTO public.organizations (organization_id, organization_name, organization_type, "
+        " membership_gender_composition, created_at) "
+        "VALUES (%s,%s,%s,%s,%s)",
         list(state.organizations.values()),
     )
     cur.executemany(
@@ -685,15 +719,17 @@ def _populate(cur, prefix: str, schools_csv: Path) -> dict:
         "(incident_id, institution_unitid, staging_incident_id, incident_description_raw, "
         " investigation_start_date_raw, investigation_start_date, investigation_end_date_raw, investigation_end_date, "
         " notice_date_raw, notice_date, sanctions_raw, findings_raw, determination_status, "
-        " alcohol_involved, drugs_involved, updated_at) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        " institutional_recognition_status, alcohol_involved, drugs_involved, updated_at) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         [tuple(row) for row in state.incidents.values()],
     )
     cur.executemany(
         "INSERT INTO public.incident_dates "
         "(incident_date_id, staging_incident_id, incident_id, start_date_raw, start_date_normalized, start_date_precision, "
-        " end_date_raw, end_date_normalized, end_date_precision) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        " start_date_year, start_date_month, start_date_academic_term, "
+        " end_date_raw, end_date_normalized, end_date_precision, "
+        " end_date_year, end_date_month, end_date_academic_term) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         state.incident_dates,
     )
     cur.executemany(
