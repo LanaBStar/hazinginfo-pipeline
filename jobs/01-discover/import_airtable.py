@@ -8,9 +8,15 @@ evidence, and it never edits schools.csv at all. A mismatch (or an institution A
 no opinion on) is recorded, not resolved automatically; the operator decides what to do
 with it.
 
-Airtable fields used (confirmed against the live base, not the predecessor repo's field
-list -- `Transparency Report` and `chtr_index_url` are kept in lockstep in this base, so
-only the former is read): `UNITID`, `Transparency Report`. `State`/`City, State` are
+Airtable fields used: `UNITID`, `chtr_index_url`. Earlier versions of this script read
+`Transparency Report` instead, on the mistaken assumption that the two fields are kept in
+lockstep -- they are not: `chtr_index_url` is populated whenever the institution has a
+CHTR page at all, while `Transparency Report` is only populated once that page meets
+HazingInfo's own compliance standard, and is left blank otherwise. Reading `Transparency
+Report` here made every institution with a real-but-not-yet-compliant CHTR page look like
+a mismatch (or a school Airtable has no opinion on), which was never actually true --
+`chtr_index_url` is the field that actually mirrors `chtr_url`/`schools.csv`, so it's the
+correct one for a URL cross-check. `State`/`City, State` are
 linked-record fields in this base (not plain text), so this script does not attempt a
 state backfill for `schools.csv`'s currently-blank `state` column -- that would need a
 second lookup against whatever table those linked records point to, out of scope here.
@@ -54,7 +60,7 @@ def _now_iso() -> str:
 
 
 def fetch_airtable_urls() -> dict[str, str]:
-    """{unitid: Transparency Report url} for every Airtable row that has one. Paginates
+    """{unitid: chtr_index_url} for every Airtable row that has one. Paginates
     the full table -- there is no per-unitid lookup endpoint, and the base is small enough
     (~1,500 rows) that one full pull per run is cheap."""
     token = os.environ["AIRTABLE_TOKEN"]
@@ -64,7 +70,7 @@ def fetch_airtable_urls() -> dict[str, str]:
     urls: dict[str, str] = {}
     offset = None
     while True:
-        params = {"fields[]": ["UNITID", "Transparency Report"], "pageSize": 100}
+        params = {"fields[]": ["UNITID", "chtr_index_url"], "pageSize": 100}
         if offset:
             params["offset"] = offset
         resp = requests.get(
@@ -78,7 +84,7 @@ def fetch_airtable_urls() -> dict[str, str]:
         for record in data.get("records", []):
             fields = record.get("fields", {})
             unitid = fields.get("UNITID")
-            url = fields.get("Transparency Report")
+            url = fields.get("chtr_index_url")
             if unitid and url:
                 urls[str(unitid)] = url.strip()
         offset = data.get("offset")
