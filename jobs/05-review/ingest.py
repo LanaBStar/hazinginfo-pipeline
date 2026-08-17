@@ -93,12 +93,9 @@ CORRECTABLE_FIELDS = {
     "alcohol_involved",
     "drugs_involved",
     "determination_status",
-    "dates.incident_start_raw",
-    "dates.incident_start_normalized",
-    "dates.incident_start_precision",
-    "dates.incident_end_raw",
-    "dates.incident_end_normalized",
-    "dates.incident_end_precision",
+    "institutional_recognition_status",
+    # NOTE: incident_dates[] entries are corrected via the separate
+    # "incident_dates[N].subfield" pattern -- see INCIDENT_DATES_FIELD_RE below.
     "dates.investigation_start_date_raw",
     "dates.investigation_start_date",
     "dates.investigation_end_date_raw",
@@ -137,11 +134,35 @@ def _find_incidents_json(doc_dir: str, file_hash: str) -> dict:
     )
 
 
-def _validate_corrections(corrections: list[dict]) -> None:
+INCIDENT_DATES_SUBFIELDS = {
+    "start_raw", "start_normalized", "start_precision", "start_year", "start_month",
+    "start_academic_term", "end_raw", "end_normalized", "end_precision", "end_year",
+    "end_month", "end_academic_term",
+}
+INCIDENT_DATES_FIELD_RE = re.compile(r"^incident_dates\[(\d+)\]\.([a-z_]+)$")
+
+
+def _validate_corrections(corrections: list[dict], incident: dict) -> None:
+    """`incident` is the incidents[]/`incident_index` entry this correction set
+    targets -- needed to range-check `incident_dates[N].subfield` corrections against
+    that specific incident's actual incident_dates array length, since N isn't a fixed
+    whitelist value the way scalar field names are."""
+    incident_dates_len = len(incident.get("incident_dates") or [])
     for correction in corrections:
         field_name = correction["field_name"]
-        if field_name not in CORRECTABLE_FIELDS:
+        if field_name in CORRECTABLE_FIELDS:
+            continue
+        m = INCIDENT_DATES_FIELD_RE.match(field_name)
+        if m is None:
             raise IngestError(f"correction targets unknown/uncorrectable field_name {field_name!r}")
+        index, subfield = int(m.group(1)), m.group(2)
+        if subfield not in INCIDENT_DATES_SUBFIELDS:
+            raise IngestError(f"correction targets unknown incident_dates subfield {subfield!r} in {field_name!r}")
+        if index >= incident_dates_len:
+            raise IngestError(
+                f"correction field_name {field_name!r} indexes incident_dates[{index}], but this "
+                f"incident's incident_dates array has only {incident_dates_len} entr{'y' if incident_dates_len == 1 else 'ies'}"
+            )
 
 
 def ingest_review(doc_dir: str, review_json: dict) -> str:
@@ -179,7 +200,7 @@ def ingest_review(doc_dir: str, review_json: dict) -> str:
                 "there is no per-field correction vocabulary for the document object; "
                 "reject it instead to send the document back for re-extraction"
             )
-        _validate_corrections(review_json["corrections"])
+        _validate_corrections(review_json["corrections"], incidents[incident_index])
 
     if review_json.get("organization_review") is not None and incident_index is None:
         raise IngestError("a document-level (zero-incident) review has no organization to review")
