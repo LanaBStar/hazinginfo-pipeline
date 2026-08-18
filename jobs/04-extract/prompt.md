@@ -32,8 +32,10 @@ raw text. There are no more `{text, page}` quote objects or character offsets in
    like `"Not specified"` into it would be indistinguishable from real source text and
    breaks that promise. So every `_raw` field (`organization_name_raw`, `description_raw`,
    `findings_raw`, `sanctions_raw`, and every date `_raw` field) is `null` when genuinely
-   absent from the source, paired with a `"Required field missing"` flag (see each
-   field's own rule for exact conditions -- some, like `sanctions_raw`, are conditional).
+   absent from the source, paired with a `"Legally required field missing"` flag (see
+   each field's own rule for exact conditions -- some, like `sanctions_raw`, are
+   conditional, and `incident_dates.end_raw` gets no flag at all, since an incident end
+   date is not an element the Act requires an institution to publish).
    This is different from derived/categorization fields -- `alcohol_involved`/
    `drugs_involved`, `determination_status`, `institutional_recognition_status`,
    `membership_gender_composition`, and every `_precision` field -- which are the AI's
@@ -41,12 +43,12 @@ raw text. There are no more `{text, page}` quote objects or character offsets in
    (`"Not specified"`, `"Unknown"`, `"Unknown/Not stated"`, or `"Recognized"` as a
    default) legitimately represents absence there; see each field's own rule for its
    specific sentinel. `organization_type` is also `null` when absent, paired with
-   `"Unable to determine organization type"` rather than `"Required field missing"`.
+   `"Unable to determine organization type"` rather than `"Legally required field missing"`.
    Never guess a value either way -- an absent field stays absent, it does not get
    invented content.
 2. **A missing `organization_name_raw` or `description_raw` is itself meaningful** --
    the Act requires institutions to name the organization and describe the violation, so
-   absence of either gets surfaced via a `"Required field missing"` flag, not silently
+   absence of either gets surfaced via a `"Legally required field missing"` flag, not silently
    accepted. Record `null` for the field itself, don't invent a placeholder.
    `description_raw` in particular is a full narrative displayed to the public, so its
    `null` should render as an explicit UI message ("No description provided") rather
@@ -55,10 +57,10 @@ raw text. There are no more `{text, page}` quote objects or character offsets in
    not a sentinel string. For `findings_raw`: if no finding appears anywhere in the
    source after checking (1) a labeled findings/"found responsible"/"policy violated"
    field, (2) the determination of responsibility within the incident description, and
-   (3) the sanctions/outcome text, leave `null` and add a `"Required field missing"`
+   (3) the sanctions/outcome text, leave `null` and add a `"Legally required field missing"`
    flag (`field_name: "findings_raw"`) -- the Act requires the institution's findings as
    part of the violation description. For `sanctions_raw`: if none are stated, leave
-   `null`, but only add a `"Required field missing"` flag (`field_name: "sanctions_raw"`)
+   `null`, but only add a `"Legally required field missing"` flag (`field_name: "sanctions_raw"`)
    when `determination_status` is `"Determined hazing"`. The Act requires sanctions only
    "as applicable" -- a `"Dismissed"` or `"Not specified"` determination legitimately has
    no sanctions to report, and flagging those the same as a genuine gap would bury real
@@ -95,8 +97,13 @@ raw text. There are no more `{text, page}` quote objects or character offsets in
    "(1st)"/"(2nd)" weren't stripped) or false-positive merges (two distinct orgs
    collapsed into one). If ambiguous -- e.g. the modifier+type phrase might itself be
    the org's chosen self-identifying name rather than a descriptor -- don't guess -- a
-   wrong merge or split here causes real matching errors downstream, so flag it
-   (`field_name: "organization_name_normalized"`) instead.
+   wrong merge or split here causes real matching errors downstream, so leave
+   `organization_name_normalized` `null` and add an `"Unable to derive value"` flag
+   (`field_name: "organization_name_normalized"`) instead. Do not use
+   `"Legally required field missing"` here -- that flag is reserved for elements the Act
+   requires an institution to publish, and the normalized name is our own derivation, so
+   a `null` here means our step declined to commit, not that the institution omitted
+   anything. `organization_name_raw` stays populated in this case.
 5. **`organization_type`** -- pick from the schema's enum based on the org's own
    self-description. This vocabulary was redesigned around *organizational structure and
    purpose*, not demographic composition -- gender is tracked separately via
@@ -271,7 +278,7 @@ raw text. There are no more `{text, page}` quote objects or character offsets in
    blood alcohol level) -- not adjacent scene-setting ("party," "tailgate") without
    explicit evidence of actual use. Plain silence -- the source, across all three
    patterns above, never addresses alcohol/drugs involvement at all, resolving to
-   `"Not specified"` -- also gets a `"Required field missing"` flag
+   `"Not specified"` -- also gets a `"Legally required field missing"` flag
    (`field_name: "alcohol_involved"` or `"drugs_involved"` respectively). This is a
    per-incident data point the Act requires, so unaddressed silence deserves reviewer
    attention -- distinct from `"Alcohol/drugs review needed"`, which is reserved for the
@@ -310,8 +317,8 @@ raw text. There are no more `{text, page}` quote objects or character offsets in
       one continuous span when the source actually described distinct recurring events.
     - **Open-ended, genuinely unresolved**: the source indicates the pattern began at
       some point and continued, but never gives any closing information at all (no
-      period, no later date, nothing). This is the only case that gets `null` + a
-      `"Required field missing"` flag on the end side -- see below.
+      period, no later date, nothing). This is the only case that leaves the `end_*`
+      fields `null`; it writes no flag at all -- see below.
 
     **Per-field rules within each `incident_dates` entry** (same rules apply
     symmetrically to `start_*` and `end_*`):
@@ -321,7 +328,7 @@ raw text. There are no more `{text, page}` quote objects or character offsets in
       incident description contains the only date mention, extract it from there. If a
       range is given ("March 3-5, 2024"), the earlier date is `start_raw`, the later is
       `end_raw`. If `start_raw` is genuinely absent anywhere in the source, leave `null`
-      and add a `"Required field missing"` flag (`field_name: "incident_dates.start_raw"`)
+      and add a `"Legally required field missing"` flag (`field_name: "incident_dates.start_raw"`)
       -- the Act requires the date the incident was alleged to have occurred.
     - **`start_precision` / `end_precision`**: `"Day"|"Month"|"Academic term"|
       "Academic year"|"Year"|"Unknown"`, reflecting exactly how precisely the source
@@ -369,8 +376,13 @@ raw text. There are no more `{text, page}` quote objects or character offsets in
       -- they follow the contained-recurrence or open-ended-unresolved handling above
       instead.
     - **Open-ended, unresolved end** (see the segmentation guidance above): leave every
-      `end_*` field `null` and add a `"Required field missing"` flag
-      (`field_name: "incident_dates.end_raw"`).
+      `end_*` field `null` and add NO flag. An incident end date is not an element the
+      Stop Campus Hazing Act requires an institution to publish -- the Act names only
+      the date on which the incident was alleged to have occurred -- so flagging an
+      unstated end date as legally required would report a fully compliant institution
+      as non-compliant, and CHTRs rarely state an end date at all. It is not an
+      `"Unable to derive value"` case either: nothing failed to derive, there is simply
+      no end date to record.
 
 11. **Investigation and notice dates** (`dates.investigation_start_date_raw`,
     `dates.investigation_end_date_raw`, `dates.notice_date_raw`, and their normalized
@@ -384,7 +396,7 @@ raw text. There are no more `{text, page}` quote objects or character offsets in
       like "Investigation Initiated," "Date Investigation Began," "Investigation
       Concluded," "Date of Responsible Finding," or a combined "Dates of Investigation:
       A - B" range (A -> start, B -> end). If genuinely absent anywhere in the source,
-      leave `null` and add a `"Required field missing"` flag
+      leave `null` and add a `"Legally required field missing"` flag
       (`field_name: "dates.investigation_start_date_raw"` or
       `"dates.investigation_end_date_raw"`) -- investigation dates are legally required
       under the Act, so absence here is a compliance gap worth reviewer attention.
@@ -398,7 +410,7 @@ raw text. There are no more `{text, page}` quote objects or character offsets in
       `notice_date` and `investigation_end_date`, unless two distinct dates are given;
       (3) narrative text (`description_raw`, `sanctions_raw`, `findings_raw`) for an
       explicit statement of when the organization was notified. Only if all three
-      fail, leave `null` and add a `"Required field missing"` flag
+      fail, leave `null` and add a `"Legally required field missing"` flag
       (`field_name: "dates.notice_date_raw"`) -- notice date is legally required, so a
       genuinely unrecoverable value after exhausting all three resolution steps is a
       compliance gap, not ordinary silence. Do not flag on first absence -- work through
@@ -470,7 +482,7 @@ raw text. There are no more `{text, page}` quote objects or character offsets in
     entry with every subfield `null` and both `_precision` fields `"Unknown"`) resolves
     to that default, same as any other incident with missing information -- do not
     write literal `null` into a field whose schema type doesn't allow it. Add a
-    `"Required field missing"` flag noting that incident-level detail was not
+    `"Legally required field missing"` flag noting that incident-level detail was not
     recoverable from the text you were given. Only use `is_chtr: false` when the
     document itself gives no indication a hazing violation was ever reported -- not
     merely when the detail is thin or hard to find.
