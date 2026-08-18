@@ -239,7 +239,7 @@ def _artifact_rows(keys: set[str]) -> tuple[list[tuple], dict[str, str]]:
 # ── Flags (recomputed fresh every rebuild -- see module docstring) ─────────────────
 
 def _recompute_flags(final_incident: dict, ai_flags: list[dict], corrected_fields: set[str]) -> list[tuple]:
-    """Returns [(flag_type, field_name)]. 'Required field missing' and 'Low extraction
+    """Returns [(flag_type, field_name)]. 'Legally required field missing' and 'Low extraction
     confidence' are mechanically recomputed from the FINAL (post-correction) incident
     data every time -- pipeline-applied thresholds, per DATABASE_SCHEMA.md's Pipeline
     Logic ("Review flag conditions: model reports the value, pipeline applies the
@@ -253,14 +253,14 @@ def _recompute_flags(final_incident: dict, ai_flags: list[dict], corrected_field
 
     for field_name, is_missing in REQUIRED_FIELD_CHECKS.items():
         if is_missing(final_incident):
-            flags.append(("Required field missing", field_name))
+            flags.append(("Legally required field missing", field_name))
 
     if final_incident["extraction_confidence"] < LOW_CONFIDENCE_THRESHOLD:
         flags.append(("Low extraction confidence", "extraction_confidence"))
 
     for ai_flag in ai_flags:
         flag_type = ai_flag["flag_type"]
-        if flag_type in ("Required field missing", "Low extraction confidence"):
+        if flag_type in ("Legally required field missing", "Low extraction confidence"):
             continue  # recomputed above, never carried forward stale
         if ai_flag["field_name"] in corrected_fields:
             continue  # the reviewer fixed exactly this field -- condition resolved
