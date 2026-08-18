@@ -10,6 +10,15 @@
 > refreshing this file means re-pulling from the Airtable base by hand and re-exporting. Where
 > `catalog_schema.sql` intentionally deviates from a field table here (ID typing, nullability),
 > that file's own header comment explains why.
+>
+> **Manually updated August 17, 2026** to reflect a substantial extraction-schema pass: the
+> `organization_type` vocabulary was replaced (12 terms -> 18), two new fields were added
+> (`membership_gender_composition`, `institutional_recognition_status`), `Incident_dates` was
+> redesigned to support multiple occurrences per incident with six new granularity columns
+> (replacing the calendar-anchor convention below, which is superseded), and every `_raw`-named
+> field's nullability was corrected. This update was done by hand against the current
+> `catalog_schema.sql`/`prompt.md`/Data Dictionary -- not a re-export -- so treat it as accurate
+> as of this date but subject to the same "not a live sync" caveat as the rest of this file.
 
 ## How the schema is laid out
 
@@ -346,17 +355,18 @@ The public, canonical incident record — populated only once a Staging_incident
 | `drugs_involved` | Enum (Controlled vocab) | No | Promoted from the approved Staging_incidents record. | Whether the violation involved the abuse or illegal use of drugs. |
 | `institution_unitid` | Integer (FK → Institution.unitid) | No | Pipeline-populated at incident creation time, copied from the parent Data check record's UnitID. Never entered or edited independently of that source. | IPEDS UnitID of the institution this incident belongs to. A direct foreign key from this Incidents record to the matching Institution record, distinct from the incident's link to its parent Data check. |
 | `notice_date` | Date (YYYY-MM-DD) | Yes | Promoted from the approved Staging_incidents record. | The date the institution provided notice to the organization that the incident resulted in a hazing violation. |
+| `institutional_recognition_status` | Enum (Controlled vocab) | No | Promoted from the approved Staging_incidents record. | New August 17, 2026. The organization's institutional recognition status *at the time of this specific incident* — per-incident, not per-organization, since the same org can be Recognized for one incident and Formerly Recognized for a later one. |
 | `staging_incident_id` | Integer (FK → Staging_Incidents.staging_incident_id) | No | Pipeline-populated at promotion | Foreign key pointing to the Staging_Incidents record this public incident was promoted from. |
-| `incident_description_raw` | Text | No | Promoted from the approved Staging_incidents record. | A general narrative description of the hazing incident(s) as published by the institution. |
+| `incident_description_raw` | Text | Yes | Promoted from the approved Staging_incidents record. | A general narrative description of the hazing incident(s) as published by the institution. |
 | `incident_id` | Integer (PK, auto-generated) | No | System-generated (database identity/sequence, assigned automatically at insert) | Primary key for the Incidents table. Auto-generated at insert (database identity/sequence)  |
-| `investigation_end_date_raw` | Text | No | Promoted from the approved Staging_incidents record. | The date the investigation ended/concluded with a finding of responsibility, exactly as written in the source document, before any normalization. |
-| `investigation_start_date_raw` | Text | No | Promoted from the approved Staging_incidents record. | The date the institution's investigation was initiated, exactly as written in the source document, before any normalization. |
-| `notice_date_raw` | Text | No | Promoted from the approved Staging_incidents record. | The date the institution provided notice to the organization that the incident resulted in a hazing violation, exactly as written in the source document, before any normalization. |
-| `sanctions_raw` | Text | No | Promoted from the approved Staging_incidents record. | The sanctions / outcomes the institution imposed on the organization. |
+| `investigation_end_date_raw` | Text | Yes | Promoted from the approved Staging_incidents record. | The date the investigation ended/concluded with a finding of responsibility, exactly as written in the source document, before any normalization. |
+| `investigation_start_date_raw` | Text | Yes | Promoted from the approved Staging_incidents record. | The date the institution's investigation was initiated, exactly as written in the source document, before any normalization. |
+| `notice_date_raw` | Text | Yes | Promoted from the approved Staging_incidents record. | The date the institution provided notice to the organization that the incident resulted in a hazing violation, exactly as written in the source document, before any normalization. |
+| `sanctions_raw` | Text | Yes | Promoted from the approved Staging_incidents record. | The sanctions / outcomes the institution imposed on the organization. |
 | `investigation_start_date` | Date (YYYY-MM-DD) | Yes | Promoted from the approved Staging_incidents record. | The date the institution's investigation was initiated. |
 | `determination_status` | Enum (Controlled vocab) | No | Promoted from the approved Staging_incidents record. | The institution's determination of the incident — whether it was dismissed, is still pending investigation, or was determined to be hazing. |
 | `updated_at` | TIMESTAMPTZ | No | Pipeline-populated | Timestamp of the most recent write to this record — either its original promotion from staging, or a later determination_status update logged in Incident_status_history. |
-| `findings_raw` | Text | No | Promoted from the approved Staging_incidents record. | The institution's finding(s) / rationale — what the organization was found responsible for. |
+| `findings_raw` | Text | Yes | Promoted from the approved Staging_incidents record. | The institution's finding(s) / rationale — what the organization was found responsible for. |
 | `alcohol_involved` | Enum (Controlled vocab) | No | Promoted from the approved Staging_incidents record. | Whether the violation involved the abuse or illegal use of alcohol. |
 | `investigation_end_date` | Date (YYYY-MM-DD) | Yes | Promoted from the approved Staging_incidents record. | The date the investigation ended / concluded with a finding of responsibility. |
 
@@ -367,7 +377,7 @@ The public, canonical incident record — populated only once a Staging_incident
 
 - **Scope note:** The drug half of the federal alcohol-or-drug data point, modeled as its own field alongside alcohol_involved. Same normalization and source-pattern handling as alcohol_involved. 'Not specified' means drugs were neither stated nor implied in the source — never inferred as 'No' from silence.
 - **Normalization rule:** Map to the controlled vocabulary (Yes / No / Not specified). Populate independently of alcohol_involved.
-- **Controlled vocabulary terms:** Yes; No; Not specified
+- **Controlled vocabulary terms:** Yes; No; Not specified; Unable to determine - Unclear reporting
 
 #### `Incidents.institution_unitid`
 
@@ -380,6 +390,14 @@ The public, canonical incident record — populated only once a Staging_incident
 
 - **Scope note:** When the organization was formally notified of the finding/outcome. Distinct from the date the finding was made (investigation_end_date), though some institutions report them together.
 - **Normalization rule:** Normalize to YYYY-MM-DD.
+
+#### `Incidents.institutional_recognition_status`
+
+*Not AI-extracted*
+
+- **Scope note:** New August 17, 2026. Deliberately per-incident, not per-organization — the same organization can be Recognized for one incident and Formerly Recognized - Lost Recognition for a later one (e.g. after losing its charter as a consequence of an earlier incident). Do not code Formerly Recognized if recognition was revoked as a *consequence* of the incident being coded — at the moment that incident occurred, the organization was still Recognized; only a later incident (after the loss took effect) would be Formerly Recognized. Retires the old organization_type value "Unrecognized Organization" — recognition status is now tracked independently here rather than conflated with organizational category.
+- **Normalization rule:** Defaults to "Recognized" when the source doesn't address recognition at all — CHTR-reported organizations are presumed institutionally recognized absent explicit evidence otherwise. No flag is written for this default.
+- **Controlled vocabulary terms:** Recognized; Unrecognized-Underground; Formerly Recognized - Lost Recognition; Unknown-Not Stated
 
 #### `Incidents.staging_incident_id`
 
@@ -395,8 +413,9 @@ WHY THERE'S NO artifact_id DIRECTLY ON Incidents: this is intentional, not an ov
 
 *Not AI-extracted*
 
-- **Scope note:** Verbatim narrative. May itself contain the dates, alcohol/drug involvement, or findings — extract those into their own fields too, but keep this text intact and complete.
+- **Scope note:** Verbatim narrative. May itself contain the dates, alcohol/drug involvement, or findings — extract those into their own fields too, but keep this text intact and complete. Genuinely null when the source has no narrative description (added August 17, 2026) — displayed to the public as an explicit "No description provided" message rather than any AI-authored placeholder text, since this field is shown directly to end users.
 - **Normalization rule:** Preserve full text including paragraph breaks. Do not summarize or truncate.
+- **Missing value handling:** Leave null and write a Staging_Incident_Review_Flags entry with flag_type = 'Required field missing' if the source has no narrative description at all.
 
 #### `Incidents.incident_id`
 
@@ -407,26 +426,27 @@ WHY THERE'S NO artifact_id DIRECTLY ON Incidents: this is intentional, not an ov
 
 *Not AI-extracted*
 
-- **Scope note:** Preserved verbatim as a fallback/audit trail and to surface exactly what the institution stated to the public — lets "Not Specified" be stored as literal text without forcing that value into the Date-typed investigation_end_date column.
+- **Scope note:** Preserved verbatim as a fallback/audit trail and to surface exactly what the institution stated to the public. Genuinely null (not a "Not Specified" placeholder string) when absent — corrected August 17, 2026, see the header note; a field named "_raw" promises verbatim source text, and a placeholder string is indistinguishable from real source text.
 
 #### `Incidents.investigation_start_date_raw`
 
 *Not AI-extracted*
 
-- **Scope note:** Preserved verbatim as a fallback/audit trail and to surface exactly what the institution stated to the public — lets "Not Specified" be stored as literal text without forcing that value into the Date-typed investigation_start_date column.
+- **Scope note:** Preserved verbatim as a fallback/audit trail and to surface exactly what the institution stated to the public. Genuinely null (not a "Not Specified" placeholder string) when absent — corrected August 17, 2026, see the header note.
 
 #### `Incidents.notice_date_raw`
 
 *Not AI-extracted*
 
-- **Scope note:** Preserved verbatim as a fallback/audit trail and to surface exactly what the institution stated to the public — lets "Not Specified" be stored as literal text without forcing that value into the Date-typed notice_date column.
+- **Scope note:** Preserved verbatim as a fallback/audit trail and to surface exactly what the institution stated to the public. Genuinely null (not a "Not Specified" placeholder string) when absent — corrected August 17, 2026, see the header note.
 
 #### `Incidents.sanctions_raw`
 
 *Not AI-extracted*
 
-- **Scope note:** The consequences (probation, suspension, education, etc.) and any timelines. Distinct from findings — this is what happens to them as a result.
+- **Scope note:** The consequences (probation, suspension, education, etc.) and any timelines. Distinct from findings — this is what happens to them as a result. Genuinely null when no sanctions are stated (added August 17, 2026).
 - **Normalization rule:** Preserve verbatim including any list structure and dates/timelines within.
+- **Missing value handling:** Leave null if no sanctions are stated. Flag conditionally, not always — write a Staging_Incident_Review_Flags entry with flag_type = 'Required field missing' only when determination_status is 'Determined hazing'. The Act requires sanctions only "as applicable"; a Dismissed or Not specified determination legitimately has none to report, and flagging those the same as a genuine gap would bury real compliance issues (a Determined hazing incident with no recorded sanction) in noise.
 
 #### `Incidents.investigation_start_date`
 
@@ -452,8 +472,10 @@ WHY THERE'S NO artifact_id DIRECTLY ON Incidents: this is intentional, not an ov
 
 *Not AI-extracted*
 
-- **Scope note:** The adjudicated outcome (policies violated, finding categories). Distinct from sanctions (the consequences) and from the incident description (the alleged conduct).
-- **Normalization rule:** Preserve verbatim. 
+- **Scope note:** The adjudicated outcome (policies violated, finding categories). Distinct from sanctions (the consequences) and from the incident description (the alleged conduct). Had no dedicated extraction rule at all before August 17, 2026 — added this pass.
+- **Normalization rule:** Preserve verbatim.
+- **Extraction disambiguation rule:** Resolve in order: (1) a labeled findings/"found responsible"/"policy violated" field; (2) the determination of responsibility within the incident description; (3) the sanctions/outcome text. 
+- **Missing value handling:** Leave null and write a Staging_Incident_Review_Flags entry with flag_type = 'Required field missing' if none of the three resolution steps find a finding — the Act requires the institution's findings as part of the violation description.
 
 #### `Incidents.alcohol_involved`
 
@@ -461,7 +483,7 @@ WHY THERE'S NO artifact_id DIRECTLY ON Incidents: this is intentional, not an ov
 
 - **Scope note:** One half of the federal alcohol-or-drug data point, modeled as its own field alongside drug_involved. A normalized Yes/No/Not specified judgement, distinct from the narrative even when only implied in prose. 'Not specified' means alcohol was neither stated nor implied in the source — never inferred as 'No' from silence.
 - **Normalization rule:** Map to the controlled vocabulary (Yes / No / Not specified). Populate independently of drug_involved.
-- **Controlled vocabulary terms:** Yes; No; Not specified
+- **Controlled vocabulary terms:** Yes; No; Not specified; Unable to determine - Unclear reporting
 
 #### `Incidents.investigation_end_date`
 
@@ -515,20 +537,53 @@ Link table connecting a promoted incident to its promoted organization(s), mirro
 
 ### Incident_dates
 
-Incident start/end dates (raw + normalized + precision), split into its own table so the same row can serve both the staging and public phases of an incident's life without duplication.
+Incident start/end date instances (raw + normalized + precision + granularity), split into its
+own table so the same row can serve both the staging and public phases of an incident's life
+without duplication.
+
+**Redesigned August 17, 2026: one incident can now have multiple rows.** A hazing pattern can
+recur on genuinely separate, non-consecutive occasions (e.g. "Fall 2022, Fall 2023, and Fall
+2024") — one start/end pair can't represent that without either inventing a false continuous span
+or losing information. `incident_id`/`staging_incident_id` already carried no uniqueness
+constraint forcing one row per incident, so no structural change was needed to support this;
+what changed is that multiple rows per incident is now the expected design, not an edge case.
+Segmentation guidance (implemented in `prompt.md`, not enforced at the database level): a single
+date/range is one row; recurrence explicitly framed as happening within one stated period with no
+separately-dated occurrences (e.g. "hazed weekly throughout the Fall 2025 semester") is also one
+row — `end_date_year`/`end_date_month`/`end_date_academic_term` mirror the `start_date_*`
+equivalents rather than being flagged missing, since the named period is the boundary the source
+actually gave; genuinely separate, non-consecutive occasions get one row per occasion, never
+collapsed into a false continuous span; a genuinely open-ended incident with a start but no
+closing information anywhere is the only case that still gets a Required field missing flag on
+the end side.
+
+**Calendar-anchor convention SUPERSEDED August 17, 2026.** The fixed anchor convention this table
+used to document (Month → 1st of month; Academic term → fixed month/day per term name; Academic
+year → Sept 1 of first year; Year → Jan 1) did not hold up under real extraction testing — it
+assumes a uniform academic calendar across institutions that doesn't exist (semester vs. quarter
+vs. trimester), and an anchored date looked authoritative even when it was a guess. `start_date_
+normalized`/`end_date_normalized` now populate **only at Day precision**. Six new columns
+(below) carry whatever partial granularity the source actually supports at every other precision
+level, without fabricating a full date.
 
 
 | Field | Data type | Nullable | Populated by | Definition |
 |---|---|---|---|---|
-| `incident_id` | Integer (FK → Incidents.incident_id) | Yes | Pipeline-populated | Foreign key pointing to the public Incidents record this set of dates belongs to, once the parent incident has been approved and promoted. |
-| `staging_incident_id` | Integer (FK → Staging_Incidents.staging_incident_id) | No | Pipeline-populated | Foreign key pointing to the staging incident record this set of dates belongs to. |
-| `start_date_normalized` | Date (YYYY-MM-DD) | Yes | AI-extracted from the scraped artifact | The incident's start date converted to a standard date value, at whatever precision the source actually supports. |
-| `incident_date_id` | Integer (PK, auto-generated) | No | System-generated at insert | Primary key for the incident_dates records. |
-| `end_date_raw` | Text | No | AI-extracted from the scraped artifact | The incident's end date exactly as written in the source document, before any normalization. |
-| `start_date_precision` | Enum (Controlled vocab) | No | AI-extracted from the scraped artifact | The granularity of the date captured in incident_start_date, indicating whether the source reported an exact day, a month, an academic term, an academic year, or only a year. |
-| `end_date_normalized` | Date (YYYY-MM-DD) | Yes | AI-extracted from the scraped artifact | The incident's end date converted to a standard date value, at whatever precision the source actually supports. |
-| `end_date_precision` | Enum (Controlled vocab) | No | AI-extracted from the scraped artifact | The granularity of the date captured in incident_end_date, indicating whether the source reported an exact day, a month, an academic term, an academic year, or only a year. |
-| `start_date_raw` | Text | No | AI-extracted from the scraped artifact | The incident's start date exactly as written in the source document, before any normalization. |
+| `incident_id` | Integer (FK → Incidents.incident_id) | Yes | Pipeline-populated | Foreign key pointing to the public Incidents record this date instance belongs to, once the parent incident has been approved and promoted. |
+| `staging_incident_id` | Integer (FK → Staging_Incidents.staging_incident_id) | No | Pipeline-populated | Foreign key pointing to the staging incident record this date instance belongs to. |
+| `start_date_normalized` | Date (YYYY-MM-DD) | Yes | AI-extracted from the scraped artifact | The occurrence's start date converted to a standard date value. Populated only at Day precision (corrected August 17, 2026 — see above). |
+| `incident_date_id` | Integer (PK, auto-generated) | No | System-generated at insert | Primary key for the Incident_dates records. |
+| `end_date_raw` | Text | Yes | AI-extracted from the scraped artifact | The occurrence's end date exactly as written in the source document, before any normalization. Genuinely null when absent (corrected August 17, 2026 — no longer a "Not Specified" sentinel string). |
+| `start_date_precision` | Enum (Controlled vocab) | No | AI-extracted from the scraped artifact | The granularity of the date captured in start_date_normalized/start_date_year/start_date_month/start_date_academic_term. |
+| `end_date_normalized` | Date (YYYY-MM-DD) | Yes | AI-extracted from the scraped artifact | The occurrence's end date converted to a standard date value. Populated only at Day precision. |
+| `end_date_precision` | Enum (Controlled vocab) | No | AI-extracted from the scraped artifact | The granularity of the date captured for the occurrence's end date. |
+| `start_date_raw` | Text | Yes | AI-extracted from the scraped artifact | The occurrence's start date exactly as written in the source document, before any normalization. Genuinely null when absent (corrected August 17, 2026). |
+| `start_date_year` | Integer | Yes | AI-extracted from the scraped artifact | New August 17, 2026. The occurrence's start-date calendar year, populated whenever any year is determinable regardless of precision (Day down through Year). For an academic-year span (e.g. "2024-2025"), uses the first year stated. |
+| `start_date_month` | Integer (1-12) | Yes | AI-extracted from the scraped artifact | New August 17, 2026. The occurrence's start-date month, populated only at Day or Month precision — never inferred from a term name. |
+| `start_date_academic_term` | Enum (Controlled vocab: Fall/Spring/Summer/Winter) | Yes | AI-extracted from the scraped artifact | New August 17, 2026. Populated only at Academic term precision and only when the source names one of the four recognized terms (or "Autumn," mapped to "Fall"). |
+| `end_date_year` | Integer | Yes | AI-extracted from the scraped artifact | New August 17, 2026. Mirrors start_date_year for the occurrence's end date. |
+| `end_date_month` | Integer (1-12) | Yes | AI-extracted from the scraped artifact | New August 17, 2026. Mirrors start_date_month for the occurrence's end date. |
+| `end_date_academic_term` | Enum (Controlled vocab: Fall/Spring/Summer/Winter) | Yes | AI-extracted from the scraped artifact | New August 17, 2026. Mirrors start_date_academic_term for the occurrence's end date. |
 
 
 #### `Incident_dates.incident_id`
@@ -541,21 +596,15 @@ Incident start/end dates (raw + normalized + precision), split into its own tabl
 
 *Not AI-extracted*
 
-- **Scope note:** Always set at creation — every Incident_dates row originates from a staged incident, before that incident is ever promoted to the public Incidents table. This link never changes once set, so traceability back to the original staging record is preserved even after promotion.
+- **Scope note:** Always set at creation — every Incident_dates row originates from a staged incident, before that incident is ever promoted to the public Incidents table. This link never changes once set, so traceability back to the original staging record is preserved even after promotion. As of August 17, 2026 this is no longer necessarily one row per incident — see the table-level note above on multiplicity.
 
 #### `Incident_dates.start_date_normalized`
 
 *Inferred*
 
-- **Scope note:** Paired with start_date_precision — a coarse-precision value here (e.g., just a year) should never be padded out to a fabricated day/month.
-- **Normalization rule:** Normalize to YYYY-MM-DD using a fixed calendar-anchor convention when the raw date isn't day-specific. True granularity is preserved separately in start_date_precision, so this field trades precision for consistent sortability — it is never presented as an exact date:
-- Day known → use the exact date as given.
-- Month known, day not → anchor to the 1st of that month.
-- Academic Term known (no specific date) → anchor by term: Fall → September 1; Spring → January 1; Summer → June 1; Winter → December 1 (of the stated year). If a term name outside this list appears, write a Staging_Incident_Review_Flags entry with flag_type = 'Unrecognized date term' rather than guessing an anchor.
-- Academic Year known (e.g., "2024–2025") → anchor to September 1 of the first year stated (e.g., "2024–2025" → 2024-09-01).
-- Year only → anchor to January 1 of that year.
-Anchors are fixed regardless of institution — do not attempt to look up an individual school's actual term start dates.
-- **Extraction disambiguation rule:** Normalize start_date_raw to YYYY-MM-DD. When the raw text gives only a partial date (a month, a term, a year), normalize to the most specific date determinable and record the actual granularity in start_date_precision — do not fabricate a specific day where the source only supports month/term/year precision.
+- **Scope note:** Paired with start_date_precision. Populated **only at Day precision** (corrected August 17, 2026 — see table-level note); at every other precision this field stays null, and start_date_year/start_date_month/start_date_academic_term carry whatever partial granularity the source actually supports instead.
+- **Normalization rule:** Normalize to YYYY-MM-DD only when start_date_precision is Day. For every other precision, leave null — do not anchor to any fabricated date (the calendar-anchor convention this rule used to describe is superseded, see table-level note).
+- **Extraction disambiguation rule:** Normalize start_date_raw to YYYY-MM-DD only at Day precision. For coarser precision, leave null and rely on start_date_year/start_date_month/start_date_academic_term instead — do not fabricate a specific day where the source only supports month/term/year precision.
 
 #### `Incident_dates.incident_date_id`
 
@@ -566,25 +615,25 @@ Anchors are fixed regardless of institution — do not attempt to look up an ind
 
 *Verbatim*
 
-- **Scope note:** Preserved verbatim as a fallback/audit trail — lets a human check the original wording if the normalized date or precision value is ever in question.
+- **Scope note:** Preserved verbatim as a fallback/audit trail — lets a human check the original wording if the normalized date or precision value is ever in question. Genuinely null when absent (corrected August 17, 2026), never a "Not specified" placeholder string.
 - **Normalization rule:** Capture exactly as written, trim whitespace
-- **Extraction disambiguation rule:** The later date of a reported range (see start_date_raw). For a single-day incident with no separate end date given, do not leave this blank — see Missing value handling for the single-day mirroring rule. Capture verbatim, including partial dates.
-- **Missing value handling:** For single-day incidents with no separate end date reported, mirror start_date_raw's value here rather than leaving blank. If instead a date range is implied (this is not a single-day incident) but no end date is stated anywhere in the source, output 'Not specified' and write a Staging_Incident_Review_Flags entry with flag_type = 'Required field missing'.
+- **Extraction disambiguation rule:** The later date of a reported range (see start_date_raw). For a single-day occurrence with no separate end date given, mirror every start_date_* field's actual value here (see Missing value handling) — this is copying real values, not inventing a sentinel, so no flag is needed. For recurrence contained within one stated period (see table-level note), mirror start_date_year/month/academic_term rather than leaving null. Capture verbatim, including partial dates.
+- **Missing value handling:** For single-day occurrences (start_date_precision = Day) with no separate end date reported, mirror every start_date_* field's actual value (raw, normalized, precision, year, month, academic_term) into the matching end_date_* field. For recurrence contained within one stated period at any other precision, mirror start_date_year/month/academic_term (the named period is its own end) rather than flagging missing. Only for a genuinely open-ended occurrence with no closing information anywhere does this leave null and write a Staging_Incident_Review_Flags entry with flag_type = 'Required field missing' — this is the only remaining case that gets flagged on the end side (narrowed August 17, 2026).
 
 #### `Incident_dates.start_date_precision`
 
 *Inferred*
 
-- **Scope note:** Exists because institutions report incident dates with wildly inconsistent specificity; this field lets incident_start_date be populated at whatever precision the source actually supports without fabricating false precision (e.g., defaulting an unknown day to the 1st of the month). Distinguish Academic Term (a specific semester/quarter, e.g. 'Fall 2025') from Academic Year (a full academic-year span, e.g. '2024–2025'); do not collapse one into the other. Mirrors the same precision logic as end_date_precision.
+- **Scope note:** Exists because institutions report incident dates with wildly inconsistent specificity; this field lets each occurrence be populated at whatever precision the source actually supports without fabricating false precision. Distinguish Academic Term (a specific semester/quarter, e.g. 'Fall 2025') from Academic Year (a full academic-year span, e.g. '2024–2025'); do not collapse one into the other. Mirrors the same precision logic as end_date_precision.
 - **Normalization rule:** Set based on the actual specificity stated in the source — never infer a finer precision than what's written (e.g., don't default an unstated day to the 1st of the month).
 - **Extraction disambiguation rule:** Determine precision from how specific the raw date text actually is — never infer finer precision than what's stated:
 - Full calendar date given (e.g., "9/20/2025," "September 20, 2025") → Day
 - Month and year given, no day (e.g., "September 2025") → Month
-- A specific academic term given (e.g., "Fall 2025," "Spring 2024") → Academic term
-- A full academic-year span given (e.g., "2024–2025 academic year," "sometime during the 2024–2025 academic year") → Academic year. Qualifier phrases like "sometime during" or "at some point in" do not change the precision level — they still anchor to the full year span stated, not a vaguer or finer category.
+- A specific academic term given (e.g., "Fall 2025," "Spring 2024," or "Autumn 2025" — "Autumn" maps to the Fall CV term, added August 17, 2026) → Academic term
+- A full academic-year span given (e.g., "2024–2025 academic year") → Academic year. Qualifier phrases like "sometime during" or "at some point in" do not change the precision level.
 - Only a calendar year given, no term/month/day (e.g., "2024") → Year
-- Vague qualifiers on a finer unit (e.g., "early March 2024," "late Fall 2025") → use the more specific unit named (Month for "early March," Academic term for "late Fall") — the qualifier itself doesn't add or remove precision, it's just descriptive color not captured in this field.
-- **Missing value handling:** If start_date_raw/start_date_normalized came back 'Not specified' (no date stated anywhere in the source), output 'Unknown' here — no separate flag needed, since start_date_raw's own missing-value rule already writes a Staging_Incident_Review_Flags entry (flag_type = 'Required field missing') for this same underlying gap.
+- Vague qualifiers on a finer unit (e.g., "early March 2024," "late Fall 2025") → use the more specific unit named — the qualifier itself doesn't add or remove precision.
+- **Missing value handling:** If start_date_raw came back null (no date stated anywhere in the source), output 'Unknown' here — no separate flag needed, since start_date_raw's own missing-value rule already writes a Staging_Incident_Review_Flags entry for this same underlying gap.
 - **Controlled vocabulary terms:** Day; Month; Academic term; Academic year; Year; Unknown
 - **Example output value:** Academic term
 
@@ -592,33 +641,19 @@ Anchors are fixed regardless of institution — do not attempt to look up an ind
 
 *Inferred*
 
-- **Scope note:** Paired with end_date_precision — a coarse-precision value here (e.g., just a year) should never be padded out to a fabricated day/month.
-- **Normalization rule:** Normalize to YYYY-MM-DD using a fixed calendar-anchor convention when the raw date isn't day-specific, following the same precision rule as start_date_normalized. True granularity is preserved separately in end_date_precision, so this field trades precision for consistent sortability — it is never presented as an exact date:
-- Day known → use the exact date as given.
-- Month known, day not → anchor to the 1st of that month.
-- Academic Term known (no specific date) → anchor by term: Fall → September 1; Spring → January 1; Summer → June 1; Winter → December 1 (of the stated year). If a term name outside this list appears, write a Staging_Incident_Review_Flags entry with flag_type = 'Unrecognized date term' rather than guessing an anchor.
-- Academic Year known (e.g., "2024–2025") → anchor to September 1 of the first year stated (e.g., "2024–2025" → 2024-09-01).
-- Year only → anchor to January 1 of that year.
-Anchors are fixed regardless of institution — do not attempt to look up an individual school's actual term start dates.
-For single-day incidents, see Missing value handling for the mirroring rule.
-- **Extraction disambiguation rule:** Normalize end_date_raw to YYYY-MM-DD, following the same precision rule as start_date_normalized. For single-day incidents, see Missing value handling for the mirroring rule.
-- **Missing value handling:** For single-day incidents, set equal to start_date_normalized.
+- **Scope note:** Paired with end_date_precision. Populated **only at Day precision** (corrected August 17, 2026), same as start_date_normalized.
+- **Normalization rule:** Normalize to YYYY-MM-DD only when end_date_precision is Day. For every other precision, leave null — following the same corrected rule as start_date_normalized.
+- **Extraction disambiguation rule:** Normalize end_date_raw to YYYY-MM-DD only at Day precision, following the same rule as start_date_normalized. For single-day occurrences, see Missing value handling on end_date_raw for the mirroring rule.
+- **Missing value handling:** For single-day occurrences, set equal to start_date_normalized. Otherwise null unless Day precision.
 
 #### `Incident_dates.end_date_precision`
 
 *Inferred*
 
-- **Scope note:** Exists for the same reason as start_date_precision — institutions report end dates with the same inconsistent specificity, so this field lets incident_end_date be populated at whatever precision the source actually supports without fabricating false precision. Uses the same five-value vocabulary (Day / Month / Academic Term / Academic Year / Year), and Academic Term and Academic Year should not be collapsed into one another here either. For single-day incidents where no separate end date is reported, treat incident_end_date as equal to incident_start_date and set this field to match start_date_precision rather than leaving it blank or marking it 'not specified.
-- **Normalization rule:** Set based on the actual specificity stated in the source — never infer a finer precision than what's written (e.g., don't default an unstated day to the 1st of the month).
-- **Extraction disambiguation rule:** Determine precision from how specific the raw date text actually is — never infer finer precision than what's stated. Follows the same rule as start_date_precision:
-- Full calendar date given (e.g., "9/20/2025," "September 20, 2025") → Day
-- Month and year given, no day (e.g., "September 2025") → Month
-- A specific academic term given (e.g., "Fall 2025," "Spring 2024") → Academic term
-- A full academic-year span given (e.g., "2024–2025 academic year," "sometime during the 2024–2025 academic year") → Academic year. Qualifier phrases like "sometime during" or "at some point in" do not change the precision level — they still anchor to the full year span stated, not a vaguer or finer category.
-- Only a calendar year given, no term/month/day (e.g., "2024") → Year
-- Vague qualifiers on a finer unit (e.g., "early March 2024," "late Fall 2025") → use the more specific unit named (Month for "early March," Academic term for "late Fall") — the qualifier itself doesn't add or remove precision, it's just descriptive color not captured in this field.
-For single-day incidents with no separate end date reported, see Missing value handling.
-- **Missing value handling:** For single-day incidents with no separate end date reported, set end_date_precision equal to start_date_precision rather than leaving blank or 'Unknown'. If instead end_date_raw/end_date_normalized came back 'Not specified' for a genuinely unknown end date (not the single-day mirroring case), output 'Unknown' here — no separate flag needed, since end_date_raw's own missing-value rule already writes a Staging_Incident_Review_Flags entry (flag_type = 'Required field missing') for this same underlying gap.
+- **Scope note:** Exists for the same reason as start_date_precision. Uses the same six-value vocabulary (Day / Month / Academic term / Academic year / Year / Unknown).
+- **Normalization rule:** Set based on the actual specificity stated in the source — never infer a finer precision than what's written.
+- **Extraction disambiguation rule:** Same rule as start_date_precision. For single-day occurrences with no separate end date reported, see Missing value handling on end_date_raw.
+- **Missing value handling:** For single-day occurrences with no separate end date reported, set equal to start_date_precision (part of the full six-field mirror — see end_date_raw). Otherwise, if end_date_raw came back null for a genuinely unresolved end, output 'Unknown' here — no separate flag needed.
 - **Controlled vocabulary terms:** Day; Month; Academic term; Academic year; Year; Unknown
 - **Example output value:** Academic term
 
@@ -626,11 +661,55 @@ For single-day incidents with no separate end date reported, see Missing value h
 
 *Verbatim*
 
-- **Scope note:** Preserved verbatim as a fallback/audit trail — lets a human check the original wording if the normalized date or precision value is ever in question.
+- **Scope note:** Preserved verbatim as a fallback/audit trail — lets a human check the original wording if the normalized date or precision value is ever in question. Genuinely null when absent (corrected August 17, 2026), never a "Not specified" placeholder string.
 - **Normalization rule:** Capture exactly as written, trim whitespace
 - **Extraction disambiguation rule:** Look for labels like 'Date of Incident,' 'Incident Date(s),' or a date/date-range embedded in the incident's own heading. If a range is given ('March 3-5, 2024'), this is the earlier/start date — the later date goes to end_date_raw. Capture the date text exactly as written, including partial dates ('Fall 2024', 'early March'). If the incident description contains the only date mention, extract it from there rather than leaving blank.
-- **Missing value handling:** Output 'Not specified' if no start date is stated anywhere in the source, and write a Staging_Incident_Review_Flags entry with flag_type = 'Required field missing' — an incident with no date at all is a significant gap that needs human review.
-- **Example output value:** 9/20/2025; Fall 2025; sometime during the 2024-2025 academic year; September 2025
+- **Missing value handling:** Leave genuinely null if no start date is stated anywhere in the source, and write a Staging_Incident_Review_Flags entry with flag_type = 'Required field missing' — an occurrence with no date at all is a significant gap that needs human review.
+- **Example output value:** 9/20/2025; Fall 2025; September 2025
+
+#### `Incident_dates.start_date_year`
+
+*Inferred*
+
+- **Scope note:** New August 17, 2026. Carries the calendar year whenever determinable, independent of precision — this is what makes it possible to sort/filter by year even when the date isn't precise enough for start_date_normalized to populate.
+- **Normalization rule:** Integer calendar year. For an academic-year span (e.g. "2024-2025"), use the first year stated.
+- **Missing value handling:** Null only when start_date_raw is itself null.
+
+#### `Incident_dates.start_date_month`
+
+*Inferred*
+
+- **Scope note:** New August 17, 2026. Never guessed from a term name (e.g. never infer September for "Fall") — populated only when the source states an actual month.
+- **Normalization rule:** Integer 1-12.
+- **Missing value handling:** Null at Academic term, Academic year, Year, or Unknown precision. Populated only at Day or Month precision.
+
+#### `Incident_dates.start_date_academic_term`
+
+*Inferred*
+
+- **Scope note:** New August 17, 2026. Populated only at Academic term precision, and only when the source names one of the four recognized terms (including "Autumn" as a recognized synonym for "Fall").
+- **Normalization rule:** Store the CV term ("Fall", "Spring", "Summer", or "Winter") — never the source's literal wording if it used a synonym like "Autumn."
+- **Missing value handling:** Null at every precision other than Academic term. A term name outside Fall/Spring/Summer/Winter/Autumn also stays null here (the 'Unrecognized date term' flag on start_date_precision already covers that gap) — don't guess the closest match.
+- **Controlled vocabulary terms:** Fall; Spring; Summer; Winter
+
+#### `Incident_dates.end_date_year`
+
+*Inferred*
+
+- **Scope note:** New August 17, 2026. Mirrors start_date_year for the occurrence's end date; see that field and the single-day/contained-recurrence mirroring rules on end_date_raw.
+
+#### `Incident_dates.end_date_month`
+
+*Inferred*
+
+- **Scope note:** New August 17, 2026. Mirrors start_date_month for the occurrence's end date.
+
+#### `Incident_dates.end_date_academic_term`
+
+*Inferred*
+
+- **Scope note:** New August 17, 2026. Mirrors start_date_academic_term for the occurrence's end date.
+- **Controlled vocabulary terms:** Fall; Spring; Summer; Winter
 
 ### Incident_status_history
 
@@ -691,6 +770,7 @@ The public, canonical organization registry — populated only once a Staging_or
 | Field | Data type | Nullable | Populated by | Definition |
 |---|---|---|---|---|
 | `organization_type` | Enum (Controlled vocab) | No | AI-inferred from organization name or an oversight-office cue, then human-set during the review of proposed new Organization records | The category of student organization. |
+| `membership_gender_composition` | Enum (Controlled vocab) | No | AI-inferred at extraction time, then human-confirmed/corrected during review | New August 17, 2026. The organization's self-identified gender-identity category for membership eligibility — not individual members' sex assigned at birth. |
 | `organization_id` | Integer (PK, auto-generated) | No | System-generated at insert | Primary key for the Organizations table. Auto-generated at insert. |
 | `organization_name` | Text | No | Either manually entered by HazingInfo staff (e.g., Greek life organizations manually entered into database), or created from an approved Staging_Organizations proposal once a reviewer confirms it during incident review. | The standardized/canonical name of the student organization. |
 | `created_at` | TIMESTAMPTZ | No | Pipeline-populated (promotion) or human-entered (manual add) | Timestamp of when this organization record was added to the database, whether by promotion or manual entry. |
@@ -702,7 +782,15 @@ The public, canonical organization registry — populated only once a Staging_or
 
 - **Scope note:** Normalized classification to support filtering/analysis. Often not labeled in the incident report itself, but derived from context or from a human reviewer checking and labeling the organization.
 - **Normalization rule:** Map to the controlled vocab.
-- **Controlled vocabulary terms:** Fraternity; Sorority; Institution Athletic Team; Club Sport; Honor/Leadership Society; Academic/Professional Club; Performing/Spirit Group; Military/Cadet Organization; General Interest/Social Club; Religious/Faith-Based Organization; Orientation/Mentorship Program; Unrecognized Organization
+- **Controlled vocabulary terms (replaced August 17, 2026 — see below):** Social fraternity or sorority; Service or professional fraternity or sorority; Varsity athletic team; Club sport; Intramural or recreation sports team; Honor society; Academic club; Performing arts organization; Marching band; ROTC or other military organization; Social club; Faith-based organization; Culturally-based / identity-based organization; Student government or other student leadership organization; Community service organization; Political organization or social action group; Campus media organization; Other type of organization
+
+#### `Organizations.membership_gender_composition`
+
+*Not AI-extracted*
+
+- **Scope note:** New August 17, 2026. Reflects the organization's own self-identified gender-identity category for membership eligibility, not individual members' sex assigned at birth — a single-gender organization that includes transgender members consistent with its stated identity remains single-gender, not Mixed-Co-ed. Do not infer from organization name alone: many organizations using "fraternity" in their name are explicitly co-ed (e.g. professional/business fraternities routinely admit members of any gender) — but "sorority" is a much stronger single-gender signal, since a historically women's organization that opens to men typically disaffiliates and rebrands away from "sorority" entirely rather than keeping the label while admitting men. Replaces the gender-coding that used to be implicit in organization_type's old separate Fraternity/Sorority terms — organization_type now tracks purpose, this field tracks gender composition, independently.
+- **Normalization rule:** Defaults to "Unknown-Not stated" when the source doesn't clearly indicate composition; no flag is written for this default, since it's expected to be the common case given how rarely CHTR text states this explicitly.
+- **Controlled vocabulary terms:** All-male; All-female; Mixed-Co-ed; Unknown-Not stated
 
 #### `Organizations.organization_id`
 
@@ -714,7 +802,7 @@ The public, canonical organization registry — populated only once a Staging_or
 *Not AI-extracted*
 
 - **Scope note:** A cleared, canonical organization record — either entered manually by HazingInfo staff or promoted from an approved Staging_Organizations proposal. By the time a record exists here, it's already been vetted; this table doesn't carry the matching/review logic that got it here.
-- **Normalization rule:** Preserve official capitalization. Store as the top-level organization name only — exclude chapter designators (e.g., "Beta Chapter", chapter numbers/letters), legal-entity suffixes ("Inc.", "Incorporated", "LLC"), and redundant type words ("Fraternity", "Sorority") unless the word is actually part of the org's official name. E.g., store "Alpha Kappa Kappa", not "Alpha Kappa Kappa Fraternity, Inc. — Beta Chapter". This must match the stripped form Staging_Organizations.organization_name proposes, since that field's candidate name is what gets matched against this one — a mismatch in stripping convention between the two fields would cause real matches to be missed.
+- **Normalization rule:** Preserve official capitalization. Store as the top-level organization name only — exclude chapter designators (e.g., "Beta Chapter", chapter numbers/letters), legal-entity suffixes ("Inc.", "Incorporated", "LLC"), redundant type words ("Fraternity", "Sorority") unless the word is actually part of the org's official name, and (added August 17, 2026) incident-sequence/report-disambiguation markers the institution appends to distinguish multiple incidents against the same organization within one CHTR (e.g. "(1st)", "(2nd)") — these identify which incident it is, not which organization. E.g., store "Alpha Kappa Kappa", not "Alpha Kappa Kappa Fraternity, Inc. — Beta Chapter"; store "Alpha Kappa Psi", not "Alpha Kappa Psi (2nd)". This must match the stripped form Staging_Organizations.organization_name proposes, since that field's candidate name is what gets matched against this one — a mismatch in stripping convention between the two fields would cause real matches to be missed.
 
 #### `Organizations.created_at`
 
@@ -735,25 +823,26 @@ AI-extracted candidate incident records, pending human review. Holds both raw (v
 | `organization_name_raw` | Text | No | AI-extracted from the scraped artifact | The organization name as it appears on the source document, captured prior to matching against the Organizations table. |
 | `human_review_status` | Enum (Controlled vocab) | No | Defaults to "Pending Review" until a reviewer acts then is set by human reviewer at review time | The human reviewer's sign-off verdict on whether the incident record is accurate and ready for the public table. |
 | `reviewer_notes` | Text | Yes |  Human-entered, at review time | Free-text notes a reviewer leaves when reviewing a staged incident record — why it was rejected, what was corrected before approval, or any other context worth preserving. |
-| `investigation_start_date_raw` | Text | No | AI-extracted from the scraped artifact | The date the institution's investigation was initiated, exactly as written in the source document, before any normalization. |
+| `investigation_start_date_raw` | Text | Yes | AI-extracted from the scraped artifact | The date the institution's investigation was initiated, exactly as written in the source document, before any normalization. |
 | `created_at` | TIMESTAMPTZ | No | Pipeline-populated | Timestamp of when this incident record was extracted and staged. |
 | `investigation_end_date` | Date (YYYY-MM-DD) | Yes | AI-extracted from the scraped artifact | The date the investigation ended / concluded with a finding of responsibility. |
 | `alcohol_involved` | Enum (Controlled vocab) | No | AI-extracted from the scraped artifact | Whether the violation involved the abuse or illegal use of alcohol. |
 | `notice_date` | Date (YYYY-MM-DD) | Yes | AI-extracted from the scraped artifact | The date the institution provided notice to the organization that the incident resulted in a hazing violation. |
+| `institutional_recognition_status` | Enum (Controlled vocab) | No | AI-extracted from the scraped artifact | New August 17, 2026. Per-incident recognition status — see Incidents.institutional_recognition_status. |
 | `organization_name_normalized` | Text | No | AI-extracted from the scraped artifact, same extraction pass as organization_name_raw | The AI's cleaned/normalized candidate organization name, derived from organization_name_raw during extraction — chapter designators and legal-entity suffixes stripped, proper capitalization preserved. |
 | `reviewed_date` | Date (YYYY-MM-DD) | Yes | Pipeline-populated, automatically, at the moment human_review_status changes to Approved or Rejected | The date the reviewer set human_review_status to Approved or Rejected for this incident record. |
 | `artifact_id` | Integer (FK → Artifacts.artifact_id) | No | Pipeline-populated at extraction time | Foreign key pointing to the Artifact record this incident was extracted from. |
-| `incident_description_raw` | Text | No | AI-extracted from the scraped artifact | A general narrative description of the hazing incident(s) as published by the institution. |
+| `incident_description_raw` | Text | Yes | AI-extracted from the scraped artifact | A general narrative description of the hazing incident(s) as published by the institution. |
 | `staging_incident_id` | Integer (PK, auto-generated) | No | System-generated (database identity/sequence, assigned automatically at insert) | Primary key for the Staging_Incidents table. Auto-generated at insert (database identity/sequence). |
-| `sanctions_raw` | Text | No | AI-extracted from the scraped artifact | The sanctions / outcomes the institution imposed on the organization. |
+| `sanctions_raw` | Text | Yes | AI-extracted from the scraped artifact | The sanctions / outcomes the institution imposed on the organization. |
 | `investigation_start_date` | Date (YYYY-MM-DD) | Yes | AI-extracted from the scraped artifact | The date the institution's investigation was initiated. |
 | `extraction_confidence` | Decimal (0.0–1.0) | No | AI self-reported at extraction time | The AI model's self-reported confidence in its own extraction of this specific incident, on a 0.0–1.0 scale. |
-| `investigation_end_date_raw` | Text | No | AI-extracted from the scraped artifact | The date the investigation ended/concluded with a finding of responsibility, exactly as written in the source document, before any normalization. |
+| `investigation_end_date_raw` | Text | Yes | AI-extracted from the scraped artifact | The date the investigation ended/concluded with a finding of responsibility, exactly as written in the source document, before any normalization. |
 | `institution_unitid` | Integer (FK → Institution.unitid) | No | Pipeline-populated at incident creation time, copied from the parent Data check record's UnitID. Never entered or edited independently of that source. | IPEDS UnitID of the institution this incident belongs to. A direct foreign key from this Incidents record to the matching Institution record, distinct from the incident's link to its parent Data check. |
 | `determination_status` | Enum (Controlled vocab) | No | AI-extracted from the scraped artifact | The institution's determination of the incident — whether it was dismissed, is still pending investigation, or was determined to be hazing. |
-| `notice_date_raw` | Text | No | AI-extracted from the scraped artifact | The date the institution provided notice to the organization that the incident resulted in a hazing violation, exactly as written in the source document, before any normalization. |
+| `notice_date_raw` | Text | Yes | AI-extracted from the scraped artifact | The date the institution provided notice to the organization that the incident resulted in a hazing violation, exactly as written in the source document, before any normalization. |
 | `reviewed_by` | Text | Yes | Human-entered | The reviewer who set human_review_status to Approved or Rejected for this incident record. |
-| `findings_raw` | Text | No | AI-extracted from the scraped artifact | The institution's finding(s) / rationale — what the organization was found responsible for. |
+| `findings_raw` | Text | Yes | AI-extracted from the scraped artifact | The institution's finding(s) / rationale — what the organization was found responsible for. |
 | `drugs_involved` | Enum (Controlled vocab) | No | AI-extracted from the scraped artifact | Whether the violation involved the abuse or illegal use of drugs. |
 
 
@@ -785,10 +874,10 @@ AI-extracted candidate incident records, pending human review. Holds both raw (v
 
 *Verbatim*
 
-- **Scope note:** Preserved verbatim as an audit trail — lets a human check the original wording if the normalized date is ever in question, and lets "Not Specified" be stored as literal text without forcing that value into the Date-typed investigation_start_date column.
+- **Scope note:** Preserved verbatim as an audit trail — lets a human check the original wording if the normalized date is ever in question. Genuinely null when absent, never a "Not Specified" placeholder string — corrected August 17, 2026.
 - **Normalization rule:** Capture exactly as written, trim whitespace
 - **Extraction disambiguation rule:** Look for labels like 'Investigation Initiated,' 'Date Investigation Began,' or 'Dates of Investigation' (a combined range — see investigation_start_date's merge-case rule for how the range splits). This is when the investigation began, not the incident date or the date the report was first received. Capture verbatim.
-- **Missing value handling:** Output 'Not Specified' if no investigation start date is stated anywhere in the source, and write a Staging_Incident_Review_Flags entry with flag_type = 'Required field missing' — investigation dates are legally required in CHTRs, so absence here is a compliance gap worth reviewer attention.
+- **Missing value handling:** Leave genuinely null (not 'Not Specified' text — corrected August 17, 2026) if no investigation start date is stated anywhere in the source, and write a Staging_Incident_Review_Flags entry with flag_type = 'Required field missing' — investigation dates are legally required in CHTRs, so absence here is a compliance gap worth reviewer attention.
 
 #### `Staging_incidents.created_at`
 
@@ -802,7 +891,7 @@ AI-extracted candidate incident records, pending human review. Holds both raw (v
 
 - **Scope note:** The conclusion-with-finding date. Many institutions conflate this with the 'resolution' date — treat 'concluded with a finding' and 'resolution/responsible finding' as this field unless the source clearly separates resolution as a later step.
 - **Normalization rule:** Normalize to YYYY-MM-DD. Take the END of a combined investigation date range.
-- **Extraction disambiguation rule:** Highest label variation in the source set. Normalize to YYYY-MM-DD; take the END of a combined investigation range. MERGE case: 'Date of Responsible Finding and Notice to Organization' and 'Resolution Date and Notice to Organization' combine this with notice_date — use the date for both unless two distinct dates are given. Treat 'concluded with a finding', 'responsible finding', and 'resolution date' as this field unless the source clearly separates resolution as a later, distinct step. If absent, output 'Not specified'.
+- **Extraction disambiguation rule:** Highest label variation in the source set. Normalize to YYYY-MM-DD; take the END of a combined investigation range. MERGE case: 'Date of Responsible Finding and Notice to Organization' and 'Resolution Date and Notice to Organization' combine this with notice_date — use the date for both unless two distinct dates are given. Treat 'concluded with a finding', 'responsible finding', and 'resolution date' as this field unless the source clearly separates resolution as a later, distinct step. If absent, leave genuinely null (a Date-typed column can't hold text at all — corrected August 17, 2026); investigation_end_date_raw carries the verbatim/null fallback instead.
 
 #### `Staging_incidents.alcohol_involved`
 
@@ -810,11 +899,11 @@ AI-extracted candidate incident records, pending human review. Holds both raw (v
 
 - **Scope note:** One half of the federal alcohol-or-drug data point, modeled as its own field alongside drug_involved. A normalized Yes/No/Not specified judgement, distinct from the narrative even when only implied in prose.
 - **Normalization rule:** Map to the controlled vocabulary (Yes / No / Not specified). Populate independently of drug_involved.
-- **Extraction disambiguation rule:** Populate alcohol_involved and drug_involved independently. Institutions present this three ways: (1) a separate per-substance field — map each directly, no flag needed. (2) one combined 'alcohol and/or drugs' field — a combined affirmative does NOT confirm both substances: first attempt to allocate from any accompanying description/findings/sanctions text, setting only the substance(s) actually named to Yes. Never infer 'No' for the unconfirmed substance from silence alone — if the text names alcohol but never mentions drugs, drugs stays 'Not specified', not 'No'; only set 'No' if the source explicitly rules that substance out. If the combined field is affirmative (Yes), ALWAYS write a Staging_Incident_Review_Flags row with flag_type = 'Alcohol/drugs review needed' regardless of whether allocation succeeded — a combined 'Yes' is structurally ambiguous even when the AI feels confident in its read. If the combined field is 'No' (neither substance involved), no flag is needed — that answer is unambiguous and applies cleanly to both fields. (3) stated only in the incident description, no labeled field at all — read it from that text; flag only if genuinely unrecoverable. Output 'Not specified' on silence, never 'No' by default.
+- **Extraction disambiguation rule:** Populate alcohol_involved and drug_involved independently. Institutions present this three ways: (1) a separate per-substance field — map each directly, no flag needed. (2) one combined 'alcohol and/or drugs' field — a combined affirmative does NOT confirm both substances: first attempt to allocate from any accompanying description/findings/sanctions text, setting only the substance(s) actually named to Yes. Never infer 'No' for the unconfirmed substance from silence alone — if the text names alcohol but never mentions drugs, drugs stays 'Not specified', not 'No'; only set 'No' if the source explicitly rules that substance out. If allocation genuinely fails — the combined field is affirmative but neither it nor the surrounding text names which substance(s) were involved — set BOTH alcohol_involved and drugs_involved to 'Unable to determine - Unclear reporting' together (added August 17, 2026), not 'Yes' and not 'Not specified': defaulting both to 'Yes' fabricates certainty the source doesn't support, and 'Not specified' already means something different (the source never raised alcohol/drugs at all). If the combined field is affirmative (Yes), ALWAYS write a Staging_Incident_Review_Flags row with flag_type = 'Alcohol/drugs review needed' regardless of whether allocation succeeded — a combined 'Yes' is structurally ambiguous even when the AI feels confident in its read. If the combined field is 'No' (neither substance involved), no flag is needed — that answer is unambiguous and applies cleanly to both fields. (3) stated only in the incident description, no labeled field at all — read it from that text; flag only if genuinely unrecoverable. Output 'Not specified' on silence, never 'No' by default. If the source never addresses alcohol/drugs at all across any of these three patterns (genuine plain silence, not a combined field that just doesn't allocate), also write a Staging_Incident_Review_Flags row with flag_type = 'Required field missing' (added August 17, 2026) — this is distinct from the combined-affirmative case above, which uses 'Alcohol/drugs review needed' instead.
 
 Bar for setting 'Yes' from narrative text (cases 2 and 3): only set 'Yes' if the source unambiguously indicates alcohol use — e.g., 'found intoxicated,' 'vomiting from drinking,' 'under the influence of alcohol,' a stated blood alcohol level. Do not infer 'Yes' from adjacent context alone (e.g., 'party,' 'social event,' 'tailgate') without an explicit indication of actual use or intoxication — scene-setting language is not evidence of involvement.
 - **Missing value handling:** Output 'Not specified' when alcohol is neither stated nor implied; never infer 'No' from silence.
-- **Controlled vocabulary terms:** Yes; No; Not specified
+- **Controlled vocabulary terms:** Yes; No; Not specified; Unable to determine - Unclear reporting
 - **Example label variants seen:** Did the Violation Involve the Abuse or Illegal Use of Alcohol or Drugs?; Drug/Alcohol Involvement; Was the abuse or illegal use of alcohol or drugs involved?; Alcohol use
 
 #### `Staging_incidents.notice_date`
@@ -823,8 +912,17 @@ Bar for setting 'Yes' from narrative text (cases 2 and 3): only set 'Yes' if the
 
 - **Scope note:** When the organization was formally notified of the finding/outcome. Distinct from the date the finding was made (investigation_end_date), though some institutions report them together.
 - **Normalization rule:** Normalize to YYYY-MM-DD.
-- **Extraction disambiguation rule:** Resolve in order: (1) a separately-labeled notice field (notice_date_raw) if present — normalize that value; (2) the MERGE case: when the source combines notice with the finding/resolution date in one label ('Date of Responsible Finding and Notice to Organization', 'Resolution Date and Notice to Organization'), use that single date for both this field and investigation_end_date, unless two distinct dates are given; (3) check narrative text (incident_description_raw, sanctions_raw, findings_raw) for an explicit statement of when the organization was notified, if not resolved by (1) or (2). Only if none of these three resolve a notice date, output 'Not specified' and write a Staging_Incident_Review_Flags entry with flag_type = 'Required field missing' — notice date is legally required in CHTRs, so a genuinely unrecoverable notice date is a compliance gap worth reviewer attention. Do not copy the investigation-end date here unless the source explicitly merges them per (2).
-- **Missing value handling:** Output 'Not specified' only after resolution order (1)-(3) above fail to find a notice date anywhere in the source; write a Staging_Incident_Review_Flags entry with flag_type = 'Required field missing' at that point, since notice date is legally required.
+- **Extraction disambiguation rule:** Look for a label indicating the org was informed of the outcome/violation/charges/sanctions — not just labels containing the literal word "notice" (generalized August 17, 2026; the prior version only matched literal "notice" wording, which missed real variants like "Notification of Final Decision"). Confirmed real-world label variants: "Date Notice of Violation Provided to Organization," "Date of Outcome Notice," "Date Student Group Notified of Charge(s)," "Date organization notified of hazing violation," "Notice of findings to organization," "Date Notice Provided to Organization Incident Resulted in Hazing Violation," "Date of Responsible Finding and Notice to Organization" (merge case, see below), "Date the organization was notified of the outcome," "Date of the Organization was Notified of the Violation and Sanctions," "Resolution Date and Notice to Organization" (merge case), "Date Outcome Was Provided to Organization," "Date of Notice to Student Organization," "Notification of Final Decision," "Date Organization Notified by UCA," "Date Organization was Given Notice that Hazing Occurred." Resolve in order: (1) a separately-labeled notice field (notice_date_raw) matching the pattern above — normalize that value; (2) the MERGE case: when the source combines notice with the finding/resolution date in one label ('Date of Responsible Finding and Notice to Organization', 'Resolution Date and Notice to Organization'), use that single date for both this field and investigation_end_date, unless two distinct dates are given; (3) check narrative text (incident_description_raw, sanctions_raw, findings_raw) for an explicit statement of when the organization was notified, if not resolved by (1) or (2). Only if none of these three resolve a notice date, leave genuinely null (not 'Not specified' text — corrected August 17, 2026) and write a Staging_Incident_Review_Flags entry with flag_type = 'Required field missing' — notice date is legally required in CHTRs, so a genuinely unrecoverable notice date is a compliance gap worth reviewer attention. Do not copy the investigation-end date here unless the source explicitly merges them per (2). Many institutions genuinely have no notice-to-organization field at all (e.g. UT Austin, which labels only conduct-process-resolution, investigation-initiated, report-to-institution, and incident-date — no notice field); do not treat a differently-purposed date as a stand-in just because no better candidate exists — "Date of Report to Institution," for example, is the opposite direction (when the initial complaint was received, not when the org was notified of the outcome) and must not be mapped here (negative case confirmed via real extraction, added August 17, 2026).
+- **Missing value handling:** Leave genuinely null (corrected August 17, 2026) only after resolution order (1)-(3) above fail to find a notice date anywhere in the source; write a Staging_Incident_Review_Flags entry with flag_type = 'Required field missing' at that point, since notice date is legally required.
+
+#### `Staging_incidents.institutional_recognition_status`
+
+*Inferred*
+
+- **Scope note:** New August 17, 2026. Mirrors Incidents.institutional_recognition_status — deliberately per-incident, not per-organization.
+- **Normalization rule:** Defaults to "Recognized" on silence — no flag for that default.
+- **Controlled vocabulary terms:** Recognized; Unrecognized-Underground; Formerly Recognized - Lost Recognition; Unknown-Not Stated
+- **Correction path:** Added to the CORRECTABLE_FIELDS whitelist (mirrored across ingest.py, its TypeScript port, and rebuild.py) — corrected the same way as any other scalar Staging_incidents field.
 
 #### `Staging_incidents.organization_name_normalized`
 
@@ -832,7 +930,7 @@ Bar for setting 'Yes' from narrative text (cases 2 and 3): only set 'Yes' if the
 
 - **Scope note:** Distinct from organization_name_raw, which deliberately preserves chapter designations and legal-entity suffixes verbatim for audit purposes. This field is the AI's own cleaned candidate, produced in the same extraction pass, and is what Staging_Organizations.organization_name gets populated from — after a final deterministic safety-net normalization pass applied only at match time: lowercase, trim whitespace, strip stray punctuation, applied to both sides for comparison purposes only, and never changes what's actually stored. This guards against small AI inconsistencies across separate extractions of the same real organization (e.g. a stray trailing period, inconsistent spacing) without requiring the AI to be perfectly rigid. See Staging_Organizations.organization_name's Normalization format rule for the full implementation detail.
 - **Normalization rule:** Proper capitalization preserved — this is a cleaned name candidate, not a lowercased matching key. The lowercase/whitespace/punctuation normalization used for actual match comparison happens later, downstream, and does not change what's stored here.
-- **Extraction disambiguation rule:** Strip before proposing a candidate name: (1) chapter designators (e.g., 'Beta Chapter', 'Alpha Chapter', chapter numbers/letters); (2) legal-entity suffixes ('Inc.', 'Incorporated', 'LLC'); (3) redundant type words already captured by organization_type ('Fraternity', 'Sorority') UNLESS the word is actually part of the organization's official name. Do not strip the organization's own distinctive name or Greek letters that are part of its actual identity (e.g., keep 'Alpha Kappa Kappa', don't reduce further). Goal: produce the same clean top-level name regardless of which chapter/institution reported the incident, since unitid already identifies the institution. Getting this rule wrong either causes false-negative misses (real match not found) or false-positive merges (two distinct orgs collapsed into one) — flag ambiguous cases for human review rather than guessing.
+- **Extraction disambiguation rule:** Strip before proposing a candidate name: (1) chapter designators (e.g., 'Beta Chapter', 'Alpha Chapter', chapter numbers/letters); (2) legal-entity suffixes ('Inc.', 'Incorporated', 'LLC'); (3) redundant type words already captured by organization_type ('Fraternity', 'Sorority') UNLESS the word is actually part of the organization's official name — applies wherever the type word appears, not only as a bare trailing suffix (e.g. 'Sigma Alpha Omega Christian Sorority' -> 'Sigma Alpha Omega', not just checking the final word; added August 17, 2026 after confirming this case passed through unstripped); (4) incident-sequence/report-disambiguation markers an institution appends to distinguish multiple incidents against the same org within one CHTR — e.g. '(1st)', '(2nd)', '(#1)', '(#2)' (added August 17, 2026, confirmed via UT Austin's 'Alpha Kappa Psi (1st)'/'Alpha Kappa Psi (2nd)' causing a false-negative organization-match miss before this fix). Do not strip the organization's own distinctive name or Greek letters that are part of its actual identity (e.g., keep 'Alpha Kappa Kappa', don't reduce further). Goal: produce the same clean top-level name regardless of which chapter/institution/incident-sequence reported the incident, since unitid already identifies the institution and incident-level identity is tracked elsewhere. Getting this rule wrong either causes false-negative misses (real match not found) or false-positive merges (two distinct orgs collapsed into one) — flag ambiguous cases for human review rather than guessing.
 - **Missing value handling:** Flag for review if absent.
 
 #### `Staging_incidents.reviewed_date`
@@ -852,8 +950,8 @@ Bar for setting 'Yes' from narrative text (cases 2 and 3): only set 'Yes' if the
 
 - **Scope note:** Verbatim narrative. May itself contain the dates, alcohol/drug involvement, or findings — extract those into their own fields too, but keep this text intact and complete.
 - **Normalization rule:** Preserve full text including paragraph breaks. Do not summarize or truncate.
-- **Extraction disambiguation rule:** Capture the institution's full narrative verbatim, preserving paragraph breaks; do not summarize, truncate, or paraphrase. This text often also contains the incident date(s), alcohol/drug involvement, and/or the finding — populate those fields from it while leaving this narrative whole. Where an institution merges 'Findings, Incident Descriptions, and Incident Dates' into one block, keep the full block here and also fill the discrete fields from it. Do not paste this narrative verbatim into findings or sanctions; those take only their specific value. If no description is present, output 'Not specified' and write a Staging_Incident_Review_Flags row with flag_type = 'Required field missing'.
-- **Missing value handling:** Flag for review if absent.
+- **Extraction disambiguation rule:** Capture the institution's full narrative verbatim, preserving paragraph breaks; do not summarize, truncate, or paraphrase. This text often also contains the incident date(s), alcohol/drug involvement, and/or the finding — populate those fields from it while leaving this narrative whole. Where an institution merges 'Findings, Incident Descriptions, and Incident Dates' into one block, keep the full block here and also fill the discrete fields from it. Do not paste this narrative verbatim into findings or sanctions; those take only their specific value. If no description is present, leave genuinely null (not 'Not specified' text — corrected August 17, 2026, since this field is displayed directly to the public) and write a Staging_Incident_Review_Flags row with flag_type = 'Required field missing'.
+- **Missing value handling:** Leave null and flag for review if absent.
 - **Example label variants seen:**  Incident Summary; Summary; Description of Violation; Description of Conduct; General Description of; Hazing Incident; Incident Description; Description; Description of Incident; Description of incident(s); A general description of the incident(s), including the date of the initial violation, the determination of responsibility, and the outcomes assigned to the organization if applicable
 - **Example output value:** 9/20/2025: A new member was required by the chapter to carry an object at all times, which can create
 fear of repercussions.
@@ -870,8 +968,8 @@ fear of repercussions.
 
 - **Scope note:** The consequences (probation, suspension, education, etc.) and any timelines. Distinct from findings — this is what happens to them as a result.
 - **Normalization rule:** Preserve verbatim including any list structure and dates/timelines within.
-- **Extraction disambiguation rule:** Capture the institution-imposed consequences verbatim, preserving list structure and any embedded timelines/dates. Labels vary — use the section describing what happens to the organization, whatever its label. If sanctions appear only inside the description, extract them here without relocating the narrative. If none are stated, output 'Not specified' and write a Staging_Incident_Review_Flags row with flag_type = 'Required field missing'.
-- **Missing value handling:** Flag if absent.
+- **Extraction disambiguation rule:** Capture the institution-imposed consequences verbatim, preserving list structure and any embedded timelines/dates. Labels vary — use the section describing what happens to the organization, whatever its label. If sanctions appear only inside the description, extract them here without relocating the narrative. If none are stated, leave genuinely null (not 'Not specified' text — corrected August 17, 2026).
+- **Missing value handling:** Leave null. Flag conditionally, not always (corrected August 17, 2026) — write a Staging_Incident_Review_Flags row with flag_type = 'Required field missing' only when determination_status is 'Determined hazing'. The Act requires sanctions only "as applicable"; a Dismissed or Not specified determination legitimately has none to report.
 - **Example label variants seen:** Sanctions; Details of the assigned outcomes and the timeline for completion; Sanctions placed on organization; University Sanctions or Court Fines; Resolution; Accountability actions assigned; Sanctions Imposed; Outcomes
 - **Example output value:** • Effective immediately (November 14, 2025), you have been placed on disciplinary probation through May 15, 2026. During this probationary period, if you are found responsible for violating any University policy, the violation will be dealt with more severely.
 • A revised risk management plan to be submitted to this office. In addition, a revised event registration plan will also be submitted. No pending event registration forms will be approved until these documents are submitted.
@@ -884,7 +982,7 @@ fear of repercussions.
 
 - **Scope note:** The start of the investigation, distinct from the date it was reported and the date it concluded.
 - **Normalization rule:** Normalize to YYYY-MM-DD. If a single 'Dates of Investigation: A - B' range is given, A = this field, B = investigation_end_date.
-- **Extraction disambiguation rule:** Normalize to YYYY-MM-DD. MERGE case: if one combined range is given ('Dates of Investigation: A - B', 'Investigation Initiated and Investigation Concluded'), assign the earlier date A here and the later date B to investigation_end_date. Strip the label from embedded values. This is when the investigation began — do not use the incident date or the date the institution first received the report. If absent, output 'Not specified'.
+- **Extraction disambiguation rule:** Normalize to YYYY-MM-DD. MERGE case: if one combined range is given ('Dates of Investigation: A - B', 'Investigation Initiated and Investigation Concluded'), assign the earlier date A here and the later date B to investigation_end_date. Strip the label from embedded values. This is when the investigation began — do not use the incident date or the date the institution first received the report. If absent, leave genuinely null (a Date-typed column can't hold text at all — corrected August 17, 2026); investigation_start_date_raw carries the verbatim/null fallback instead.
 
 #### `Staging_incidents.extraction_confidence`
 
@@ -898,10 +996,10 @@ fear of repercussions.
 
 *Verbatim*
 
-- **Scope note:** Preserved verbatim as a fallback/audit trail — lets a human check the original wording if the normalized date is ever in question, and lets "Not Specified" be stored as literal text without forcing that value into the Date-typed investigation_end_date column.
+- **Scope note:** Preserved verbatim as a fallback/audit trail — lets a human check the original wording if the normalized date is ever in question. Genuinely null when absent, never a "Not Specified" placeholder string — corrected August 17, 2026.
 - **Normalization rule:** Capture exactly as written, trim whitespace
 - **Extraction disambiguation rule:** Look for labels like 'Investigation Concluded,' 'Date of Responsible Finding,' or 'Resolution Date' (see investigation_end_date's merge-case rule for combined-label handling). Capture verbatim, including any embedded finding/resolution language that accompanies the date.
-- **Missing value handling:** Output 'Not Specified' if no investigation end date is stated anywhere in the source, and write a Staging_Incident_Review_Flags entry with flag_type = 'Required field missing' — investigation dates are legally required in CHTRs, so absence here is a compliance gap worth reviewer attention.
+- **Missing value handling:** Leave genuinely null (not 'Not Specified' text — corrected August 17, 2026) if no investigation end date is stated anywhere in the source, and write a Staging_Incident_Review_Flags entry with flag_type = 'Required field missing' — investigation dates are legally required in CHTRs, so absence here is a compliance gap worth reviewer attention.
 
 #### `Staging_incidents.institution_unitid`
 
@@ -921,10 +1019,10 @@ fear of repercussions.
 
 *Verbatim*
 
-- **Scope note:** Preserved verbatim as a fallback/audit trail — lets a human check the original wording if the normalized date is ever in question, and lets "Not Specified" be stored as literal text without forcing that value into the Date-typed notice_date column.
+- **Scope note:** Preserved verbatim as a fallback/audit trail — lets a human check the original wording if the normalized date is ever in question. Genuinely null when absent, never a "Not Specified" placeholder string — corrected August 17, 2026.
 - **Normalization rule:** Capture exactly as written, trim whitespace
 - **Extraction disambiguation rule:** Look for a label distinct from the investigation conclusion date itself — 'Notice to Organization,' 'Date Organization Notified.' This field is absent more often than present; only extract a value if the source clearly labels a separate notice event (see notice_date's merge-case rule for when it's combined with the finding date instead). Capture verbatim.
-- **Missing value handling:** Output 'Not Specified' if the source has no separately-labeled notice field — this is common and not itself a compliance flag, since the notice date may still be recoverable via notice_date's merge-case logic or from narrative text elsewhere in the document. Do not flag here; the compliance check happens at notice_date once all recovery paths are exhausted.
+- **Missing value handling:** Leave genuinely null (not 'Not Specified' text — corrected August 17, 2026) if the source has no separately-labeled notice field matching the pattern described below — this is common and not itself a compliance flag, since the notice date may still be recoverable via notice_date's merge-case logic or from narrative text elsewhere in the document. Do not flag here; the compliance check happens at notice_date once all recovery paths are exhausted.
 
 #### `Staging_incidents.reviewed_by`
 
@@ -938,8 +1036,8 @@ fear of repercussions.
 
 - **Scope note:** The adjudicated outcome (policies violated, finding categories). Distinct from sanctions (the consequences) and from the incident description (the alleged conduct).
 - **Normalization rule:** Preserve verbatim. 
-- **Extraction disambiguation rule:** The source may have no labeled findings field. Resolve in order: (1) a labeled findings / 'found responsible' / 'policy violated' field; (2) the determination of responsibility within the incident description; (3) within the sanctions/outcome text. Capture only the finding — the policy/policies violated and the responsibility determination — not the conduct narrative (stays in incident_description) or the consequences (go to sanctions). If no finding appears anywhere, output 'Not specified' and write a Staging_Incident_Review_Flags row with flag_type = 'Required field missing'. Do not paste the full description into this field.
-- **Missing value handling:** Output 'Not specified' if absent; some institutions fold findings into description or sanctions.
+- **Extraction disambiguation rule:** The source may have no labeled findings field. Resolve in order: (1) a labeled findings / 'found responsible' / 'policy violated' field; (2) the determination of responsibility within the incident description; (3) within the sanctions/outcome text. Capture only the finding — the policy/policies violated and the responsibility determination — not the conduct narrative (stays in incident_description) or the consequences (go to sanctions). If no finding appears anywhere, leave genuinely null (not 'Not specified' text — corrected August 17, 2026) and write a Staging_Incident_Review_Flags row with flag_type = 'Required field missing'. Do not paste the full description into this field.
+- **Missing value handling:** Leave null if absent; some institutions fold findings into description or sanctions.
 - **Example label variants seen:** Findings; Findings & Sanctions; University or Court Findings; Findings;
 Policy(s) the organization was found responsible for violating; Findings of the Institute; Findings; Findings, Incident Descriptions, and Incident Dates; Violations; Informal Disposition ;Charges with Responsible Finding
 - **Example output value:** Phi Delta Theta was found responsible for violating CRR 200.010.C.19 Hazing policy.
@@ -950,11 +1048,11 @@ Policy(s) the organization was found responsible for violating; Findings of the 
 
 - **Scope note:** The drug half of the federal alcohol-or-drug data point, modeled as its own field alongside alcohol_involved. Same normalization and source-pattern handling as alcohol_involved.
 - **Normalization rule:** Map to the controlled vocabulary (Yes / No / Not specified). Populate independently of alcohol_involved.
-- **Extraction disambiguation rule:** Populate independently of alcohol_involved using the same source patterns: (1) a per-substance field maps directly, no flag needed. (2) a combined 'alcohol and/or drugs' field — first attempt to allocate drugs specifically from any accompanying description/findings/sanctions text. Never infer 'No' for drugs from silence alone — if the text names alcohol but never mentions drugs, drugs stays 'Not specified', not 'No'; only set 'No' if the source explicitly rules drugs out. If the combined field is affirmative (Yes), ALWAYS write a Staging_Incident_Review_Flags row with flag_type = 'Alcohol/drugs review needed' regardless of whether allocation succeeded — same reasoning as alcohol_involved: a combined 'Yes' is structurally ambiguous even when the AI feels confident in its read. If the combined field is 'No', no flag is needed — that answer is unambiguous and applies cleanly to both fields. (3) involvement stated only in the description, no labeled field — read it from that text; flag only if genuinely unrecoverable. Output 'Not specified' on silence, never 'No' by default.
+- **Extraction disambiguation rule:** Populate independently of alcohol_involved using the same source patterns: (1) a per-substance field maps directly, no flag needed. (2) a combined 'alcohol and/or drugs' field — first attempt to allocate drugs specifically from any accompanying description/findings/sanctions text. Never infer 'No' for drugs from silence alone — if the text names alcohol but never mentions drugs, drugs stays 'Not specified', not 'No'; only set 'No' if the source explicitly rules drugs out. If allocation genuinely fails, set BOTH alcohol_involved and drugs_involved to 'Unable to determine - Unclear reporting' together (added August 17, 2026) — same reasoning as alcohol_involved. If the combined field is affirmative (Yes), ALWAYS write a Staging_Incident_Review_Flags row with flag_type = 'Alcohol/drugs review needed' regardless of whether allocation succeeded — same reasoning as alcohol_involved: a combined 'Yes' is structurally ambiguous even when the AI feels confident in its read. If the combined field is 'No', no flag is needed — that answer is unambiguous and applies cleanly to both fields. (3) involvement stated only in the description, no labeled field — read it from that text; flag only if genuinely unrecoverable. Output 'Not specified' on silence, never 'No' by default. Genuine plain silence (source never addresses alcohol/drugs at all) also writes a Required field missing flag, distinct from the combined-affirmative case's Alcohol/drugs review needed flag (added August 17, 2026).
 
 Bar for setting 'Yes' from narrative text (cases 2 and 3): only set 'Yes' if the source unambiguously indicates drug use — e.g., 'found unresponsive from drug use,' 'tested positive for [substance],' 'under the influence of drugs.' Do not infer 'Yes' from adjacent context alone (e.g., 'party,' 'social event') without an explicit indication of actual use or intoxication — scene-setting language is not evidence of involvement.
 - **Missing value handling:** Output 'Not specified' when drugs are neither stated nor implied; never infer 'No' from silence.
-- **Controlled vocabulary terms:** Yes; No; Not specified
+- **Controlled vocabulary terms:** Yes; No; Not specified; Unable to determine - Unclear reporting
 - **Example label variants seen:** Did the Violation Involve the Abuse or Illegal Use of Alcohol or Drugs?; Drug/Alcohol Involvement; Was the abuse or illegal use of alcohol or drugs involved?; Drug use
 
 ### Staging_organizations
@@ -967,6 +1065,7 @@ AI-proposed candidate organizations, reviewed and promoted independently of the 
 | `staging_organization_id` | Integer (PK, auto-generated) | No | System-generated at insert | Primary key for the Staging_Organizations table. Auto-generated at insert. |
 | `match_type` | Enum (Controlled vocab) | No | Pipeline-populated at extraction/matching time | Whether this candidate organization_name matched an existing public Organizations record, or is a genuinely new proposal with no match found. |
 | `organization_type` | Enum (Controlled vocab) | No | AI-inferred then human-confirmed during review | The candidate category of the student organization for this candidate record. |
+| `membership_gender_composition` | Enum (Controlled vocab) | No | AI-inferred then human-confirmed during review | New August 17, 2026. The candidate's self-identified gender-identity category for membership — see Organizations.membership_gender_composition. |
 | `reviewed_date` | Date (YYYY-MM-DD) | Yes | Pipeline-populated, automatically, at the moment human_review_status changes to Approved or Rejected | The date the reviewer set human_review_status to Approved or Rejected for this Organization record. |
 | `human_review_status` | Enum (Controlled vocab) | No | Defaults to "Proposed" at creation (pipeline); set by human reviewer at review time | The reviewer's sign-off verdict on whether a pipeline-proposed Organization record is confirmed, incorrect, or still awaiting review. |
 | `reviewer_notes` | Text | Yes | Human-entered, at review time | Free-text notes a reviewer leaves when reviewing a proposed Organization record — why it was rejected, what was corrected before approval, or any other context worth preserving. |
@@ -993,11 +1092,19 @@ AI-proposed candidate organizations, reviewed and promoted independently of the 
 *Inferred*
 
 - **Scope note:** Stores the reviewer-confirmed organization type, drawn from the Organization Type controlled vocabulary (see Controlled Vocabularies tab for full term definitions and per-term scope notes/checkable signals). AI-inferred at extraction time from the org's own self-description within a CHTR entry, then confirmed or corrected by the human reviewer during review — this is not a verified external classification (e.g. not cross-checked against an official student org registry).
-- **Normalization rule:** Store the controlled vocabulary term exactly as listed (e.g. 'Academic/Professional Club', not 'academic/professional club' or 'Academic Professional Club'). Do not store free-text descriptions, multiple terms, or hedged/uncertain categorizations in this field — reasoning, ambiguity, or low confidence in the categorization belongs in reviewer_notes, not organization_type.
-- **Extraction disambiguation rule:** Where multiple Organization Type categories could plausibly apply to the same org, resolve in this priority order: (1) Greek-lettered orgs (self-identifying as 'fraternity'/'sorority') always default to Fraternity/Sorority, even if also religiously affiliated or explicitly stated to be unrecognized. (2) An org tied to both an academic discipline and a leadership/selectivity mission defaults to Honor/Leadership Society over Academic/Professional Club. (3) A performance/drill unit organizationally embedded in a Corps/military structure defaults to Military/Cadet Organization over Performing/Spirit Group. (4) An org whose primary stated function is welcoming/mentoring incoming students defaults to Orientation/Mentorship Program over Religious/Faith-Based Organization or Honor/Leadership Society, even under religious or leadership framing. (5) General Interest/Social Club is a catch-all, applied only after the above categories have been ruled out. Bare alphanumeric names with no descriptive text (e.g. Corps company designations like 'A-1,' 'K-2') should be treated as Military/Cadet Organization rather than flagged as unclassifiable.
-- **Missing value handling:** Leave organization_type blank/NULL when not determinable at extraction time. Do not output a placeholder value such as 'Unknown' — this is not a valid controlled vocabulary term. How this gets surfaced to a reviewer (e.g. via the existing review-flag mechanism used elsewhere in the pipeline) is still being decided — see open questions.
-- **Controlled vocabulary terms:** Fraternity; Sorority; Institution Athletic Team; Club Sport; Honor/Leadership Society; Academic/Professional Club; Performing/Spirit Group; Military/Cadet Organization; General Interest/Social Club; Religious/Faith-Based Organization; Orientation/Mentorship Program; Unrecognized Organization
-- **⚠️ Open question:** OPEN: How should a blank organization_type be surfaced to reviewers? Leaning toward reusing the existing Staging_Incident_Review_Flags 'Required field missing' flag_type pattern rather than a DB-level CHECK constraint (constraint approach was considered and rejected 7/17/26). Still needs: (1) decide whether flags for organizations live in the existing incident-scoped flags table (would need a nullable FK to Staging_organizations) or a new parallel Staging_Organization_Review_Flags table, and (2) decide whether an open flag should also block approval outright, or just be visible/informational on the review screen.
+- **Normalization rule:** Store the controlled vocabulary term exactly as listed (e.g. 'Academic club', not 'academic club' or 'Academic Club'). Do not store free-text descriptions, multiple terms, or hedged/uncertain categorizations in this field — reasoning, ambiguity, or low confidence in the categorization belongs in reviewer_notes, not organization_type.
+- **Extraction disambiguation rule (rewritten August 17, 2026 for the new 18-term vocabulary — replaces the prior 5-step rule):** Where multiple categories could plausibly apply, resolve in this priority order, checked until one applies: (1) Greek self-identification — split by induction mechanism (merit-based → Honor society) and purpose (social vs. service/professional fraternity or sorority); (2) explicit ROTC/Corps naming, including bare alphanumeric unit designations with no descriptive text (e.g. 'C-Battery,' 'Squadron 17,' 'A-1,' 'K-2') — these are valid organization names under this category, not unclassifiable; (3) marching-band-affiliated performance units vs. independently organized performing arts groups — when the source doesn't state organizational affiliation (common), lean on the org's own name/self-description rather than guessing at an administrative relationship; (4) culturally-based/identity-based organizations, deferring to (1) if Greek-lettered; (5) faith-based framing, with an explicit carve-out for organizations whose primary stated function is welcoming/mentoring incoming students (those fold into Other type of organization, not Faith-based, even under religious framing); (6) student government/institutional leadership naming (e.g. 'Student Government,' 'Senate') vs. Honor society — lean on explicit representative-body naming, since a CHTR incident rarely states an org's actual governing authority; (7) campus media naming vs. political/single-cause advocacy framing — lean on the org's own name/self-description, since publication history/ongoing-vs-one-off status is rarely stated; (8) academic discipline tie without a leadership/selectivity mission; (9) non-Greek community service; (10) sports, split three ways by administering office: Athletics department → Varsity athletic team; Campus Rec/Student Life, competing externally → Club sport; Campus Rec, in-house only → Intramural or recreation sports team; (11) Social club as a catch-all after ruling out the above; (12) Other type of organization as the final residual.
+- **Missing value handling:** Leave organization_type blank/NULL when not determinable at extraction time. Do not output a placeholder value such as 'Unknown' — this is not a valid controlled vocabulary term. Surfaced to reviewers via a Staging_Incident_Review_Flags row with flag_type = 'Unable to determine organization type' (resolved — see the Flag type controlled vocabulary section below).
+- **Controlled vocabulary terms (replaced August 17, 2026 — see below):** Social fraternity or sorority; Service or professional fraternity or sorority; Varsity athletic team; Club sport; Intramural or recreation sports team; Honor society; Academic club; Performing arts organization; Marching band; ROTC or other military organization; Social club; Faith-based organization; Culturally-based / identity-based organization; Student government or other student leadership organization; Community service organization; Political organization or social action group; Campus media organization; Other type of organization
+
+#### `Staging_organizations.membership_gender_composition`
+
+*Inferred*
+
+- **Scope note:** New August 17, 2026. Candidate value for the organization's self-identified gender-identity category — see Organizations.membership_gender_composition for the full reasoning (identity-based, not sex-assigned-at-birth; name-inference caution for "fraternity" vs. "sorority").
+- **Normalization rule:** Defaults to "Unknown-Not stated" when the source doesn't clearly indicate composition.
+- **Controlled vocabulary terms:** All-male; All-female; Mixed-Co-ed; Unknown-Not stated
+- **Correction path:** A new `corrected_membership_gender_composition` field was added to organization_review, mirroring the existing corrected_organization_type pattern — reviewers can correct this field the same way they can already correct organization_type. rebuild.py's organization-promotion logic prefers the correction over the extracted value when present.
 
 #### `Staging_organizations.reviewed_date`
 
@@ -1378,6 +1485,16 @@ Write a Data_checks row regardless of outcome — including when chtr_index_url 
 
 ## Controlled vocabularies
 
+### Academic term
+
+New August 17, 2026 — CV for start_date_academic_term/end_date_academic_term (Incident_dates).
+
+| Term | Definition | Scope note | Field(s) | Table(s) |
+|---|---|---|---|---|
+| Fall | Source names Fall (or a recognized synonym, "Autumn") as the term the occurrence's date falls within. | Store as "Fall" regardless of which synonym the source used. Only populated when the corresponding _precision field is Academic term. | start_date_academic_term, end_date_academic_term | Incident_dates |
+| Spring | Source names Spring as the term the occurrence's date falls within. |  | start_date_academic_term, end_date_academic_term | Incident_dates |
+| Summer | Source names Summer as the term the occurrence's date falls within. |  | start_date_academic_term, end_date_academic_term | Incident_dates |
+| Winter | Source names Winter as the term the occurrence's date falls within. |  | start_date_academic_term, end_date_academic_term | Incident_dates |
 
 ### Alcohol involved
 
@@ -1386,6 +1503,7 @@ Write a Data_checks row regardless of outcome — including when chtr_index_url 
 | Yes | The source unambiguously indicates alcohol use or intoxication (e.g. 'found intoxicated,' 'vomiting from drinking,' a stated blood alcohol level) — not merely adjacent context like 'party' or 'social event' without an explicit indication of actual use. |  | alcohol_involved | Staging_incidents, Incidents |
 | No | Source explicitly states alcohol was not involved. |  | alcohol_involved | Staging_incidents, Incidents |
 | Not specified | Alcohol was neither stated nor implied in the source — never inferred as No from silence. |  | alcohol_involved | Staging_incidents, Incidents |
+| Unable to determine - Unclear reporting | New August 17, 2026. Source presents alcohol/drugs as one combined affirmative field, but neither the field itself nor any surrounding text names which substance(s) were involved — allocation genuinely fails, not just goes unattempted. | Set on both alcohol_involved and drugs_involved together, never just one. Distinct from "Not specified" (source never raised alcohol/drugs at all) and from a fabricated "Yes" (which would claim certainty the source doesn't support). | alcohol_involved | Staging_incidents, Incidents |
 
 ### Artifact format
 
@@ -1422,6 +1540,7 @@ Write a Data_checks row regardless of outcome — including when chtr_index_url 
 | Yes | The source unambiguously indicates drug use (e.g. 'found unresponsive from drug use,' 'tested positive for [substance],' 'under the influence of drugs') — not merely adjacent context like 'party' or 'social event' without an explicit indication of actual use. |  | drugs_involved | Staging_incidents, Incidents |
 | Not specified | Drugs were neither stated nor implied in the source — never inferred as No from silence. |  | drugs_involved | Staging_incidents, Incidents |
 | No | Source explicitly states drugs were not involved. |  | drugs_involved | Staging_incidents, Incidents |
+| Unable to determine - Unclear reporting | New August 17, 2026. See Alcohol involved's identical term above — set on both fields together when a combined-field affirmative can't be allocated to a specific substance. |  | drugs_involved | Staging_incidents, Incidents |
 
 ### Flag type
 
@@ -1450,6 +1569,17 @@ Write a Data_checks row regardless of outcome — including when chtr_index_url 
 | Rejected | Reviewer determined the proposed organization was incorrect; kept as audit trail, not deleted. |  | human_review_status | Staging_organizations |
 | Approved | Reviewer confirmed the proposed organization is real and correctly identified. |  | human_review_status | Staging_organizations |
 
+### Institutional recognition status
+
+New August 17, 2026 — CV for institutional_recognition_status (Staging_incidents, Incidents). Deliberately per-incident, not per-organization.
+
+| Term | Definition | Scope note | Field(s) | Table(s) |
+|---|---|---|---|---|
+| Recognized | The organization was institutionally recognized at the time of this specific incident. | Default when the source doesn't address recognition at all — CHTR-reported organizations are presumed recognized absent explicit evidence otherwise. No flag is written for this default. | institutional_recognition_status | Staging_incidents, Incidents |
+| Unrecognized-Underground | The source explicitly states the organization was not recognized by or affiliated with the institution at the time of this incident. | Retires the old organization_type value "Unrecognized Organization" — this is now tracked here, independently of organizational category, and per-incident rather than as a fixed organization-level trait. | institutional_recognition_status | Staging_incidents, Incidents |
+| Formerly Recognized - Lost Recognition | The organization had previously been recognized but lost that status before this incident occurred. | Do not code this if recognition was revoked *as a consequence of* the incident being coded — at the moment that incident occurred, the org was still Recognized; this value is only for incidents that occurred after a recognition loss already took effect. | institutional_recognition_status | Staging_incidents, Incidents |
+| Unknown-Not Stated | Recognition status genuinely can't be determined from the source. |  | institutional_recognition_status | Staging_incidents, Incidents |
+
 ### Match basis
 
 | Term | Definition | Scope note | Field(s) | Table(s) |
@@ -1464,22 +1594,40 @@ Write a Data_checks row regardless of outcome — including when chtr_index_url 
 | New proposal | No match was found in the public Organizations table — this is a genuinely new organization name, proposed for review and pending human confirmation via human_review_status. |  | match_type | Staging_organizations |
 | Matched existing | The staging-schema candidate organization record's organization_name matched an existing record in the public Organizations table. |  | match_type | Staging_organizations |
 
+### Membership gender composition
+
+New August 17, 2026 — CV for membership_gender_composition (Organizations, Staging_organizations).
+
+| Term | Definition | Scope note | Field(s) | Table(s) |
+|---|---|---|---|---|
+| All-male | The organization's self-identified membership eligibility is exclusively male. | Identity-based, not sex-assigned-at-birth — a single-gender org with transgender members consistent with its stated identity stays single-gender. | membership_gender_composition | Organizations, Staging_organizations |
+| All-female | The organization's self-identified membership eligibility is exclusively female. | "Sorority" is a reliable single-gender signal — a historically women's org that opens to men typically rebrands away from the label entirely rather than keeping it while admitting men. | membership_gender_composition | Organizations, Staging_organizations |
+| Mixed-Co-ed | The organization's stated membership eligibility spans more than one gender identity. | Do not infer from "fraternity" in a name alone — many professional/business fraternities are explicitly co-ed. | membership_gender_composition | Organizations, Staging_organizations |
+| Unknown-Not stated | Gender composition can't be determined from the source. | Default when the source doesn't clearly indicate composition — expected to be the common case, since CHTR text rarely states this explicitly. No flag written for this default. | membership_gender_composition | Organizations, Staging_organizations |
+
 ### Organization type
 
 | Term | Definition | Scope note | Field(s) | Table(s) |
 |---|---|---|---|---|
-| Academic/Professional Club | A student organization organized around a shared academic discipline, career field, or professional interest (e.g., finance, business, pre-med clubs), distinct from Greek-letter organizations and athletic teams. An org organized around both a discipline and a leadership/selectivity mission should be categorized as Honor/Leadership Society. | Checkable signal is an explicit tie to a discipline, major, or career field named in the org's own name or description (e.g. 'finance,' 'pre-med,' 'engineering'). Absence of a leadership/selectivity mission keeps the org here; presence of one moves it to Honor/Leadership Society instead, per that term's tiebreaker. Do not use this category for clubs with no stated academic/career tie — route those to General Interest/Social Club. | organization_type | Organizations, Staging_organizations |
-| Performing/Spirit Group | A student organization organized around a performing arts or school-spirit activity (e.g., marching band, cheer/dance team, color guard), distinct from athletic teams (which compete athletically) and Honor/Leadership Societies (which are organized around leadership/recognition rather than a performable activity). An org that is both a performance/drill unit and organizationally embedded within a military/cadet structure (e.g., a Corps-affiliated drill team) should be categorized as Military/Cadet Organization. | Checkable signal is an explicitly named performable skill or activity (marching, dance, cheer, color guard, drill). Distinguish from Institution Athletic Team using the same oversight-language test used there (athletics-administered vs. not) when the activity is competitive in nature. A performance/drill unit that is organizationally embedded within a Corps of Cadets or other military/quasi-military structure (e.g. a Corps-affiliated drill team) is categorized as Military/Cadet Organization instead, even though it is also a performance unit. | organization_type | Organizations, Staging_organizations |
-| Institution Athletic Team | A team, squad, or program formally administered by the institution's athletics department (e.g. varsity sports, athletics-sponsored cheerleading/spirit squads). | Defined by institutional oversight, not NCAA-sanctioned status — this is what's actually checkable from CHTR text, since documents almost never state NCAA classification. The overseeing department/office is also only occasionally named (e.g. JMU's practice of appending '(University Recreation)' directly after a team's name) — don't expect this as a regular signal. Includes any team, squad, or program formally administered by the institution's athletics department, regardless of whether it's an NCAA-sanctioned sport (so varsity sports AND cheerleading/spirit squads where athletics-administered both count). Excludes programs administered outside athletics even if 'team' appears in the name — e.g. a student-affairs-run dance team, marching band, or most esports programs. When no oversight language is stated at all, use other contextual signals (e.g. 'varsity,' NCAA/conference references, or the sport's general classification norms) rather than guessing from the activity type alone, and treat the classification as lower-confidence. | organization_type | Organizations, Staging_organizations |
-| Religious/Faith-Based Organization | A student organization organized around a shared religious or faith-based identity or mission (e.g., campus ministries, faith fellowships), distinct from Greek-letter organizations (which take priority when an org is both Greek-lettered and religiously affiliated) and Orientation/Mentorship Program (which takes priority when an org's primary stated function is welcoming/mentoring incoming students, even if framed in religious terms). | Checkable signal is explicit religious/denominational framing in the org's own name or stated mission (e.g. 'Christian,' 'Fellowship,' 'Ministries,' a named faith tradition). Two tiebreakers take priority over this category even when religious framing is present: a Greek-lettered org defaults to Fraternity/Sorority, and an org whose primary stated function is welcoming/mentoring incoming students defaults to Orientation/Mentorship Program. | organization_type | Organizations, Staging_organizations |
-| Sorority | A student organization that self-identifies as a sorority, using 'sorority' in its own name or organizational type — encompasses social/Panhellenic chapters as well as historically Black (NPHC), multicultural, academic, and professional sororities alike. Greek-lettered orgs default to Fraternity/Sorority even with an explicit religious affiliation or loss of university recognition. | Defined broadly by self-identification, not by a social-vs-professional distinction — an academic/professional sorority (e.g. a business or nursing sorority) counts here the same as a traditional social sorority, since CHTR reports typically use the organization's own self-identifying label. Do not read this narrowly as limited to Panhellenic-recognized chapters. | organization_type | Organizations, Staging_organizations |
-| Military/Cadet Organization | Student organization with a military or quasi-military organizational model (e.g., Corps of Cadets units, ROTC-affiliated groups), distinct from athletic teams and Greek-letter organizations. | Checkable signal is explicit Corps of Cadets, ROTC, or other military-unit naming — including bare alphanumeric company/unit designations with no descriptive text (e.g. 'A-1,' 'K-2,' 'Squadron 17,' 'C-Battery'). Treat these as valid organization names under this category rather than flagging as unclassifiable. Exception, mirrored from Fraternity's scope note: a group that uses fraternal language colloquially (e.g. 'brotherhood') but does not self-identify as a fraternity or as a military/Corps unit does not automatically qualify here on that basis alone. | organization_type | Organizations, Staging_organizations |
-| Fraternity | A student organization that self-identifies as a fraternity, using 'fraternity' in its own name or organizational type — encompasses social/Panhellenic-and-IFC chapters as well as historically Black (NPHC), multicultural, academic, and professional fraternities alike. Greek-lettered orgs default to Fraternity/Sorority even with an explicit religious affiliation or loss of university recognition. | Defined broadly by self-identification, not by a social-vs-professional distinction — an academic/professional fraternity (e.g. a business or legal fraternity) counts here the same as a traditional social fraternity, since CHTR reports typically use the organization's own self-identifying label. Do not read this narrowly as limited to IFC/Panhellenic-recognized chapters. Exception: ROTC or other military-affiliated groups that use fraternal language colloquially (e.g. 'brotherhood') but do not self-identify as a fraternity in their organizational name/type do NOT count here. | organization_type | Organizations, Staging_organizations |
-| Honor/Leadership Society | A student-run society, distinct from Greek-letter organizations, athletic teams, and performing/spirit groups, typically organized around leadership development, recognition, or philanthropic/service involvement rather than a shared academic major, sport, or performance activity. | Checkable signal is the org's own stated purpose language — 'leadership,' 'philanthropy,' 'service,' 'honor,' 'selective/limited membership' — with no tied academic discipline, sport, or performable skill named. If both a discipline and a leadership/selectivity mission are present, this category wins over Academic/Professional Club (see that term's scope note). Do not assume selectivity or a formal admission process unless the source text states one; a small or invitation-based membership described only in passing does not itself confirm a selective mission. | organization_type | Organizations, Staging_organizations |
-| Orientation/Mentorship Program | A student organization organized around welcoming, mentoring, or orienting incoming/new students (e.g., freshman camps, peer mentor programs), distinct from Honor/Leadership Society (which is organized around leadership development for its own members generally, not specifically toward incoming-student transition) and General Interest/Social Club. | Checkable signal is explicit framing around welcoming, transitioning, or mentoring incoming/new students (e.g. camp, transition program, peer-mentor program), regardless of whether the org also uses religious or leadership-development language. Distinguish from Honor/Leadership Society by audience: this category applies when the stated beneficiaries are incoming/new students specifically, not when the program develops leadership skills in its own existing membership generally. | organization_type | Organizations, Staging_organizations |
-| Club Sport | A student-organized sports team or program that is not administered by the athletics department — typically overseen by a recreational sports, campus rec, or student life office instead. May or may not compete against other institutions' club teams; that varies by sport and is not part of what defines this category. | Distinguished from Institution Athletic Team by oversight, not by competitive level or how serious/funded the team is — a highly competitive 'club' team overseen by Campus Rec/Student Life is still Club Sport, not Institution Athletic Team, even if it competes at a high level or the school casually calls it a 'team.' Conversely, a team called a 'club' in name only but actually administered by the athletics department counts as Institution Athletic Team instead. Look for the same oversight language (administering office/department name) used to resolve Institution Athletic Team — the two terms should never both apply to the same org. | organization_type | Organizations, Staging_organizations |
-| Unrecognized Organization | A group found responsible for hazing that is not formally recognized by or affiliated with the institution, distinct from Greek-letter organizations that have lost recognition (which are categorized as Fraternity/Sorority per that definition). May include secret or underground societies, or other non-Greek-lettered groups operating outside official university structures. | Checkable signal is explicit text stating the org is not recognized by or affiliated with the institution (e.g. 'not a student organization in relationship with the University,' 'unrecognized,' 'lost recognition'). Secrecy is not required for this category to apply — recognition status alone qualifies, whether or not the org is also described as secret/underground. Greek-lettered orgs that lost recognition still default to Fraternity/Sorority per that term's definition, not here. | organization_type | Organizations, Staging_organizations |
-| General Interest/Social Club | A student organization organized around a shared hobby, general social purpose, or non-academic common interest, distinct from Academic/Professional Club (which requires a tie to a specific academic discipline or career field), Greek-letter organizations, and Honor/Leadership Societies. | Catch-all category — use only after ruling out Academic/Professional Club, Honor/Leadership Society, Religious/Faith-Based Organization, and Orientation/Mentorship Program. Checkable signal is a shared hobby or general social purpose with no stated academic/career tie, no leadership/selectivity mission, and no other more specific category match. | organization_type | Organizations, Staging_organizations |
+| Social fraternity or sorority | A Greek-lettered organization self-identifying as a social fraternity or sorority. | Replaces the old separate Fraternity/Sorority terms (August 17, 2026) — gender is now tracked independently via membership_gender_composition, not folded into organization_type. Checkable signal: self-identification as 'fraternity'/'sorority' plus social (not primarily service/professional) purpose. Priority-order check #1 in the tiebreaker rule. | organization_type | Organizations, Staging_organizations |
+| Service or professional fraternity or sorority | A Greek-lettered organization organized primarily around a service mission or professional/academic discipline rather than general social purpose (e.g. a business or nursing fraternity/sorority). | Split out from Social fraternity or sorority (August 17, 2026) by purpose, not by gender. Checkable signal: explicit service or professional/discipline framing alongside Greek self-identification. | organization_type | Organizations, Staging_organizations |
+| Varsity athletic team | A team, squad, or program formally administered by the institution's athletics department. | Renamed from Institution Athletic Team (August 17, 2026), same underlying definition — defined by institutional oversight, not NCAA-sanctioned status. See sports check (#10) in the tiebreaker rule for the three-way split against Club sport/Intramural. | organization_type | Organizations, Staging_organizations |
+| Club sport | A student-organized sports team competing externally against other institutions, administered by a recreational sports/campus rec/student life office rather than athletics. | Distinguished from Varsity athletic team by administering office, not competitive level. Distinguished from Intramural or recreation sports team (new, August 17, 2026) by external competition — a Club sport team plays other schools; an Intramural team plays only within the institution. | organization_type | Organizations, Staging_organizations |
+| Intramural or recreation sports team | A student sports team or program administered by Campus Rec, competing only in-house (not against other institutions). | New term (August 17, 2026) — previously conflated with Club Sport under the old vocabulary. See sports check (#10) in the tiebreaker rule. | organization_type | Organizations, Staging_organizations |
+| Honor society | A student-run society organized around leadership development, recognition, or philanthropic/service involvement rather than a shared academic major, sport, or performance activity, with merit-based (not open/rush) induction. | Renamed from Honor/Leadership Society (August 17, 2026). Checkable signal: 'leadership,' 'honor,' 'selective/limited membership' language, merit-based induction distinguishing it from Social fraternity or sorority. | organization_type | Organizations, Staging_organizations |
+| Academic club | A student organization organized around a shared academic discipline, career field, or professional interest, distinct from Greek-letter organizations and athletic teams. | Renamed from Academic/Professional Club (August 17, 2026). An org tied to both a discipline and a leadership/selectivity mission defaults to Honor society instead. | organization_type | Organizations, Staging_organizations |
+| Performing arts organization | An independently organized performance group (theater, dance, a cappella/music, improv, comedy, film-making), or a color guard/drill/dance group unaffiliated with any band. | Renamed from Performing/Spirit Group (August 17, 2026), narrowed to exclude marching-band-affiliated units — see Marching band below. A CHTR incident rarely states organizational affiliation explicitly; when it isn't stated, use the org's own name/self-description rather than guessing (tiebreaker check #3, trimmed August 17, 2026 for this reason). | organization_type | Organizations, Staging_organizations |
+| Marching band | A marching band program, including any color guard/drill/dance sub-units organized as part of it when the source states that affiliation. | Split out from Performing/Spirit Group (August 17, 2026). See Performing arts organization above for the affiliation-uncertainty handling. | organization_type | Organizations, Staging_organizations |
+| ROTC or other military organization | A student organization with a military or quasi-military organizational model (e.g., Corps of Cadets units, ROTC-affiliated groups). | Renamed from Military/Cadet Organization (August 17, 2026), same underlying definition. Checkable signal is explicit Corps/ROTC/military-unit naming, including bare alphanumeric unit designations with no descriptive text (e.g. 'A-1,' 'K-2,' 'Squadron 17,' 'C-Battery') — treat these as valid names, not unclassifiable (tiebreaker check #2). | organization_type | Organizations, Staging_organizations |
+| Social club | A student organization organized around a shared hobby or general social purpose, with no more specific category match. | Renamed from General Interest/Social Club (August 17, 2026). Catch-all, used only after ruling out the more specific categories above it in the tiebreaker order (check #11). | organization_type | Organizations, Staging_organizations |
+| Faith-based organization | A student organization organized around a shared religious or faith-based identity or mission. | Renamed from Religious/Faith-Based Organization (August 17, 2026). An org whose primary stated function is welcoming/mentoring incoming students folds into Other type of organization instead, even under religious framing, per the retirement of the old Orientation/Mentorship Program category (tiebreaker check #5). | organization_type | Organizations, Staging_organizations |
+| Culturally-based / identity-based organization | A student organization organized around a shared cultural, ethnic, or identity-based affiliation, not itself Greek-lettered. | New term (August 17, 2026). Defers to Greek self-identification (check #1) if the org is also Greek-lettered — a culturally-based Greek organization (e.g. an NPHC or multicultural fraternity/sorority) is still Social/Service fraternity or sorority first. | organization_type | Organizations, Staging_organizations |
+| Student government or other student leadership organization | An organization with elected or appointed representative authority over a defined student body or subset (e.g. Student Government, Senate). | Renamed and narrowed from the governance-authority half of the old tiebreaker logic (August 17, 2026). A CHTR incident rarely states an org's actual governing authority, so this leans on explicit representative-body naming rather than inferred governance structure (tiebreaker check #6, trimmed for this reason). | organization_type | Organizations, Staging_organizations |
+| Community service organization | A non-Greek student organization organized primarily around community service. | New term (August 17, 2026) — previously had no clean home in the 12-term vocabulary. Distinguished from Service or professional fraternity or sorority by not being Greek-lettered. | organization_type | Organizations, Staging_organizations |
+| Political organization or social action group | A student organization organized around a political party, ideology, or single-cause advocacy focus. | New term (August 17, 2026). Distinguished from Campus media organization by focus — a media outlet with partisan/opinion content is still Campus media organization; an org that exists to serve one campaign or organizing agenda is this category instead (tiebreaker check #7, trimmed since publication history/ongoing status is rarely stated). | organization_type | Organizations, Staging_organizations |
+| Campus media organization | A campus media outlet (newspaper, magazine, radio, TV, podcast, digital outlet). | New term (August 17, 2026) — previously had no home in the 12-term vocabulary. See Political organization or social action group above for the distinction. | organization_type | Organizations, Staging_organizations |
+| Other type of organization | Final residual category after ruling out every other term, including what the old Orientation/Mentorship Program and Unrecognized Organization categories used to cover. | Renamed from a narrower 'General Interest/Social Club is the catch-all' framing (August 17, 2026). Orientation/Mentorship Program folded in here entirely. Unrecognized Organization is retired as an organization_type value — recognition status is now tracked independently and per-incident via institutional_recognition_status, not conflated with organization type. | organization_type | Organizations, Staging_organizations |
+
 
 ### Pipeline status
 
