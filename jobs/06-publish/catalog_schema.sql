@@ -281,7 +281,8 @@ CREATE TABLE staging.staging_incident_review_flags (
     staging_incident_id     text REFERENCES staging.staging_incidents(staging_incident_id),
     staging_organization_id text REFERENCES staging.staging_organizations(staging_organization_id),
     flag_type               text NOT NULL CHECK (flag_type IN (
-        'Required field missing', 'Alcohol/drugs review needed', 'Determination unclear',
+        'Legally required field missing', 'Unable to derive value',
+        'Alcohol/drugs review needed', 'Determination unclear',
         'Low extraction confidence', 'Unrecognized date term', 'Unable to determine organization type'
     )),
     field_name  text NOT NULL,
