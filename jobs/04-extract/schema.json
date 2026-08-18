@@ -61,7 +61,8 @@
     },
     "flag_type_enum": {
       "enum": [
-        "Required field missing",
+        "Legally required field missing",
+        "Unable to derive value",
         "Alcohol/drugs review needed",
         "Determination unclear",
         "Low extraction confidence",
