@@ -35,8 +35,8 @@ Institutions and what each one covers:
       an invalid extraction is skipped by rebuild.py entirely (never staged).
   - 200003 westfield-institute (crawled): one incident ("Rho Delta Chapter") with a null
       findings_raw and *no review.json at all* -- proves (a) an unreviewed incident's
-      "Required field missing" flag is mechanically recomputed even though the AI itself
-      never flagged it, and (b) an unreviewed incident never reaches public.incidents.
+      "Legally required field missing" flag is mechanically recomputed even though the AI
+      itself never flagged it, and (b) an unreviewed incident never reaches public.incidents.
   - 200004 centerville-tech (crawled): no hazing signal anywhere -- not_found, no
       documents; institution row only.
   - 200005 no-report-academy (crawled): url_status=no_url -- never fetched.
@@ -116,30 +116,41 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-# ── incidents.json fixture builders (v2 shape: raw+normalized, confidence, flags) ──
+# ── incidents.json fixture builders (v2 shape, post incident_dates-array redesign) ──
+# Updated 2026-08-19: organization_type moved to current 18-term vocabulary;
+# membership_gender_composition / institutional_recognition_status added (didn't exist
+# before); the old single flat `dates` block (incident_start_raw/incident_end_raw etc.)
+# split into `dates` (investigation_start/investigation_end/notice only) plus a
+# top-level `incident_dates` array, one entry per incident here since none of these
+# fixtures model a multi-occurrence pattern -- see prompt.md rule 10 for the full
+# array design. Also: `_BLANK_DATES` used to default missing _raw fields to the string
+# "Not specified", which violates rule 1 (a _raw field is genuinely nullable and never
+# uses a sentinel string) -- defaults below are real None.
 
-_BLANK_DATES = {
-    "incident_start_raw": "Not specified", "incident_start_normalized": None, "incident_start_precision": "Unknown",
-    "incident_end_raw": "Not specified", "incident_end_normalized": None, "incident_end_precision": "Unknown",
-    "investigation_start_date_raw": "Not specified", "investigation_start_date": None,
-    "investigation_end_date_raw": "Not specified", "investigation_end_date": None,
-    "notice_date_raw": "Not specified", "notice_date": None,
+_BLANK_INVESTIGATION_DATES = {
+    "investigation_start_date_raw": None, "investigation_start_date": None,
+    "investigation_end_date_raw": None, "investigation_end_date": None,
+    "notice_date_raw": None, "notice_date": None,
 }
 
 
-def _incident(org_raw, org_normalized, org_type, description, findings, sanctions,
-              alcohol, drugs, determination, dates, confidence, flags):
+def _incident(org_raw, org_normalized, org_type, gender_composition, recognition_status,
+              description, findings, sanctions, alcohol, drugs, determination,
+              investigation_dates, incident_dates, confidence, flags):
     return {
         "organization_name_raw": org_raw,
         "organization_name_normalized": org_normalized,
         "organization_type": org_type,
+        "membership_gender_composition": gender_composition,
+        "institutional_recognition_status": recognition_status,
         "description_raw": description,
         "findings_raw": findings,
         "sanctions_raw": sanctions,
         "alcohol_involved": alcohol,
         "drugs_involved": drugs,
         "determination_status": determination,
-        "dates": {**_BLANK_DATES, **dates},
+        "dates": {**_BLANK_INVESTIGATION_DATES, **investigation_dates},
+        "incident_dates": incident_dates,
         "extraction_confidence": confidence,
         "flags": flags,
     }
@@ -155,111 +166,132 @@ def _document(start=None, end=None, publication=None, zero_statement=None):
 
 
 NR_SIGMA = _incident(
-    "Sigma Alpha Fraternity", "Sigma Alpha", "Fraternity",
+    "Sigma Alpha Fraternity", "Sigma Alpha", "Social fraternity or sorority",
+    "All-male", "Recognized",
     "new members of Sigma Alpha Fraternity were required to perform physically "
     "demanding tasks late at night as part of an unofficial initiation ritual.",
     "The organization was investigated and found responsible for hazing.",
     "Sanction: probation through Fall 2026.",
     "No", "No", "Determined hazing",
-    {"incident_start_raw": "September 2025", "incident_start_normalized": "2025-09-01", "incident_start_precision": "Month",
-     "incident_end_raw": "September 2025", "incident_end_normalized": "2025-09-01", "incident_end_precision": "Month",
-     "investigation_start_date_raw": "October 1, 2025", "investigation_start_date": "2025-10-01",
+    {"investigation_start_date_raw": "October 1, 2025", "investigation_start_date": "2025-10-01",
      "investigation_end_date_raw": "November 15, 2025", "investigation_end_date": "2025-11-15",
      "notice_date_raw": "November 20, 2025", "notice_date": "2025-11-20"},
+    [{"start_raw": "September 2025", "start_normalized": None, "start_precision": "Month",
+      "start_year": 2025, "start_month": 9, "start_academic_term": None,
+      "end_raw": "September 2025", "end_normalized": None, "end_precision": "Month",
+      "end_year": 2025, "end_month": 9, "end_academic_term": None}],
     0.9,
     [{"flag_type": "Alcohol/drugs review needed", "field_name": "alcohol_involved",
       "note": "narrative is ambiguous about alcohol despite the reported 'No'"}],
 )
 
 NR_ROWING = _incident(
-    "Women's Club Rowing", "Women's Club Rowing", "Club Sport",
+    "Women's Club Rowing", "Women's Club Rowing", "Club sport",
+    "All-female", "Recognized",
     "members of the Women's Club Rowing team required new members to consume "
     "alcohol at a team event.",
     "The organization was found responsible for hazing.",
     "Sanction: loss of club-sport funding for one year.",
     "Yes", "Not specified", "Determined hazing",
-    {"incident_start_raw": "October 2025", "incident_start_normalized": "2025-10-01", "incident_start_precision": "Month",
-     "incident_end_raw": "October 2025", "incident_end_normalized": "2025-10-01", "incident_end_precision": "Month",
-     "investigation_start_date_raw": "November 1, 2025", "investigation_start_date": "2025-11-01",
+    {"investigation_start_date_raw": "November 1, 2025", "investigation_start_date": "2025-11-01",
      "investigation_end_date_raw": "December 1, 2025", "investigation_end_date": "2025-12-01",
      "notice_date_raw": "December 5, 2025", "notice_date": "2025-12-05"},
+    [{"start_raw": "October 2025", "start_normalized": None, "start_precision": "Month",
+      "start_year": 2025, "start_month": 10, "start_academic_term": None,
+      "end_raw": "October 2025", "end_normalized": None, "end_precision": "Month",
+      "end_year": 2025, "end_month": 10, "end_academic_term": None}],
     0.88,
     [],
 )
 
 EV_ZETA = _incident(
-    "Zeta Psi Fraternity", "Zeta Psi", "Fraternity",
+    "Zeta Psi Fraternity", "Zeta Psi", "Social fraternity or sorority",
+    "All-male", "Recognized",
     "During Fall 2025 recruitment, new members were required to consume alcohol "
     "during a pledge event.",
     "The organization was investigated and found responsible for hazing.",
     "Sanction: suspension through Spring 2027.",
     "Yes", "Not specified", "Determined hazing",
-    {"incident_start_raw": "Fall 2025", "incident_start_normalized": "2025-09-01", "incident_start_precision": "Academic term",
-     "incident_end_raw": "Fall 2025", "incident_end_normalized": "2025-12-15", "incident_end_precision": "Academic term",
-     "investigation_start_date_raw": "November 2, 2025", "investigation_start_date": "2025-11-02",
+    {"investigation_start_date_raw": "November 2, 2025", "investigation_start_date": "2025-11-02",
      "investigation_end_date_raw": "January 10, 2026", "investigation_end_date": "2026-01-10",
      "notice_date_raw": "January 10, 2026", "notice_date": "2026-01-10"},
+    [{"start_raw": "Fall 2025", "start_normalized": None, "start_precision": "Academic term",
+      "start_year": 2025, "start_month": None, "start_academic_term": "Fall",
+      "end_raw": "Fall 2025", "end_normalized": None, "end_precision": "Academic term",
+      "end_year": 2025, "end_month": None, "end_academic_term": "Fall"}],
     0.5,
     [{"flag_type": "Determination unclear", "field_name": "determination_status",
       "note": "Sanction wording is terse; moderate confidence in segmentation."}],
 )
 
 WF_RHODELTA = _incident(
-    "Rho Delta Chapter", "Rho Delta", "Fraternity",
+    "Rho Delta Chapter", "Rho Delta", "Social fraternity or sorority",
+    "Unknown/Not stated", "Recognized",
     "Unable to fully confirm details against a scanned page image; a hazing "
     "incident involving Rho Delta Chapter was reported.",
-    None,  # findings_raw missing -- "Required field missing" mechanically recomputed
+    None,  # findings_raw missing -- "Legally required field missing" mechanically recomputed
     "Sanction: written warning.",
     "Not specified", "Not specified", "Pending",
-    {"incident_start_raw": "Spring 2025", "incident_start_normalized": "2025-03-01", "incident_start_precision": "Academic term",
-     "incident_end_raw": "Spring 2025", "incident_end_normalized": "2025-03-01", "incident_end_precision": "Academic term",
-     "investigation_start_date_raw": "April 1, 2025", "investigation_start_date": "2025-04-01"},
+    {"investigation_start_date_raw": "April 1, 2025", "investigation_start_date": "2025-04-01"},
+    [{"start_raw": "Spring 2025", "start_normalized": None, "start_precision": "Academic term",
+      "start_year": 2025, "start_month": None, "start_academic_term": "Spring",
+      "end_raw": "Spring 2025", "end_normalized": None, "end_precision": "Academic term",
+      "end_year": 2025, "end_month": None, "end_academic_term": "Spring"}],
     0.8,
     [],
 )
 
 RV_2026 = _incident(
-    "Ridgeview Rugby Club", "Ridgeview Rugby", "Club Sport",
+    "Ridgeview Rugby Club", "Ridgeview Rugby", "Club sport",
+    "Unknown/Not stated", "Recognized",
     "members of the Ridgeview Rugby Club required new players to undergo a "
     "hazardous initiation run at a preseason retreat.",
     "An investigation into the incident is ongoing.",
     None,
     "Not specified", "Not specified", "Pending",
-    {"incident_start_raw": "September 5, 2025", "incident_start_normalized": "2025-09-05", "incident_start_precision": "Day",
-     "incident_end_raw": "September 5, 2025", "incident_end_normalized": "2025-09-05", "incident_end_precision": "Day",
-     "investigation_start_date_raw": "September 20, 2025", "investigation_start_date": "2025-09-20"},
+    {"investigation_start_date_raw": "September 20, 2025", "investigation_start_date": "2025-09-20"},
+    [{"start_raw": "September 5, 2025", "start_normalized": "2025-09-05", "start_precision": "Day",
+      "start_year": 2025, "start_month": 9, "start_academic_term": None,
+      "end_raw": "September 5, 2025", "end_normalized": "2025-09-05", "end_precision": "Day",
+      "end_year": 2025, "end_month": 9, "end_academic_term": None}],
     0.85,
     [],
 )
 
 RV_2027 = _incident(
-    "Ridgeview Rugby Club", "Ridgeview Rugby", "Club Sport",
+    "Ridgeview Rugby Club", "Ridgeview Rugby", "Club sport",
+    "Unknown/Not stated", "Recognized",
     "members of the Ridgeview Rugby Club required new players to undergo a "
     "hazardous initiation run at a preseason retreat.",
     "The organization was investigated and found responsible for hazing.",
     "Sanction: suspension of team activities for one semester.",
     "Not specified", "Not specified", "Determined hazing",
-    {"incident_start_raw": "September 5, 2025", "incident_start_normalized": "2025-09-05", "incident_start_precision": "Day",
-     "incident_end_raw": "September 5, 2025", "incident_end_normalized": "2025-09-05", "incident_end_precision": "Day",
-     "investigation_start_date_raw": "September 20, 2025", "investigation_start_date": "2025-09-20",
+    {"investigation_start_date_raw": "September 20, 2025", "investigation_start_date": "2025-09-20",
      "investigation_end_date_raw": "March 1, 2026", "investigation_end_date": "2026-03-01",
      "notice_date_raw": "March 5, 2026", "notice_date": "2026-03-05"},
+    [{"start_raw": "September 5, 2025", "start_normalized": "2025-09-05", "start_precision": "Day",
+      "start_year": 2025, "start_month": 9, "start_academic_term": None,
+      "end_raw": "September 5, 2025", "end_normalized": "2025-09-05", "end_precision": "Day",
+      "end_year": 2025, "end_month": 9, "end_academic_term": None}],
     0.9,
     [],
 )
 
 FV_SIGMA = _incident(
-    "Sigma Alpha Fraternity", "Sigma Alpha", "Fraternity",
+    "Sigma Alpha Fraternity", "Sigma Alpha", "Social fraternity or sorority",
+    "All-male", "Recognized",
     "new members of the Fairview College chapter of Sigma Alpha Fraternity were "
     "required to complete an unsanctioned late-night ritual.",
     "The organization was investigated and found responsible for hazing.",
     "Sanction: social probation through Spring 2026.",
     "No", "No", "Determined hazing",
-    {"incident_start_raw": "October 2025", "incident_start_normalized": "2025-10-01", "incident_start_precision": "Month",
-     "incident_end_raw": "October 2025", "incident_end_normalized": "2025-10-01", "incident_end_precision": "Month",
-     "investigation_start_date_raw": "November 1, 2025", "investigation_start_date": "2025-11-01",
+    {"investigation_start_date_raw": "November 1, 2025", "investigation_start_date": "2025-11-01",
      "investigation_end_date_raw": "December 1, 2025", "investigation_end_date": "2025-12-01",
      "notice_date_raw": "December 5, 2025", "notice_date": "2025-12-05"},
+    [{"start_raw": "October 2025", "start_normalized": None, "start_precision": "Month",
+      "start_year": 2025, "start_month": 10, "start_academic_term": None,
+      "end_raw": "October 2025", "end_normalized": None, "end_precision": "Month",
+      "end_year": 2025, "end_month": 10, "end_academic_term": None}],
     0.92,
     [],
 )
@@ -632,8 +664,8 @@ def main() -> int:
                     failures.append(f"eastview: mechanically-recomputed 'Low extraction confidence' (0.5 < 0.7) missing, got {ev_flags!r}")
 
                 wf_flags = _flags_for("200003")
-                if ("Required field missing", "findings_raw") not in wf_flags:
-                    failures.append(f"westfield: 'Required field missing'/findings_raw should be recomputed even with no review, got {wf_flags!r}")
+                if ("Legally required field missing", "findings_raw") not in wf_flags:
+                    failures.append(f"westfield: 'Legally required field missing'/findings_raw should be recomputed even with no review, got {wf_flags!r}")
 
                 # -- organization matching: New proposal (north-ridge) + Matched existing (fairview) --
                 org_rows = _rows(
@@ -778,7 +810,7 @@ def main() -> int:
     print("ok    unreviewed incident (Rho Delta Chapter) never reaches public.incidents")
     print("ok    corrected incident (Zeta Psi): correction lands in both schemas, incident_id frozen at original extraction")
     print("ok    flags: AI-reported flag survives when uncorrected; clears when the reviewer corrects that exact field;")
-    print("      mechanically-recomputed flags (Required field missing / Low extraction confidence) fire independent of AI flags")
+    print("      mechanically-recomputed flags (Legally required field missing / Low extraction confidence) fire independent of AI flags")
     print("ok    organization matching: north-ridge registers 'New proposal'; fairview matches it as 'Matched existing'")
     print("ok    hillcrest: a zero-incident document-level review stages/promotes nothing (no reports concept in v3.0)")
     print("ok    ridgeview: cross-year 'Status update to existing incident' collapses to one row, staging_incident_id frozen")
