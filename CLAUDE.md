@@ -272,7 +272,7 @@ institution can match against them:
   already-*approved* organizations seen earlier in the same rebuild by a deterministic
   lowercase/trim/punctuation-stripped comparison key.
 - `staging_incident_review_flags` are recomputed fresh every rebuild (principle 6):
-  `Required field missing` / `Low extraction confidence` (<0.7) mechanically, from final
+  `Legally required field missing` / `Low extraction confidence` (<0.7) mechanically, from final
   field values; the remaining flag types carry forward from the AI's own `flags[]` unless
   the reviewer's correction touched that exact field.
 - For an `Approved` incident: looked up against already-*public* incidents for the same

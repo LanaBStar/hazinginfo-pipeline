@@ -59,7 +59,7 @@ for the review/matching/promotion model.
        lowercase/trim/punctuation-stripped comparison key. An incident naming no
        organization gets no `staging_organizations`/`incident_organizations` row.
      - `staging_incident_review_flags` are recomputed fresh every rebuild, never
-       carried over as stored state: `Required field missing` and `Low
+       carried over as stored state: `Legally required field missing` and `Low
        extraction confidence` (<0.7, provisional) are checked mechanically against
        the *final* (post-correction) field values; the remaining flag types
        (`Determination unclear`, `Alcohol/drugs review needed`, `Unrecognized date
