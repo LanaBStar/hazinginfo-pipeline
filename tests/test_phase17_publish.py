@@ -435,7 +435,7 @@ def main() -> int:
         if norm_results["normalized"] != 5 or norm_results["failed"] != 0:
             failures.append(f"setup: unexpected normalize results {norm_results!r}")
 
-        # ── hand-add hillcrest / ridgeview (x2 years) / fairview ─────────────
+        # ── hand-add hillcrest / ridgeview (x2 years) / fairview ────────────
         handadd_run_id = archive_run.start_pipeline_run()
 
         hc_dir = _hand_add_document(
@@ -504,7 +504,7 @@ def main() -> int:
         if validate_results != {"archived": 9, "skipped": 0, "pending": 0, "failed": 0}:
             failures.append(f"validate: unexpected results {validate_results!r}")
 
-        # ── locate doc_dirs for the crawled institutions ───────────────
+        # ── locate doc_dirs for the crawled institutions ──────────────
         def _status_docs(inst_dir: str, year: int = 2026) -> list[str]:
             status = json.loads((archive_local_root / "archive" / inst_dir / str(year) / "status.json").read_text())
             return [short_hash(h) for h in status["documents"]]
@@ -578,7 +578,7 @@ def main() -> int:
         except ingest.IngestError as e:
             failures.append(f"setup: a review was unexpectedly rejected by ingest_review -- {e}")
 
-        # ── rebuild run 1 ──────────────────────────────────────────────────
+        # ── rebuild run 1 ───────────────────────────────────
         results1 = rebuild.run(prefix="archive/", schools_csv=schools_csv)
 
         expect = {
@@ -744,7 +744,7 @@ def main() -> int:
                     if matches != [("Status update to existing incident",)]:
                         failures.append(f"ridgeview staging_incident_possible_matches: expected one 'Status update to existing incident' row, got {matches!r}")
 
-        # ── rebuild run 2: byte-identical rows (idempotency) ───────────────
+        # ── rebuild run 2: byte-identical rows (idempotency) ────────────
         def _full_snapshot():
             with psycopg.connect(test_db_url) as conn:
                 with conn.cursor() as cur:
