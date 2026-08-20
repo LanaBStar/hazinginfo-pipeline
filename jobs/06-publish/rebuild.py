@@ -236,7 +236,7 @@ def _artifact_rows(keys: set[str]) -> tuple[list[tuple], dict[str, str]]:
     return rows, doc_dir_to_artifact_id
 
 
-# ── Flags (recomputed fresh every rebuild -- see module docstring) ───────────────
+# ── Flags (recomputed fresh every rebuild -- see module docstring) ──────────────
 
 def _recompute_flags(final_incident: dict, ai_flags: list[dict], corrected_fields: set[str]) -> list[tuple]:
     """Returns [(flag_type, field_name)]. 'Legally required field missing' and 'Low extraction
@@ -269,7 +269,7 @@ def _recompute_flags(final_incident: dict, ai_flags: list[dict], corrected_field
     return flags
 
 
-# ── review.json lookup helpers ───────────────────────────────────────
+# ── review.json lookup helpers ─────────────────────────────────────
 
 def _find_review(reviews: list[dict], file_hash: str, incident_index: int) -> dict | None:
     matches = [
@@ -330,7 +330,7 @@ def _org_row_key(comparison_key: str) -> str:
     return _hash("org", comparison_key)
 
 
-# ── staging_incidents / staging_organizations + promotion ────────────────────
+# ── staging_incidents / staging_organizations + promotion ──────────────────
 
 class _RebuildState:
     """Accumulates rows for every table populated by _stage_and_promote, plus the
