@@ -54,9 +54,10 @@
       "description": "Independent of decision -- the incident and its proposed organization can each be approved/rejected/corrected without waiting on the other. null means this screen's reviewer didn't touch the organization decision.",
       "properties": {
         "decision": {"type": "string", "enum": ["approved", "rejected", "corrected"]},
-        "corrected_organization_type": {"type": ["string", "null"]}
+        "corrected_organization_type": {"type": ["string", "null"]},
+        "corrected_membership_gender_composition": {"type": ["string", "null"]}
       },
-      "required": ["decision", "corrected_organization_type"],
+      "required": ["decision", "corrected_organization_type", "corrected_membership_gender_composition"],
       "additionalProperties": false
     },
     "reviewer": {"type": "string"},
