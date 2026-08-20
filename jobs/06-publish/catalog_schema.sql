@@ -38,7 +38,7 @@
 
 CREATE SCHEMA staging;
 
--- ── public.institution ──────────────────────────────────────────────────────────
+-- ── public.institution ────────────────────────────────────────────────────────────────────────
 
 CREATE TABLE public.institution (
     unitid          text PRIMARY KEY,
@@ -48,7 +48,7 @@ CREATE TABLE public.institution (
     created_at      timestamptz NOT NULL
 );
 
--- ── public.pipeline_runs ─────────────────────────────────────────────────────────
+-- ── public.pipeline_runs ───────────────────────────────────────────────────────────────────
 
 CREATE TABLE public.pipeline_runs (
     pipeline_run_id  text PRIMARY KEY,
@@ -58,7 +58,7 @@ CREATE TABLE public.pipeline_runs (
     run_completed_at timestamptz
 );
 
--- ── public.data_checks ───────────────────────────────────────────────────────────
+-- ── public.data_checks ─────────────────────────────────────────────────────────────────────
 
 CREATE TABLE public.data_checks (
     data_check_id   text PRIMARY KEY,
@@ -74,7 +74,7 @@ CREATE TABLE public.data_checks (
 CREATE INDEX data_checks_unitid_idx ON public.data_checks(unitid);
 CREATE INDEX data_checks_pipeline_run_id_idx ON public.data_checks(pipeline_run_id);
 
--- ── public.ledger ────────────────────────────────────────────────────────────────
+-- ── public.ledger ───────────────────────────────────────────────────────────────────────────────
 
 CREATE TABLE public.ledger (
     ledger_id                text PRIMARY KEY,
@@ -87,7 +87,7 @@ CREATE TABLE public.ledger (
 
 CREATE INDEX ledger_unitid_idx ON public.ledger(unitid);
 
--- ── public.artifacts ─────────────────────────────────────────────────────────────
+-- ── public.artifacts ───────────────────────────────────────────────────────────────────────
 
 CREATE TABLE public.artifacts (
     artifact_id           text PRIMARY KEY,
@@ -112,18 +112,19 @@ CREATE TABLE staging.staging_incidents (
     institution_unitid           text NOT NULL REFERENCES public.institution(unitid),
     organization_name_raw        text,
     organization_name_normalized text,
-    incident_description_raw     text NOT NULL,
-    investigation_start_date_raw text NOT NULL,
+    incident_description_raw     text,
+    investigation_start_date_raw text,
     investigation_start_date     date,
-    investigation_end_date_raw   text NOT NULL,
+    investigation_end_date_raw   text,
     investigation_end_date       date,
-    notice_date_raw              text NOT NULL,
+    notice_date_raw              text,
     notice_date                  date,
     sanctions_raw                text,
     findings_raw                 text,
     determination_status         text NOT NULL CHECK (determination_status IN ('Pending', 'Determined hazing', 'Dismissed', 'Not specified')),
-    alcohol_involved              text NOT NULL CHECK (alcohol_involved IN ('Yes', 'No', 'Not specified')),
-    drugs_involved                text NOT NULL CHECK (drugs_involved IN ('Yes', 'No', 'Not specified')),
+    institutional_recognition_status text NOT NULL CHECK (institutional_recognition_status IN ('Recognized', 'Unrecognized/Underground', 'Formerly Recognized - Lost Recognition', 'Unknown/Not Stated')),
+    alcohol_involved              text NOT NULL CHECK (alcohol_involved IN ('Yes', 'No', 'Not specified', 'Unable to determine - Unclear reporting')),
+    drugs_involved                text NOT NULL CHECK (drugs_involved IN ('Yes', 'No', 'Not specified', 'Unable to determine - Unclear reporting')),
     extraction_confidence          numeric NOT NULL CHECK (extraction_confidence >= 0 AND extraction_confidence <= 1),
     human_review_status            text NOT NULL DEFAULT 'Pending review' CHECK (human_review_status IN ('Pending review', 'Approved', 'Rejected')),
     reviewed_by                    text,
@@ -135,19 +136,23 @@ CREATE TABLE staging.staging_incidents (
 CREATE INDEX staging_incidents_artifact_id_idx ON staging.staging_incidents(artifact_id);
 CREATE INDEX staging_incidents_institution_unitid_idx ON staging.staging_incidents(institution_unitid);
 
--- ── staging.staging_organizations ────────────────────────────────────────────────
+-- ── staging.staging_organizations ───────────────────────────────────────────────
 
 CREATE TABLE staging.staging_organizations (
     staging_organization_id text PRIMARY KEY,
     organization_name       text NOT NULL,
     organization_type       text CHECK (organization_type IN (
-        'Fraternity', 'Sorority', 'Institution Athletic Team', 'Club Sport',
-        'Honor/Leadership Society', 'Academic/Professional Club', 'Performing/Spirit Group',
-        'Military/Cadet Organization', 'General Interest/Social Club',
-        'Religious/Faith-Based Organization', 'Orientation/Mentorship Program',
-        'Unrecognized Organization'
+        'Social fraternity or sorority', 'Service or professional fraternity or sorority',
+        'Varsity athletic team', 'Club sport', 'Intramural or recreation sports team',
+        'Honor society', 'Academic club', 'Performing arts organization', 'Marching band',
+        'ROTC or other military organization', 'Social club', 'Faith-based organization',
+        'Culturally-based / identity-based organization',
+        'Student government or other student leadership organization',
+        'Community service organization', 'Political organization or social action group',
+        'Campus media organization', 'Other type of organization'
     )),
     match_type          text NOT NULL CHECK (match_type IN ('New proposal', 'Matched existing')),
+    membership_gender_composition text NOT NULL DEFAULT 'Unknown/Not stated' CHECK (membership_gender_composition IN ('All-male', 'All-female', 'Mixed/Co-ed', 'Unknown/Not stated')),
     human_review_status text NOT NULL DEFAULT 'Proposed' CHECK (human_review_status IN ('Proposed', 'Approved', 'Rejected')),
     reviewed_by         text,
     reviewed_date       timestamptz,
@@ -155,46 +160,51 @@ CREATE TABLE staging.staging_organizations (
     created_at          timestamptz NOT NULL
 );
 
--- ── public.organizations ─────────────────────────────────────────────────────────
+-- ── public.organizations ────────────────────────────────────────────────────────────────
 
 CREATE TABLE public.organizations (
     organization_id   text PRIMARY KEY,
     organization_name text NOT NULL,
     organization_type text NOT NULL CHECK (organization_type IN (
-        'Fraternity', 'Sorority', 'Institution Athletic Team', 'Club Sport',
-        'Honor/Leadership Society', 'Academic/Professional Club', 'Performing/Spirit Group',
-        'Military/Cadet Organization', 'General Interest/Social Club',
-        'Religious/Faith-Based Organization', 'Orientation/Mentorship Program',
-        'Unrecognized Organization'
+        'Social fraternity or sorority', 'Service or professional fraternity or sorority',
+        'Varsity athletic team', 'Club sport', 'Intramural or recreation sports team',
+        'Honor society', 'Academic club', 'Performing arts organization', 'Marching band',
+        'ROTC or other military organization', 'Social club', 'Faith-based organization',
+        'Culturally-based / identity-based organization',
+        'Student government or other student leadership organization',
+        'Community service organization', 'Political organization or social action group',
+        'Campus media organization', 'Other type of organization'
     )),
+    membership_gender_composition text NOT NULL DEFAULT 'Unknown/Not stated' CHECK (membership_gender_composition IN ('All-male', 'All-female', 'Mixed/Co-ed', 'Unknown/Not stated')),
     created_at timestamptz NOT NULL
 );
 
--- ── public.incidents ─────────────────────────────────────────────────────────────
+-- ── public.incidents ──────────────────────────────────────────────────────────────────────
 
 CREATE TABLE public.incidents (
     incident_id                   text PRIMARY KEY,
     institution_unitid            text NOT NULL REFERENCES public.institution(unitid),
     staging_incident_id            text NOT NULL REFERENCES staging.staging_incidents(staging_incident_id),
-    incident_description_raw      text NOT NULL,
-    investigation_start_date_raw  text NOT NULL,
+    incident_description_raw      text,
+    investigation_start_date_raw  text,
     investigation_start_date      date,
-    investigation_end_date_raw    text NOT NULL,
+    investigation_end_date_raw    text,
     investigation_end_date        date,
-    notice_date_raw                text NOT NULL,
+    notice_date_raw                text,
     notice_date                    date,
     sanctions_raw                  text,
-    findings_raw                   text,
+    findings_raw                  text,
     determination_status           text NOT NULL CHECK (determination_status IN ('Pending', 'Determined hazing', 'Dismissed', 'Not specified')),
-    alcohol_involved                text NOT NULL CHECK (alcohol_involved IN ('Yes', 'No', 'Not specified')),
-    drugs_involved                  text NOT NULL CHECK (drugs_involved IN ('Yes', 'No', 'Not specified')),
+    institutional_recognition_status text NOT NULL CHECK (institutional_recognition_status IN ('Recognized', 'Unrecognized/Underground', 'Formerly Recognized - Lost Recognition', 'Unknown/Not Stated')),
+    alcohol_involved                text NOT NULL CHECK (alcohol_involved IN ('Yes', 'No', 'Not specified', 'Unable to determine - Unclear reporting')),
+    drugs_involved                  text NOT NULL CHECK (drugs_involved IN ('Yes', 'No', 'Not specified', 'Unable to determine - Unclear reporting')),
     updated_at                      timestamptz NOT NULL
 );
 
 CREATE INDEX incidents_institution_unitid_idx ON public.incidents(institution_unitid);
 CREATE INDEX incidents_staging_incident_id_idx ON public.incidents(staging_incident_id);
 
--- ── public.incident_organizations ────────────────────────────────────────────────
+-- ── public.incident_organizations ────────────────────────────────────────────────────
 
 CREATE TABLE public.incident_organizations (
     incident_organization_id text PRIMARY KEY,
@@ -209,24 +219,30 @@ CREATE INDEX incident_organizations_staging_organization_id_idx ON public.incide
 CREATE INDEX incident_organizations_incident_id_idx ON public.incident_organizations(incident_id);
 CREATE INDEX incident_organizations_organization_id_idx ON public.incident_organizations(organization_id);
 
--- ── public.incident_dates ────────────────────────────────────────────────────────
+-- ── public.incident_dates ────────────────────────────────────────────────────────────────
 
 CREATE TABLE public.incident_dates (
     incident_date_id      text PRIMARY KEY,
     staging_incident_id    text NOT NULL REFERENCES staging.staging_incidents(staging_incident_id),
     incident_id            text REFERENCES public.incidents(incident_id),
-    start_date_raw          text NOT NULL,
+    start_date_raw          text,
     start_date_normalized  date,
     start_date_precision    text NOT NULL CHECK (start_date_precision IN ('Day', 'Month', 'Academic term', 'Academic year', 'Year', 'Unknown')),
-    end_date_raw            text NOT NULL,
+    start_date_year         integer,
+    start_date_month        integer CHECK (start_date_month BETWEEN 1 AND 12),
+    start_date_academic_term text CHECK (start_date_academic_term IN ('Fall', 'Spring', 'Summer', 'Winter')),
+    end_date_raw            text,
     end_date_normalized    date,
-    end_date_precision      text NOT NULL CHECK (end_date_precision IN ('Day', 'Month', 'Academic term', 'Academic year', 'Year', 'Unknown'))
+    end_date_precision      text NOT NULL CHECK (end_date_precision IN ('Day', 'Month', 'Academic term', 'Academic year', 'Year', 'Unknown')),
+    end_date_year            integer,
+    end_date_month           integer CHECK (end_date_month BETWEEN 1 AND 12),
+    end_date_academic_term   text CHECK (end_date_academic_term IN ('Fall', 'Spring', 'Summer', 'Winter'))
 );
 
 CREATE INDEX incident_dates_staging_incident_id_idx ON public.incident_dates(staging_incident_id);
 CREATE INDEX incident_dates_incident_id_idx ON public.incident_dates(incident_id);
 
--- ── public.incident_status_history ───────────────────────────────────────────────
+-- ── public.incident_status_history ──────────────────────────────────────────────────────
 
 CREATE TABLE public.incident_status_history (
     incident_status_history_id text PRIMARY KEY,
@@ -240,7 +256,7 @@ CREATE TABLE public.incident_status_history (
 CREATE INDEX incident_status_history_incident_id_idx ON public.incident_status_history(incident_id);
 CREATE INDEX incident_status_history_staging_incident_id_idx ON public.incident_status_history(staging_incident_id);
 
--- ── staging.staging_incident_possible_matches ────────────────────────────────────
+-- ── staging.staging_incident_possible_matches ───────────────────────────────────────────
 
 CREATE TABLE staging.staging_incident_possible_matches (
     match_id              text PRIMARY KEY,
@@ -253,7 +269,7 @@ CREATE TABLE staging.staging_incident_possible_matches (
 CREATE INDEX staging_incident_possible_matches_candidate_idx ON staging.staging_incident_possible_matches(candidate_incident_id);
 CREATE INDEX staging_incident_possible_matches_existing_idx ON staging.staging_incident_possible_matches(existing_incident_id);
 
--- ── staging.staging_incident_review_flags ────────────────────────────────────────
+-- ── staging.staging_incident_review_flags ─────────────────────────────────────────────────
 -- Exactly one of staging_incident_id / staging_organization_id is set per row (a flag
 -- is about an incident or an organization proposal, never both/neither) -- enforced
 -- here with a CHECK, strengthening DATABASE_SCHEMA.md's stated "pipeline-code-only"
@@ -265,7 +281,8 @@ CREATE TABLE staging.staging_incident_review_flags (
     staging_incident_id     text REFERENCES staging.staging_incidents(staging_incident_id),
     staging_organization_id text REFERENCES staging.staging_organizations(staging_organization_id),
     flag_type               text NOT NULL CHECK (flag_type IN (
-        'Required field missing', 'Alcohol/drugs review needed', 'Determination unclear',
+        'Legally required field missing', 'Unable to derive value',
+        'Alcohol/drugs review needed', 'Determination unclear',
         'Low extraction confidence', 'Unrecognized date term', 'Unable to determine organization type'
     )),
     field_name  text NOT NULL,
@@ -280,7 +297,7 @@ CREATE TABLE staging.staging_incident_review_flags (
 CREATE INDEX staging_incident_review_flags_incident_idx ON staging.staging_incident_review_flags(staging_incident_id);
 CREATE INDEX staging_incident_review_flags_organization_idx ON staging.staging_incident_review_flags(staging_organization_id);
 
--- ── staging.staging_incident_corrections ─────────────────────────────────────────
+-- ── staging.staging_incident_corrections ───────────────────────────────────────────────────────
 
 CREATE TABLE staging.staging_incident_corrections (
     staging_incident_correction_id text PRIMARY KEY,
