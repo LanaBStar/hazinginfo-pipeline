@@ -38,7 +38,7 @@
 
 CREATE SCHEMA staging;
 
--- ── public.institution ────────────────────────────────────────────────────────────────────────
+-- ── public.institution ──────────────────────────────────────────────
 
 CREATE TABLE public.institution (
     unitid          text PRIMARY KEY,
@@ -48,7 +48,7 @@ CREATE TABLE public.institution (
     created_at      timestamptz NOT NULL
 );
 
--- ── public.pipeline_runs ───────────────────────────────────────────────────────────────────
+-- ── public.pipeline_runs ────────────────────────────────────────────────
 
 CREATE TABLE public.pipeline_runs (
     pipeline_run_id  text PRIMARY KEY,
@@ -58,7 +58,7 @@ CREATE TABLE public.pipeline_runs (
     run_completed_at timestamptz
 );
 
--- ── public.data_checks ─────────────────────────────────────────────────────────────────────
+-- ── public.data_checks ───────────────────────────────────────────────
 
 CREATE TABLE public.data_checks (
     data_check_id   text PRIMARY KEY,
@@ -74,7 +74,7 @@ CREATE TABLE public.data_checks (
 CREATE INDEX data_checks_unitid_idx ON public.data_checks(unitid);
 CREATE INDEX data_checks_pipeline_run_id_idx ON public.data_checks(pipeline_run_id);
 
--- ── public.ledger ───────────────────────────────────────────────────────────────────────────────
+-- ── public.ledger ──────────────────────────────────────────────────
 
 CREATE TABLE public.ledger (
     ledger_id                text PRIMARY KEY,
@@ -87,7 +87,7 @@ CREATE TABLE public.ledger (
 
 CREATE INDEX ledger_unitid_idx ON public.ledger(unitid);
 
--- ── public.artifacts ───────────────────────────────────────────────────────────────────────
+-- ── public.artifacts ─────────────────────────────────────────────────
 
 CREATE TABLE public.artifacts (
     artifact_id           text PRIMARY KEY,
@@ -104,7 +104,7 @@ CREATE INDEX artifacts_ledger_id_idx ON public.artifacts(ledger_id);
 CREATE INDEX artifacts_data_check_id_idx ON public.artifacts(data_check_id);
 CREATE INDEX artifacts_pipeline_run_id_idx ON public.artifacts(pipeline_run_id);
 
--- ── staging.staging_incidents ────────────────────────────────────────────────────
+-- ── staging.staging_incidents ──────────────────────────────────────────
 
 CREATE TABLE staging.staging_incidents (
     staging_incident_id          text PRIMARY KEY,
@@ -136,7 +136,7 @@ CREATE TABLE staging.staging_incidents (
 CREATE INDEX staging_incidents_artifact_id_idx ON staging.staging_incidents(artifact_id);
 CREATE INDEX staging_incidents_institution_unitid_idx ON staging.staging_incidents(institution_unitid);
 
--- ── staging.staging_organizations ───────────────────────────────────────────────
+-- ── staging.staging_organizations ────────────────────────────────────────
 
 CREATE TABLE staging.staging_organizations (
     staging_organization_id text PRIMARY KEY,
@@ -160,7 +160,7 @@ CREATE TABLE staging.staging_organizations (
     created_at          timestamptz NOT NULL
 );
 
--- ── public.organizations ────────────────────────────────────────────────────────────────
+-- ── public.organizations ──────────────────────────────────────────────
 
 CREATE TABLE public.organizations (
     organization_id   text PRIMARY KEY,
@@ -179,7 +179,7 @@ CREATE TABLE public.organizations (
     created_at timestamptz NOT NULL
 );
 
--- ── public.incidents ──────────────────────────────────────────────────────────────────────
+-- ── public.incidents ─────────────────────────────────────────────────
 
 CREATE TABLE public.incidents (
     incident_id                   text PRIMARY KEY,
@@ -193,7 +193,7 @@ CREATE TABLE public.incidents (
     notice_date_raw                text,
     notice_date                    date,
     sanctions_raw                  text,
-    findings_raw                  text,
+    findings_raw                   text,
     determination_status           text NOT NULL CHECK (determination_status IN ('Pending', 'Determined hazing', 'Dismissed', 'Not specified')),
     institutional_recognition_status text NOT NULL CHECK (institutional_recognition_status IN ('Recognized', 'Unrecognized/Underground', 'Formerly Recognized - Lost Recognition', 'Unknown/Not Stated')),
     alcohol_involved                text NOT NULL CHECK (alcohol_involved IN ('Yes', 'No', 'Not specified', 'Unable to determine - Unclear reporting')),
@@ -204,7 +204,7 @@ CREATE TABLE public.incidents (
 CREATE INDEX incidents_institution_unitid_idx ON public.incidents(institution_unitid);
 CREATE INDEX incidents_staging_incident_id_idx ON public.incidents(staging_incident_id);
 
--- ── public.incident_organizations ────────────────────────────────────────────────────
+-- ── public.incident_organizations ─────────────────────────────────────────
 
 CREATE TABLE public.incident_organizations (
     incident_organization_id text PRIMARY KEY,
@@ -219,7 +219,7 @@ CREATE INDEX incident_organizations_staging_organization_id_idx ON public.incide
 CREATE INDEX incident_organizations_incident_id_idx ON public.incident_organizations(incident_id);
 CREATE INDEX incident_organizations_organization_id_idx ON public.incident_organizations(organization_id);
 
--- ── public.incident_dates ────────────────────────────────────────────────────────────────
+-- ── public.incident_dates ───────────────────────────────────────────────
 
 CREATE TABLE public.incident_dates (
     incident_date_id      text PRIMARY KEY,
@@ -242,7 +242,7 @@ CREATE TABLE public.incident_dates (
 CREATE INDEX incident_dates_staging_incident_id_idx ON public.incident_dates(staging_incident_id);
 CREATE INDEX incident_dates_incident_id_idx ON public.incident_dates(incident_id);
 
--- ── public.incident_status_history ──────────────────────────────────────────────────────
+-- ── public.incident_status_history ───────────────────────────────────────
 
 CREATE TABLE public.incident_status_history (
     incident_status_history_id text PRIMARY KEY,
@@ -256,7 +256,7 @@ CREATE TABLE public.incident_status_history (
 CREATE INDEX incident_status_history_incident_id_idx ON public.incident_status_history(incident_id);
 CREATE INDEX incident_status_history_staging_incident_id_idx ON public.incident_status_history(staging_incident_id);
 
--- ── staging.staging_incident_possible_matches ───────────────────────────────────────────
+-- ── staging.staging_incident_possible_matches ────────────────────────────────
 
 CREATE TABLE staging.staging_incident_possible_matches (
     match_id              text PRIMARY KEY,
@@ -269,7 +269,7 @@ CREATE TABLE staging.staging_incident_possible_matches (
 CREATE INDEX staging_incident_possible_matches_candidate_idx ON staging.staging_incident_possible_matches(candidate_incident_id);
 CREATE INDEX staging_incident_possible_matches_existing_idx ON staging.staging_incident_possible_matches(existing_incident_id);
 
--- ── staging.staging_incident_review_flags ─────────────────────────────────────────────────
+-- ── staging.staging_incident_review_flags ────────────────────────────────────
 -- Exactly one of staging_incident_id / staging_organization_id is set per row (a flag
 -- is about an incident or an organization proposal, never both/neither) -- enforced
 -- here with a CHECK, strengthening DATABASE_SCHEMA.md's stated "pipeline-code-only"
@@ -297,7 +297,7 @@ CREATE TABLE staging.staging_incident_review_flags (
 CREATE INDEX staging_incident_review_flags_incident_idx ON staging.staging_incident_review_flags(staging_incident_id);
 CREATE INDEX staging_incident_review_flags_organization_idx ON staging.staging_incident_review_flags(staging_organization_id);
 
--- ── staging.staging_incident_corrections ───────────────────────────────────────────────────────
+-- ── staging.staging_incident_corrections ─────────────────────────────────────
 
 CREATE TABLE staging.staging_incident_corrections (
     staging_incident_correction_id text PRIMARY KEY,
