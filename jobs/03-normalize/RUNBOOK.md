@@ -43,7 +43,8 @@ proceeds normally from the page images.
 
 - A single document's extraction failure (corrupt PDF, unsupported `content_type`, etc.)
   must not abort the whole run — catch, log, and continue to the next document; that
-  document's `pending_normalize` count in `status.py` simply stays nonzero until fixed.
+  document's `normalize.pending_documents` count in `status.py` simply stays nonzero
+  until fixed.
 - An unsupported `content_type` (anything other than PDF/HTML/the DOCX MIME type) raises
   rather than silently writing garbage — 02-archive currently only ever stores PDF or HTML,
   so this should not occur until a future job starts archiving other formats.
