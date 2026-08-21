@@ -3,11 +3,15 @@
 ## Purpose
 
 Produce `extracted/text.txt` for every archived document, so 04-extract's agent packets
-and `validate.py`'s anchoring always have plain text to work against. No AI runs here.
-PDF text includes `[[page N]]` markers so anchoring (`lib/quotes.py`) can check a quote's
-page hint; a PDF with no extractable text layer (scanned) yields an empty `text.txt`,
-which auto-flags every incident on that document at 04-extract time since anchoring can't
-run against empty text.
+always include a plain-text rendering of the document alongside the original. No AI runs
+here.
+
+PDF text includes `[[page N]]` markers. These are navigational only — nothing downstream
+anchors a field to a specific page in v3.0 (quote anchoring and `lib/quotes.py` were
+retired). A PDF with no extractable text layer (scanned) yields an empty `text.txt`, which
+is not a failure: `prompt.md` directs the extracting agent to read `original.pdf` natively
+as its source of truth and to use `text.txt` only for checking wording, so extraction still
+proceeds normally from the page images.
 
 ## Preconditions
 
