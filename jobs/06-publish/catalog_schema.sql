@@ -112,18 +112,19 @@ CREATE TABLE staging.staging_incidents (
     institution_unitid           text NOT NULL REFERENCES public.institution(unitid),
     organization_name_raw        text,
     organization_name_normalized text,
-    incident_description_raw     text NOT NULL,
-    investigation_start_date_raw text NOT NULL,
+    incident_description_raw     text,
+    investigation_start_date_raw text,
     investigation_start_date     date,
-    investigation_end_date_raw   text NOT NULL,
+    investigation_end_date_raw   text,
     investigation_end_date       date,
-    notice_date_raw              text NOT NULL,
+    notice_date_raw              text,
     notice_date                  date,
     sanctions_raw                text,
     findings_raw                 text,
     determination_status         text NOT NULL CHECK (determination_status IN ('Pending', 'Determined hazing', 'Dismissed', 'Not specified')),
-    alcohol_involved              text NOT NULL CHECK (alcohol_involved IN ('Yes', 'No', 'Not specified')),
-    drugs_involved                text NOT NULL CHECK (drugs_involved IN ('Yes', 'No', 'Not specified')),
+    institutional_recognition_status text NOT NULL CHECK (institutional_recognition_status IN ('Recognized', 'Unrecognized/Underground', 'Formerly Recognized - Lost Recognition', 'Unknown/Not Stated')),
+    alcohol_involved              text NOT NULL CHECK (alcohol_involved IN ('Yes', 'No', 'Not specified', 'Unable to determine - Unclear reporting')),
+    drugs_involved                text NOT NULL CHECK (drugs_involved IN ('Yes', 'No', 'Not specified', 'Unable to determine - Unclear reporting')),
     extraction_confidence          numeric NOT NULL CHECK (extraction_confidence >= 0 AND extraction_confidence <= 1),
     human_review_status            text NOT NULL DEFAULT 'Pending review' CHECK (human_review_status IN ('Pending review', 'Approved', 'Rejected')),
     reviewed_by                    text,
@@ -141,13 +142,17 @@ CREATE TABLE staging.staging_organizations (
     staging_organization_id text PRIMARY KEY,
     organization_name       text NOT NULL,
     organization_type       text CHECK (organization_type IN (
-        'Fraternity', 'Sorority', 'Institution Athletic Team', 'Club Sport',
-        'Honor/Leadership Society', 'Academic/Professional Club', 'Performing/Spirit Group',
-        'Military/Cadet Organization', 'General Interest/Social Club',
-        'Religious/Faith-Based Organization', 'Orientation/Mentorship Program',
-        'Unrecognized Organization'
+        'Social fraternity or sorority', 'Service or professional fraternity or sorority',
+        'Varsity athletic team', 'Club sport', 'Intramural or recreation sports team',
+        'Honor society', 'Academic club', 'Performing arts organization', 'Marching band',
+        'ROTC or other military organization', 'Social club', 'Faith-based organization',
+        'Culturally-based / identity-based organization',
+        'Student government or other student leadership organization',
+        'Community service organization', 'Political organization or social action group',
+        'Campus media organization', 'Other type of organization'
     )),
     match_type          text NOT NULL CHECK (match_type IN ('New proposal', 'Matched existing')),
+    membership_gender_composition text NOT NULL DEFAULT 'Unknown/Not stated' CHECK (membership_gender_composition IN ('All-male', 'All-female', 'Mixed/Co-ed', 'Unknown/Not stated')),
     human_review_status text NOT NULL DEFAULT 'Proposed' CHECK (human_review_status IN ('Proposed', 'Approved', 'Rejected')),
     reviewed_by         text,
     reviewed_date       timestamptz,
@@ -161,12 +166,16 @@ CREATE TABLE public.organizations (
     organization_id   text PRIMARY KEY,
     organization_name text NOT NULL,
     organization_type text NOT NULL CHECK (organization_type IN (
-        'Fraternity', 'Sorority', 'Institution Athletic Team', 'Club Sport',
-        'Honor/Leadership Society', 'Academic/Professional Club', 'Performing/Spirit Group',
-        'Military/Cadet Organization', 'General Interest/Social Club',
-        'Religious/Faith-Based Organization', 'Orientation/Mentorship Program',
-        'Unrecognized Organization'
+        'Social fraternity or sorority', 'Service or professional fraternity or sorority',
+        'Varsity athletic team', 'Club sport', 'Intramural or recreation sports team',
+        'Honor society', 'Academic club', 'Performing arts organization', 'Marching band',
+        'ROTC or other military organization', 'Social club', 'Faith-based organization',
+        'Culturally-based / identity-based organization',
+        'Student government or other student leadership organization',
+        'Community service organization', 'Political organization or social action group',
+        'Campus media organization', 'Other type of organization'
     )),
+    membership_gender_composition text NOT NULL DEFAULT 'Unknown/Not stated' CHECK (membership_gender_composition IN ('All-male', 'All-female', 'Mixed/Co-ed', 'Unknown/Not stated')),
     created_at timestamptz NOT NULL
 );
 
@@ -176,18 +185,19 @@ CREATE TABLE public.incidents (
     incident_id                   text PRIMARY KEY,
     institution_unitid            text NOT NULL REFERENCES public.institution(unitid),
     staging_incident_id            text NOT NULL REFERENCES staging.staging_incidents(staging_incident_id),
-    incident_description_raw      text NOT NULL,
-    investigation_start_date_raw  text NOT NULL,
+    incident_description_raw      text,
+    investigation_start_date_raw  text,
     investigation_start_date      date,
-    investigation_end_date_raw    text NOT NULL,
+    investigation_end_date_raw    text,
     investigation_end_date        date,
-    notice_date_raw                text NOT NULL,
+    notice_date_raw                text,
     notice_date                    date,
     sanctions_raw                  text,
     findings_raw                   text,
     determination_status           text NOT NULL CHECK (determination_status IN ('Pending', 'Determined hazing', 'Dismissed', 'Not specified')),
-    alcohol_involved                text NOT NULL CHECK (alcohol_involved IN ('Yes', 'No', 'Not specified')),
-    drugs_involved                  text NOT NULL CHECK (drugs_involved IN ('Yes', 'No', 'Not specified')),
+    institutional_recognition_status text NOT NULL CHECK (institutional_recognition_status IN ('Recognized', 'Unrecognized/Underground', 'Formerly Recognized - Lost Recognition', 'Unknown/Not Stated')),
+    alcohol_involved                text NOT NULL CHECK (alcohol_involved IN ('Yes', 'No', 'Not specified', 'Unable to determine - Unclear reporting')),
+    drugs_involved                  text NOT NULL CHECK (drugs_involved IN ('Yes', 'No', 'Not specified', 'Unable to determine - Unclear reporting')),
     updated_at                      timestamptz NOT NULL
 );
 
@@ -215,12 +225,18 @@ CREATE TABLE public.incident_dates (
     incident_date_id      text PRIMARY KEY,
     staging_incident_id    text NOT NULL REFERENCES staging.staging_incidents(staging_incident_id),
     incident_id            text REFERENCES public.incidents(incident_id),
-    start_date_raw          text NOT NULL,
+    start_date_raw          text,
     start_date_normalized  date,
     start_date_precision    text NOT NULL CHECK (start_date_precision IN ('Day', 'Month', 'Academic term', 'Academic year', 'Year', 'Unknown')),
-    end_date_raw            text NOT NULL,
+    start_date_year         integer,
+    start_date_month        integer CHECK (start_date_month BETWEEN 1 AND 12),
+    start_date_academic_term text CHECK (start_date_academic_term IN ('Fall', 'Spring', 'Summer', 'Winter')),
+    end_date_raw            text,
     end_date_normalized    date,
-    end_date_precision      text NOT NULL CHECK (end_date_precision IN ('Day', 'Month', 'Academic term', 'Academic year', 'Year', 'Unknown'))
+    end_date_precision      text NOT NULL CHECK (end_date_precision IN ('Day', 'Month', 'Academic term', 'Academic year', 'Year', 'Unknown')),
+    end_date_year            integer,
+    end_date_month           integer CHECK (end_date_month BETWEEN 1 AND 12),
+    end_date_academic_term   text CHECK (end_date_academic_term IN ('Fall', 'Spring', 'Summer', 'Winter'))
 );
 
 CREATE INDEX incident_dates_staging_incident_id_idx ON public.incident_dates(staging_incident_id);
@@ -265,11 +281,11 @@ CREATE TABLE staging.staging_incident_review_flags (
     staging_incident_id     text REFERENCES staging.staging_incidents(staging_incident_id),
     staging_organization_id text REFERENCES staging.staging_organizations(staging_organization_id),
     flag_type               text NOT NULL CHECK (flag_type IN (
-        'Required field missing', 'Alcohol/drugs review needed', 'Determination unclear',
+        'Legally required field missing', 'Unable to derive value',
+        'Alcohol/drugs review needed', 'Determination unclear',
         'Low extraction confidence', 'Unrecognized date term', 'Unable to determine organization type'
     )),
     field_name  text NOT NULL,
-    resolved_at timestamptz,
     created_at  timestamptz NOT NULL,
     CHECK (
         (staging_incident_id IS NOT NULL AND staging_organization_id IS NULL)
