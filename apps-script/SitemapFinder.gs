@@ -4292,13 +4292,24 @@ function smGateCheck() {
       '  skipped by the new gate       : ' + (before - after) + '\n';
   });
 
-  out += '\nNo expected-counts baseline yet for the 2026-08-26 fix (Hazing Policy and\n' +
-         'Report Form now check located_hazing_policy_url / located_report_form_url\n' +
-         'instead of the compliance field -- see CATEGORIES\' header comment). Run\n' +
-         'this once and record the real numbers here rather than trusting an\n' +
-         'estimate -- the last baseline (CHTR 599->562, Hazing Policy 335->289,\n' +
-         'Report Form 832->644, 2026-08-23) was measured against the compliance\n' +
-         'field and will not match now that the check reads a different field.\n' +
+  out += '\nTHE GATE READS THE COMPLIANCE FIELDS -- Report Form, Hazing Policy and\n' +
+         'Transparency Report -- changed 2026-09-10 in CATEGORIES[].blankFields.\n' +
+         'See that header comment before changing any of the three. From\n' +
+         '2026-08-26 until then it read the RECORD fields (located_* /\n' +
+         'chtr_index_url), and the note printed here described that older\n' +
+         'behaviour for two weeks after it stopped being true. Every baseline\n' +
+         'below is compliance-measured, so all three rows are comparable.\n' +
+         '\nBASELINES -- "blank confirmed URL" / "nothing awaiting review":\n' +
+         '  2026-08-23              Report Form 832/644 | Policy 335/289 | CHTR 599/562\n' +
+         '  2026-09-10 pre-promote  Report Form 832/790 | Policy 341/332 | CHTR 628/617\n' +
+         '  2026-09-10 post-promote Report Form 803/767 | Policy 333/324 | CHTR 620/609\n' +
+         '\nReport Form sat at exactly 832 from 2026-08-23 to 2026-09-10 -- three\n' +
+         'weeks of review moving nothing -- because reviewed URLs had no write\n' +
+         'path into 50 States. Promote.gs is that path. Its first run wrote 213\n' +
+         'schools and moved 45 compliance fields (49 gained, 4 cleared).\n' +
+         '\nA rising number is not a regression. A flagged promotion fills the\n' +
+         'record field and leaves compliance blank on purpose, so the school\n' +
+         'stays in the queue; new discovery raises these counts too.\n' +
          '\nA ZERO in the second row of any category means the gate matched nothing.\n' +
          'That is the dangerous failure: discovery would report "done" having\n' +
          'crawled no schools. Check the count field conditions in the Airtable UI.\n';
