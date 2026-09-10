@@ -235,7 +235,7 @@
 //
 // CMD+A BEFORE PASTING. Twice on 2026-09-10 a paste landed on top of the
 // wrong file, once destroying SiteCensus.gs entirely. Check the final line
-// number afterwards: this file is 1,971 lines (it was 927 before the
+// number afterwards: this file is 1,977 lines (it was 927 before the
 // hardening pass, and 1,788 before the 3pm calibration pass).
 // =========================================================================
 
@@ -437,8 +437,7 @@ const PR_CONTRADICTIONS = {
     ['No investigation process stated', 'Investigation process asserted but not described']
   ],
   'CHTR': [
-    ['No update date stated or inferable on index', 'Dated to month or year only on index'],
-    ['No update date stated or inferable on index', 'Index update date outside the freshness window'],
+    ['No update date stated or inferable', 'Update date outside the freshness window'],
     ['Report announced but not published', 'Incidents listed without description']
   ],
   'Report Form': []
@@ -490,13 +489,20 @@ const PR_CATEGORIES = {
     compliance: 'flde8Mfh5vVz1iD0a',
     reason:     'fld1OvoiS3flecsZ7',
     vocabulary: [
+      // Renamed 2026-09-10 when the dating rule stopped caring about
+      // precision: a month or a year now dates a page as well as a day does.
+      // "Dated to month or year only on index" was deleted the same day (it
+      // was on zero rows, checked first), and the two survivors dropped "on
+      // index" because a date inside the linked report now counts too.
+      // RENAMED IN BOTH BASES AND HERE, IN ONE SITTING. These are written by
+      // NAME, so a rename in one place alone fails every write carrying the
+      // term -- loudly, because typecast is false, which is the point.
       'Incidents listed without description',
       'Hazing not broken out from general conduct data',
       'Login required',
-      'Dated to month or year only on index',
       'Report announced but not published',
-      'No update date stated or inferable on index',
-      'Index update date outside the freshness window'
+      'No update date stated or inferable',
+      'Update date outside the freshness window'
     ]
   },
   'Hazing Policy': {
