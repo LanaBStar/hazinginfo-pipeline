@@ -92,9 +92,19 @@
 // -------------------------------------------------------------------------
 // WHAT IT REFUSES TO DO
 // -------------------------------------------------------------------------
-// This publishes to a site that tells parents where to report hazing. Every
-// guard exists because the cost of a bad write is a wrong link on a real
-// school's page, not a failed job.
+// This publishes to a public record of how individual institutions handle
+// hazing -- their policies, their transparency reports, their reporting
+// routes, and what has been reported at them. It is read by students and
+// prospective students deciding where to go, by their families, by
+// journalists, and by researchers. Nobody arrives at it already knowing the
+// answer; they arrive to find out, and they take what it says as fact.
+//
+// So a bad write here is not a failed job. It is a wrong statement about a
+// named institution, published under HazingInfo's name, to someone with no
+// way to tell it is wrong. It has a shape in each direction: a URL that goes
+// somewhere useless or belongs to another school, a checkmark on a school
+// that has not earned it, or a missing checkmark on a school that has. Every
+// guard below exists for one of those three.
 //
 //   * Rejected - replacement proposed with an EMPTY Reviewer-proposed URL is
 //     never written. Falling back to Candidate URL would publish the
@@ -225,7 +235,7 @@
 //
 // CMD+A BEFORE PASTING. Twice on 2026-09-10 a paste landed on top of the
 // wrong file, once destroying SiteCensus.gs entirely. Check the final line
-// number afterwards: this file is 1,778 lines (it was 927 before the
+// number afterwards: this file is 1,788 lines (it was 927 before the
 // hardening pass).
 // =========================================================================
 
