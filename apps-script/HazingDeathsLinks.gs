@@ -372,7 +372,7 @@ const HDL_PROP_ATTEMPTS = 'hdl_attempts';   // {recordId: count}
 const HDL_STUBBORN_HOSTS = [
   'newspapers.com', 'ancestry.com', 'wsj.com', 'nytimes.com',
   'washingtonpost.com', 'latimes.com', 'bostonglobe.com', 'ft.com',
-  'jstor.org', 'proquest.com'
+  'jstor.org', 'proquest.com', 'usnews.com', 'npr.org'
 ];
 // washingtonpost.com is on BOTH lists as of 2026-09-10, and the unfetchable
 // check runs first, so its entry here is now dead code for that one host --
