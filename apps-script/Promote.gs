@@ -114,6 +114,58 @@
 //   * A write that would change nothing is not sent.
 //   * PR_MAX_INSTITUTIONS caps how many schools one run may touch.
 //
+// ADDED IN THE HARDENING PASS, 2026-09-10 (see below):
+//   * A CONFIRMED row that ALSO carries a Reviewer-proposed URL is refused.
+//   * A URL that does not belong to the school is refused.
+//   * A Google Forms /edit or /formResponse address is refused.
+//
+// -------------------------------------------------------------------------
+// THE HARDENING PASS -- 2026-09-10, AND WHY EACH PART OF IT EXISTS
+// -------------------------------------------------------------------------
+// THE FIRST DRY RUN PRODUCED 231 ROWS AND SEVEN OF THEM WERE WRONG. THIS
+// SCRIPT BLOCKED NONE OF THE SEVEN. Every one satisfied every guard above.
+// They were caught by a person reading a log, which is not a control -- it is
+// a person being careful once. This pass turns each of those seven into
+// something the script refuses or marks, so that the same mistake cannot
+// depend on someone being equally careful next time, at speed, on a Friday.
+//
+// Nothing here is hypothetical. Each guard names the row that motivated it:
+//
+//   Seattle Pacific   Report Form URL was a umass.edu page      -> ownership
+//   Texas A&M-Victoria correct URL, wrong-looking slug          -> exceptions
+//   Glenville State   promoting a 2021 handbook while the       -> proposed-URL
+//                     reviewer's 2025-26 URL sat unused            block
+//   William Peace     Google Forms /edit link                   -> /edit refusal
+//   Dominican NY      Maxient FORM promoted into CHTR           -> category flag
+//
+// TWO KINDS OF OUTCOME, AND THE DIFFERENCE IS THE WHOLE DESIGN:
+//
+//   REFUSED  the row does not publish. Promote status becomes
+//            "Skipped - needs attention" and Promote note says why. Used only
+//            where publishing would put a wrong or unusable address on a real
+//            school's page.
+//
+//   FLAGGED  the row PUBLISHES ANYWAY, and Promote flagged is ticked with the
+//            reason in Promote note. Used where something is odd but refusing
+//            would be the more damaging error -- because a refusal leaves a
+//            school with no listed page at all.
+//
+// FLAGS ARE THE PART MOST LIKELY TO ROT. A flag nobody looks at is worse than
+// no flag, because it looks like oversight while providing none. That is why
+// it is a CHECKBOX and not only a note: a checkbox can be filtered into a
+// view, and a view is how somebody finds these without reading an execution
+// log. Build that view -- "Promoted - needs a second look", filtered on
+// Promote flagged -- or this half of the pass does nothing.
+//
+// REFUSALS MUST BE FIXABLE WITHOUT A DEVELOPER. The ownership check will
+// refuse addresses that are genuinely correct: state systems, districts,
+// shared campuses, vendor tenants named after a school's former identity. The
+// escape hatch is the Ownership exceptions table in PAGES, and it is a table
+// rather than a constant in this file precisely so that the people running
+// this after the deadline can use it. If you find yourself editing this file
+// to unblock a school, something has gone wrong with that design -- add the
+// row instead.
+//
 // -------------------------------------------------------------------------
 // IT WRITES Promote status BACK TO CANDIDATE URLS. THIS IS DELIBERATE.
 // -------------------------------------------------------------------------
@@ -166,9 +218,15 @@
 // SitemapFinder's PAGES_BASE_ID or CF, so it keeps working if that file is
 // ever split or retired -- the same choice WriteBack.gs made.
 //
+// Re-verified 2026-09-10 after the hardening pass, against all fourteen files
+// in apps-script/ plus archive/Scheduler.gs and both diagnostics files: no
+// name beginning PR_ or pr<Capital> is declared anywhere else in the project,
+// and this file declares no name twice.
+//
 // CMD+A BEFORE PASTING. Twice on 2026-09-10 a paste landed on top of the
 // wrong file, once destroying SiteCensus.gs entirely. Check the final line
-// number afterwards: this file is 927 lines.
+// number afterwards: this file is 1,778 lines (it was 927 before the
+// hardening pass).
 // =========================================================================
 
 
@@ -187,6 +245,14 @@ const PR_C_PROPOSED_URL   = 'fldnX2cl803TQJrNY';
 const PR_C_DETERMINATION  = 'flds5qRgFKkdvLjK0';
 const PR_C_PROMOTE_STATUS = 'fldMKn6pqlCIBxLTp';
 const PR_C_REVIEW_DATE    = 'fldQYqGfwGTbrLDbZ';
+
+// Added 2026-09-10 with the hardening pass. Both are written by this script
+// and REWRITTEN IN FULL EVERY RUN, including being written empty -- the same
+// clearing rule the 50 States fields follow, and for the same reason: a note
+// that is only written when there is something to say is a note that goes
+// stale and then lies.
+const PR_C_PROMOTE_NOTE    = 'flddwBb1T0nKBp3yz';   // Promote note (text)
+const PR_C_PROMOTE_FLAGGED = 'fld8DFkIZ8jN2Oymo';   // Promote flagged (checkbox)
 
 // DO NOT READ Review URL (fld91PUEMATcrMOWU). It is a formula built for the
 // reviewing interface, not a field of record: it resolves to Linked form URL
@@ -209,6 +275,170 @@ const PR_DET_REPLACEMENT = 'Rejected - replacement proposed';
 const PR_STATUS_PROMOTED = 'Promoted';
 const PR_STATUS_FAILED   = 'Blocked - write failed';
 const PR_STATUS_SKIPPED  = 'Skipped - needs attention';
+
+// =========================================================================
+// THE OWNERSHIP CHECK -- added 2026-09-10
+// =========================================================================
+// The 2026-09-10 dry run found Seattle Pacific's Report Form pointing at a
+// umass.edu page. Nothing stopped it. A reviewer had confirmed the row, so
+// every guard in this file was satisfied: the URL was well formed, it was not
+// a login wall, the school resolved, the terms were in vocabulary. It would
+// have published another university's page as Seattle Pacific's answer.
+//
+// This is the same problem SearchProbe.gs solved on 2026-09-06 with
+// spBelongsTo_, and the logic here is deliberately a PORT of it rather than a
+// call into it -- see the note on the vendor list below for why the two must
+// be free to diverge.
+//
+// BUT THE COST IS INVERTED, AND THAT CHANGES THE DESIGN. SearchProbe filters
+// machine-generated candidates, where a miss costs nothing: the school keeps
+// a blank a person can fill later. Here every row has already been read and
+// judged by a human. A wrong refusal throws away that work and leaves a
+// school looking non-compliant when it is not. So this file refuses in
+// exactly two shapes, and gives a way out of both:
+//
+//   OFF-DOMAIN AND NOT A VENDOR   -> refuse. There is no honest reading in
+//                                    which umass.edu is Seattle Pacific's.
+//   ON A VENDOR, NO NAME MATCH    -> refuse, because that is how one school's
+//                                    Maxient form gets filed against another.
+//
+// THE WAY OUT IS THE Ownership exceptions TABLE, NOT A CODE CHANGE. That was
+// a requirement, not a nicety: the people who will run this after the 15th
+// are not the people who can edit Apps Script. A row in that table naming a
+// UNITID and a string the URL is allowed to contain lets a refused address
+// through, and adding one is adding a row in Airtable.
+//
+// Texas A&M-Victoria is the seed case, and it turned out to be a lesson in
+// checking rather than reasoning. Its Maxient tenant slug still reads
+// UnivofHoustonVictoria years after the school stopped being UHV, so the
+// obvious conclusion -- and the one written into the handoff, this file's
+// first draft, and the exception row itself -- was that the ownership check
+// would refuse it on every run forever unless an exception rescued it.
+//
+// IT DOES NOT. Tested 2026-09-10 before this file shipped: the check passes
+// that row on its own. The name tokens for "Texas A&M University-Victoria"
+// are tamuv, texas and victoria, and "victoria" is sitting inside
+// "UnivofHoustonVictoria". It passes for a reason nobody intended.
+//
+// THE EXCEPTION ROW IS KEPT ANYWAY, and deliberately: the pass depends on a
+// city name that both institutions happen to share, so a future rename, or a
+// vendor slug that drops "Victoria", starts refusing the row with no warning.
+// A redundant exception costs nothing. A missing one costs a school.
+//
+// THE GENERAL POINT MATTERS MORE THAN THE ROW. A single common word --
+// victoria, lincoln, columbia, aurora -- is enough to satisfy the vendor
+// token test, so this check is weaker than it looks against schools whose
+// names share a place name. It is inherited from SearchProbe.gs, where the
+// same looseness is accepted. Do not read a pass here as proof of ownership;
+// read a REFUSAL as worth investigating.
+//
+// EXPECT A BATCH OF LEGITIMATE REFUSALS ON THE FIRST RUN. State systems,
+// districts and shared-service campuses genuinely publish on a parent
+// domain. Those are exceptions to be added, not bugs. Read the dry run before
+// applying and do not be surprised by them.
+const PR_INST_TABLE = 'tblpgBmu7r8kQA6b5';   // Institutions (PAGES, synced)
+const PR_I_UNITID   = 'fldGREvzCIme6HXfl';
+const PR_I_NAME     = 'fldHvefXrrPxibBsZ';
+const PR_I_URL      = 'fld5s03AW9U65Z34W';   // Institution URL, multilineText
+
+const PR_EXC_TABLE  = 'tblP5FXdjG2zv8Nar';   // Ownership exceptions (PAGES)
+const PR_X_UNITID   = 'fld2hFZp9oinC7ikk';
+const PR_X_ALLOW    = 'fld1CYLnxN0JPz9QM';   // string the URL may contain
+const PR_X_REASON   = 'fld8ixTRKEpLVPleN';
+const PR_X_ACTIVE   = 'fld162zf3pqrjhEso';   // unticked rows are ignored
+
+/**
+ * Conduct and incident-reporting vendors.
+ *
+ * DELIBERATELY A SEPARATE COPY of SearchProbe.gs's SP_VENDOR_HOSTS, for the
+ * reason PR_LOGIN_URL_PATTERNS is a separate copy too: the two lists answer
+ * different questions. There, "may this be a candidate for review." Here,
+ * "may this be published as a school's answer." A host worth searching is not
+ * automatically a host worth publishing, and pointing both at one array would
+ * make every future change to either a silent change to the other.
+ *
+ * Used for TWO different jobs below, and they pull in opposite directions:
+ *   - the ownership check, where being on a vendor host is what EARNS a URL
+ *     the chance to match on a name token rather than being refused outright;
+ *   - the category check, where being on a vendor host is EVIDENCE that a URL
+ *     is a report form and therefore does not belong in CHTR or Hazing Policy.
+ */
+const PR_VENDOR_HOSTS = [
+  'maxient.com', 'symplicity.com', 'ethicspoint.com', 'navexglobal.com',
+  'navex.com', 'qualtrics.com', 'formstack.com', 'wufoo.com',
+  'jotform.com', 'guardianconduct.com', 'lighthouse-services.com',
+  'reportlineweb.com', 'convercent.com', 'i-sight.com', 'caseiq.com',
+  'get-rave.com', 'titleixinvestigators.com', 'publicsafetyreporting.com'
+];
+
+/**
+ * Google Forms addresses that must never be published.
+ *
+ * William Peace's Report Form was a Google Forms /edit URL, and it would have
+ * minted a checkmark on a page only WPU staff can open. What makes /edit
+ * disqualifying is that whether it opens depends on which Google account the
+ * VIEWER is signed into -- so a reviewer signed into the right account sees a
+ * working form and the public sees a sign-in wall. That is the same
+ * over-crediting bias as checking vendor forms while signed in, in a form
+ * this script can actually detect.
+ *
+ * /formResponse is the submission endpoint, not a page anyone should land on.
+ * /viewform IS THE CORRECT PUBLIC ADDRESS and is deliberately allowed.
+ *
+ * Note WPU publishes the broken link itself, so refusing here does not fix
+ * the school's page -- it stops HazingInfo repeating the error.
+ */
+const PR_GOOGLE_FORM_BAD = [
+  /docs\.google\.com\/forms\/.*\/edit(?:[\/?#]|$)/i,
+  /docs\.google\.com\/forms\/.*\/formResponse(?:[\/?#]|$)/i
+];
+
+/**
+ * Below-standard terms that contradict each other.
+ *
+ * FLAGGED, NEVER BLOCKED, and the reason is worth stating because the
+ * opposite looks safer and is not. Any term at all means the page is below
+ * standard, so the compliance field is cleared and the checkmark withheld
+ * IDENTICALLY whether the terms agree or not. The write does not change. What
+ * changes is only the public note built from the reason field, which would
+ * read as nonsense -- "Undated" beside "Dated before 2024".
+ *
+ * Blocking would therefore leave a school with NO listed page over a wording
+ * problem, which is a worse public record than a listed page with a muddled
+ * note. Flag it, publish it, let a person fix the terms.
+ *
+ * Each entry is a pair that cannot both be true of one page. Extend it as
+ * more are found; nothing here is exhaustive.
+ */
+const PR_CONTRADICTIONS = {
+  'Hazing Policy': [
+    ['Undated', 'Dated before 2024'],
+    ['No investigation process stated', 'Investigation process asserted but not described']
+  ],
+  'CHTR': [
+    ['No update date stated or inferable on index', 'Dated to month or year only on index'],
+    ['No update date stated or inferable on index', 'Index update date outside the freshness window'],
+    ['Report announced but not published', 'Incidents listed without description']
+  ],
+  'Report Form': []
+};
+
+/**
+ * Who gets the run summary, and when.
+ *
+ * THIS EXISTS BECAUSE Logger.log IS INVISIBLE ON A TRIGGERED RUN. Every
+ * refusal reason in this file is useless to a scheduled execution unless it
+ * leaves the execution -- once onto the row, in Promote note, and once into
+ * an inbox. Both, not either: the row is where you look when you are already
+ * in Airtable, the email is what tells you to go and look.
+ *
+ * Empty string means "the account the script runs as", which is right for a
+ * trigger. Set an address to send somewhere else.
+ *
+ * DRY RUNS DO NOT EMAIL. A dry run is something a person is watching.
+ */
+const PR_EMAIL_TO       = '';
+const PR_EMAIL_ON_APPLY = true;
 
 /**
  * THE CATEGORY MAP.
@@ -393,6 +623,7 @@ function prRun_(dryRun) {
     const rows = prListAll_(pat, PR_PAGES_BASE, PR_CAND_TABLE,
       [PR_C_UNITID, PR_C_CATEGORY, PR_C_CANDIDATE_URL, PR_C_PROPOSED_URL,
        PR_C_DETERMINATION, PR_C_PROMOTE_STATUS, PR_C_REVIEW_DATE,
+       PR_C_PROMOTE_NOTE, PR_C_PROMOTE_FLAGGED,
        PR_CATEGORIES['CHTR'].source,
        PR_CATEGORIES['Hazing Policy'].source,
        PR_CATEGORIES['Report Form'].source],
@@ -425,6 +656,32 @@ function prRun_(dryRun) {
       if (!u) return;
       (byUnitid[u] = byUnitid[u] || []).push(r);
     });
+
+    // ---- 2b. what the ownership check needs ----------------------------
+    // Two more reads, both from PAGES, both once per run. Institutions is the
+    // synced IPEDS mirror and supplies each school's own web address; there is
+    // no such field on 50 States, which is why this read exists at all.
+    //
+    // NEITHER READ IS ALLOWED TO STOP THE RUN, and that is a deliberate
+    // asymmetry. If Institutions cannot be read the ownership check has
+    // nothing to check against, so it stands down and says so loudly rather
+    // than refusing all 231 rows for want of a lookup table. A guard that
+    // fails closed on its own infrastructure failure is a guard that turns a
+    // bad afternoon into a blocked release.
+    const instByUnitid = prInstitutions_(pat);
+    const exceptions   = prExceptions_(pat);
+
+    const ownershipLive = Object.keys(instByUnitid).length > 0;
+    if (!ownershipLive) {
+      Logger.log('');
+      Logger.log('*** OWNERSHIP CHECK IS NOT RUNNING. The Institutions table returned ' +
+        'no rows, so there is nothing to compare addresses against. Every other ' +
+        'guard still applies, but a URL belonging to a different school will NOT ' +
+        'be caught this run. Fix the read before trusting this output.');
+    } else {
+      Logger.log('Institution addresses read: ' + Object.keys(instByUnitid).length +
+        ' | ownership exceptions active: ' + prExceptionCount_(exceptions));
+    }
 
     // ---- 3. one school + category may have only ONE promotable row -----
     // Two reviewers, or one reviewer twice, can leave two rows both saying
@@ -459,7 +716,7 @@ function prRun_(dryRun) {
         return;
       }
 
-      const op = prPlan_(row, byUnitid);
+      const op = prPlan_(row, byUnitid, instByUnitid, exceptions, ownershipLive);
       if (op.skip) skips.push(op); else ops.push(op);
     });
 
@@ -521,9 +778,32 @@ function prRun_(dryRun) {
           Logger.log('        *** CHECKMARK CLEARED -- this school LOSES its ' +
             p.category.label + ' check on the public page');
         }
-        if (p.note) Logger.log('        note: ' + p.note);
+        (p.flags || []).forEach(function (f) {
+          Logger.log('        FLAG: ' + f);
+        });
       });
     });
+
+    // Flagged rows PUBLISHED. They are not in the skip list, they do not stop
+    // anything, and that is exactly why they need collecting somewhere a
+    // person will see -- built from ops rather than targets, because a row can
+    // carry a flag while its 50 States write is a no-op, and those would
+    // otherwise never appear anywhere.
+    const flaggedList = [];
+    ops.forEach(function (op) {
+      if (!op.flags || !op.flags.length) return;
+      flaggedList.push(op.institution + ' (' + op.unitid + ') -- ' +
+        op.category.label + ': ' + op.flags.join(' | '));
+    });
+
+    if (flaggedList.length) {
+      Logger.log('');
+      Logger.log('--- PROMOTED, BUT FLAGGED FOR A SECOND LOOK (' + flaggedList.length + ') ---');
+      Logger.log('These rows DID publish. Nothing was stopped. Each one is ticked');
+      Logger.log('"Promote flagged" on Candidate URLs with the reason in "Promote note",');
+      Logger.log('so they can be filtered rather than hunted for in this log.');
+      flaggedList.forEach(function (s) { Logger.log('  ' + s); });
+    }
 
     // Checkmark removals are the most consequential thing this script does
     // and the easiest to miss inside a long per-school log. Repeat them
@@ -574,7 +854,7 @@ function prRun_(dryRun) {
     Logger.log('Schools to update: ' + targets.length + ' (from ' + ops.length + ' row(s))');
     Logger.log('Already applied, nothing to do: ' + noopOnly + ' school(s)');
     Logger.log('Checkmarks gained: ' + gained + ' | Checkmarks removed: ' + cleared);
-    Logger.log('Skipped: ' + skips.length);
+    Logger.log('Skipped: ' + skips.length + ' | Promoted but flagged: ' + flaggedList.length);
 
     if (targets.length > PR_MAX_INSTITUTIONS) {
       throw new Error('Refusing to run: ' + targets.length + ' schools exceeds ' +
@@ -585,11 +865,21 @@ function prRun_(dryRun) {
     if (dryRun) {
       Logger.log('');
       Logger.log('DRY RUN -- nothing written, to either base.');
-      Logger.log('Read the CHECKMARKS REMOVED section above, then run ' +
+      Logger.log('Promote note and Promote flagged were NOT written either. A dry run ' +
+        'that stamped the source rows would not be a dry run.');
+      Logger.log('Read the CHECKMARKS REMOVED and FLAGGED sections above, then run ' +
         'promoteApplyForReal() to apply.');
+      if (skips.length) {
+        Logger.log('');
+        Logger.log('On the skips: an ownership refusal on a school you know is correct ' +
+          'is fixed by adding a row to the Ownership exceptions table in PAGES -- ' +
+          'UNITID plus the string the address is allowed to contain -- not by ' +
+          'editing this file. Then re-run.');
+      }
       return {
         dryRun: true, rows: rows.length, schools: targets.length,
-        skipped: skips.length, checkmarksGained: gained, checkmarksRemoved: cleared
+        skipped: skips.length, flagged: flaggedList.length,
+        checkmarksGained: gained, checkmarksRemoved: cleared
       };
     }
 
@@ -616,21 +906,35 @@ function prRun_(dryRun) {
     // ---- 8. stamp Promote status back onto Candidate URLs --------------
     // Done AFTER the 50 States write and derived from its outcome, so the
     // stamp can never claim a promotion that did not land.
+    // THREE FIELDS NOW, AND THE CHURN TEST COVERS ALL THREE. Before the
+    // hardening pass this returned early when the status already said what it
+    // was about to say. With a note and a flag alongside it that shortcut is
+    // wrong: a row whose status is still Promoted but whose contradiction has
+    // since been fixed would keep a flag and a note describing a problem that
+    // no longer exists. Compare the whole triple, write nothing only when the
+    // whole triple already matches.
+    //
+    // AND THE NOTE IS CLEARED, NOT SKIPPED, WHEN THERE IS NOTHING TO SAY.
+    // Same rule as the 50 States reason fields, same reason: a note only ever
+    // written when non-empty is a note that survives the condition that caused
+    // it and then misinforms whoever reads the row next.
     const stamps = [];
+
     ops.forEach(function (op) {
       const failure = failedRecordIds[op.stateRecordId];
       const value = failure ? PR_STATUS_FAILED : PR_STATUS_PROMOTED;
-      if (op.beforeStatus === value) return;   // already says this; don't churn
-      const f = {};
-      f[PR_C_PROMOTE_STATUS] = value;
-      stamps.push({ recordId: op.candRecordId, fields: f });
+      const note = failure
+        ? ('The 50 States write was attempted and rejected: ' + String(failure).slice(0, 400))
+        : (op.flags && op.flags.length ? prNoteFromFlags_(op) : '');
+      const flagged = !failure && !!(op.flags && op.flags.length);
+      prPushStamp_(stamps, op.candRecordId, op.beforeStatus, op.beforeNote,
+                   op.beforeFlagged, value, note, flagged);
     });
+
     skips.forEach(function (s) {
       if (!s.recordId) return;
-      if (s.beforeStatus === PR_STATUS_SKIPPED) return;
-      const f = {};
-      f[PR_C_PROMOTE_STATUS] = PR_STATUS_SKIPPED;
-      stamps.push({ recordId: s.recordId, fields: f });
+      prPushStamp_(stamps, s.recordId, s.beforeStatus, s.beforeNote, s.beforeFlagged,
+                   PR_STATUS_SKIPPED, prNoteFromSkip_(s), false);
     });
 
     let stamped = 0;
@@ -659,10 +963,33 @@ function prRun_(dryRun) {
     Logger.log('Discovery gates on the COMPLIANCE fields, so every school promoted ' +
       'with below-standard terms stays in the discovery queue. That is intended.');
 
+    // ---- 9. the email --------------------------------------------------
+    // LAST, AND AFTER EVERY WRITE. The six-minute cap does not throw, so
+    // anything placed after the writes is the first thing lost -- which is
+    // precisely why it goes here and not earlier. Losing the summary of a run
+    // that completed costs a notification. Losing a write costs the site.
+    //
+    // Wrapped, because a mail quota or a bad address must not turn a
+    // successful promotion into a run that looks like it failed.
+    if (PR_EMAIL_ON_APPLY) {
+      try {
+        prEmail_({
+          started: started, written: written, failedCount: failedCount,
+          stamped: stamped, gained: gained, cleared: cleared,
+          clearedList: clearedList, flaggedList: flaggedList, skips: skips,
+          rows: rows.length, schools: targets.length,
+          ownershipLive: ownershipLive
+        });
+      } catch (e) {
+        Logger.log('Run summary email could not be sent (the run itself was fine): ' + e);
+      }
+    }
+
     return {
       dryRun: false, rows: rows.length, schools: targets.length,
       written: written, failed: failedCount, stamped: stamped,
-      skipped: skips.length, checkmarksGained: gained, checkmarksRemoved: cleared
+      skipped: skips.length, flagged: flaggedList.length,
+      checkmarksGained: gained, checkmarksRemoved: cleared
     };
   } finally {
     lock.releaseLock();
@@ -677,7 +1004,7 @@ function prRun_(dryRun) {
  * wrong with it, because a silent skip in a script that publishes to the
  * live site is indistinguishable from a script that did not run.
  */
-function prPlan_(row, byUnitid) {
+function prPlan_(row, byUnitid, instByUnitid, exceptions, ownershipLive) {
   const unitid       = String(row.fields[PR_C_UNITID] || '').trim();
   const categoryName = row.fields[PR_C_CATEGORY] || '';
   const determination = row.fields[PR_C_DETERMINATION] || '';
@@ -689,7 +1016,9 @@ function prPlan_(row, byUnitid) {
     recordId: row.id,
     unitid: unitid,
     categoryName: categoryName,
-    beforeStatus: row.fields[PR_C_PROMOTE_STATUS] || ''
+    beforeStatus: row.fields[PR_C_PROMOTE_STATUS] || '',
+    beforeNote: String(row.fields[PR_C_PROMOTE_NOTE] || ''),
+    beforeFlagged: row.fields[PR_C_PROMOTE_FLAGGED] === true
   };
 
   const category = PR_CATEGORIES[categoryName];
@@ -703,21 +1032,41 @@ function prPlan_(row, byUnitid) {
   }
 
   // ---- which URL, and is there one -------------------------------------
-  let url, action, note = '';
+  const flags = [];
+  let url, action;
 
   if (determination === PR_DET_CONFIRMED) {
     if (!candidateUrl) {
       base.reason = '"' + PR_DET_CONFIRMED + '" with an empty Candidate URL';
       return base;
     }
+
+    // WAS A NOTE UNTIL 2026-09-10. NOW A BLOCK, AND THE EVIDENCE IS THE
+    // REASON. Four of the seven bad rows the first dry run produced were this
+    // exact shape, and because it was only a note ALL FOUR WOULD HAVE
+    // PUBLISHED. Glenville State is the one to remember: it would have
+    // promoted a 2021 handbook, already flagged "Dated before 2024", while
+    // the reviewer's proposed URL pointed at the 2025-26 handbook sitting
+    // right there in the next field.
+    //
+    // A confirmed row carrying a proposal is self-contradictory. "This
+    // candidate is right" and "here is the right one instead" cannot both be
+    // the reviewer's answer, and this script has no standing to guess which
+    // they meant -- guessing wrong publishes a page a reviewer rejected. It
+    // costs one person one minute to resolve in Airtable, and it is the
+    // cheapest guard in this file.
+    if (proposedUrl) {
+      base.reason = 'BLOCKED -- "' + PR_DET_CONFIRMED + '" but the row ALSO carries a ' +
+                    'Reviewer-proposed URL ("' + proposedUrl + '"). The two say ' +
+                    'opposite things and this script will not choose between them. ' +
+                    'Either clear the proposed URL, or change the determination to ' +
+                    '"' + PR_DET_REPLACEMENT + '" so the proposal is what publishes. ' +
+                    'Then re-run.';
+      return base;
+    }
+
     url = candidateUrl;
     action = 'promote Candidate URL';
-    // Not an error, but worth seeing: a confirmed row usually has no
-    // proposal, and one that does may have been mis-determined.
-    if (proposedUrl) {
-      note = 'row also carries a Reviewer-proposed URL ("' + proposedUrl +
-             '"), which is NOT used on a confirmed row -- worth a look';
-    }
 
   } else if (determination === PR_DET_REPLACEMENT) {
     // THE GUARD. Falling back to Candidate URL here would publish the page
@@ -745,6 +1094,16 @@ function prPlan_(row, byUnitid) {
     base.reason = 'REFUSED -- URL is a login wall, will not publish: "' + url + '"';
     return base;
   }
+  if (prIsBadGoogleFormUrl_(url)) {
+    base.reason = 'REFUSED -- Google Forms editing or submission address, not a public ' +
+                  'form: "' + url + '". Whether an /edit link opens depends on which ' +
+                  'Google account the VIEWER is signed into, so a reviewer can see a ' +
+                  'working form the public cannot reach. Find the /viewform address ' +
+                  'and put that in Reviewer-proposed URL. If the school itself ' +
+                  'publishes the /edit link -- William Peace does -- that is a finding ' +
+                  'about the school, not a URL to copy.';
+    return base;
+  }
 
   // ---- the school -------------------------------------------------------
   const matches = byUnitid[unitid] || [];
@@ -758,6 +1117,48 @@ function prPlan_(row, byUnitid) {
     return base;
   }
   const target = matches[0];
+
+  // ---- does this address belong to this school -------------------------
+  // Runs only when the Institutions read succeeded. See the header note: a
+  // failed lookup table stands the check down rather than refusing everything.
+  if (ownershipLive) {
+    const inst = instByUnitid[unitid];
+    if (!inst || !prDomain_(inst.url)) {
+      // NOT A REFUSAL. The school has no usable address on file, so there is
+      // nothing to compare against and no honest basis to refuse. Flagged so
+      // the gap is visible, because a school missing its own URL is worth
+      // fixing in Institutions regardless of what happens to this row.
+      flags.push('ownership NOT CHECKED -- no usable Institution URL on file for this ' +
+                 'school, so the address could not be compared against anything');
+    } else {
+      const verdict = prBelongsTo_(url, inst, exceptions[unitid] || []);
+
+      // An address that names NOBODY is a different problem from one that
+      // names somebody else. See prIsOpaqueFormHost_ for why this one is
+      // flagged rather than refused, and how to change that.
+      if (!verdict.ok && prIsOpaqueFormHost_(url) && !PR_OPAQUE_FORM_BLOCK) {
+        flags.push('ownership UNVERIFIABLE -- this form is on ' + prDomain_(url) +
+                   ', where the address carries no institutional identifier of any ' +
+                   'kind, so it can be neither confirmed nor disproved as this ' +
+                   'school\'s. Promoted on the reviewer\'s judgement. Worth opening ' +
+                   'SIGNED OUT to confirm the public can actually reach it.');
+      } else if (!verdict.ok) {
+        base.reason = 'BLOCKED -- ' + verdict.why + ' URL: "' + url + '". ' +
+          'The school\'s own site is ' + prDomain_(inst.url) + '. ' +
+          'IF THIS ADDRESS IS ACTUALLY CORRECT, add a row to the Ownership ' +
+          'exceptions table in PAGES: UNITID ' + unitid + ', and the distinctive ' +
+          'string the address is allowed to contain (a vendor tenant slug, not a ' +
+          'bare hostname). No code change is needed and the exception survives ' +
+          'future candidate rows for this school. Then re-run.';
+        return base;
+      }
+      if (verdict.viaException) {
+        flags.push('ownership allowed by exception ("' + verdict.viaException + '") -- ' +
+                   'off-domain address accepted because a row in Ownership exceptions ' +
+                   'says it is this school\'s');
+      }
+    }
+  }
 
   // ---- the below-standard terms ----------------------------------------
   // Read from THIS category's source field only. A Report Form row carrying
@@ -781,6 +1182,32 @@ function prPlan_(row, byUnitid) {
   }
 
   const clean = terms.length === 0;
+
+  // ---- flags: publish anyway, but say something -------------------------
+  // Neither of these stops a promotion. Both are ticked onto the row as
+  // Promote flagged with the reason in Promote note, which is what makes them
+  // findable in a filtered view rather than only in a log nobody opens.
+  prContradictionsIn_(categoryName, terms).forEach(function (pair) {
+    flags.push('contradictory below-standard terms: "' + pair[0] + '" and "' + pair[1] +
+               '" cannot both describe one page. The checkmark outcome is the same ' +
+               'either way -- any term at all withholds it -- but the public note ' +
+               'built from these will read as nonsense. Fix the terms on this row.');
+  });
+
+  // The Dominican NY case. Its CHTR promotion would have replaced a working
+  // transparency-report index with a Maxient REPORTING FORM url, kept the
+  // checkmark, and fired no warning at all. A vendor host is strong evidence
+  // of a report form and weak-to-no evidence of anything else, which is why
+  // this fires in one direction only: policy and CHTR pages live on the
+  // school's own domain and their slugs overlap far too much -- "hazing
+  // report" appears in both -- for a keyword rule to be anything but noise.
+  if (categoryName !== 'Report Form' && prIsVendorHost_(url)) {
+    flags.push('a conduct-reporting VENDOR address is being promoted into ' +
+               categoryName + '. Vendor URLs are reporting forms almost without ' +
+               'exception, so this is very likely the wrong category -- check ' +
+               'whether it belongs in Report Form instead, and whether this ' +
+               'promotion is about to overwrite a working ' + categoryName + ' page.');
+  }
 
   // ---- what 50 States holds now ----------------------------------------
   const beforeRecord     = String(target.fields[category.record] || '').trim();
@@ -811,6 +1238,8 @@ function prPlan_(row, byUnitid) {
     candRecordId: row.id,
     stateRecordId: target.id,
     beforeStatus: row.fields[PR_C_PROMOTE_STATUS] || '',
+    beforeNote: String(row.fields[PR_C_PROMOTE_NOTE] || ''),
+    beforeFlagged: row.fields[PR_C_PROMOTE_FLAGGED] === true,
     unitid: unitid,
     institution: String(target.fields[PR_S_INSTITUTION] || '(unnamed)'),
     categoryName: categoryName,
@@ -824,7 +1253,7 @@ function prPlan_(row, byUnitid) {
     beforeCompliance: beforeCompliance,
     beforeReason: beforeReason,
     action: action,
-    note: note
+    flags: flags
   };
 }
 
@@ -854,6 +1283,341 @@ function prIsLoginUrl_(url) {
     if (PR_LOGIN_URL_PATTERNS[i].test(s)) return true;
   }
   return false;
+}
+
+/** A Google Forms editing or submission address. See PR_GOOGLE_FORM_BAD. */
+function prIsBadGoogleFormUrl_(url) {
+  if (!url) return false;
+  const s = String(url);
+  for (let i = 0; i < PR_GOOGLE_FORM_BAD.length; i++) {
+    if (PR_GOOGLE_FORM_BAD[i].test(s)) return true;
+  }
+  return false;
+}
+
+
+// =========================================================================
+// OWNERSHIP
+// =========================================================================
+
+/**
+ * Bare host for a URL: no scheme, no path, no www prefix.
+ *
+ * KEEPS EVERY OTHER SUBDOMAIN. A school genuinely at catalog.example.edu
+ * belongs there, and widening to the parent would treat a different
+ * institution's pages as its own -- the Barton College / Appalachian State
+ * failure SearchProbe.gs names twice. Strips the whole www-prefix family,
+ * because Oakwood's address is www2.oakwood.edu and leaving that in place
+ * would compare against one numbered mirror rather than the school's site.
+ */
+function prDomain_(url) {
+  const m = /^(?:https?:\/\/)?([^\/\?#]+)/i.exec(String(url || '').trim());
+  if (!m) return '';
+  return m[1].toLowerCase().replace(/^www\d*\./, '').replace(/:\d+$/, '');
+}
+
+/** Lowercase, punctuation removed -- for substring matching inside a URL. */
+function prFlatten_(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** Is this address on a recognised conduct-reporting vendor? */
+function prIsVendorHost_(url) {
+  const host = prDomain_(url);
+  if (!host) return false;
+  for (let i = 0; i < PR_VENDOR_HOSTS.length; i++) {
+    const v = PR_VENDOR_HOSTS[i];
+    if (host === v || host.slice(-(v.length + 1)) === '.' + v) return true;
+  }
+  return false;
+}
+
+/**
+ * Strings that identify this institution inside a vendor URL.
+ *
+ * The domain label first -- 'samford' from samford.edu -- because vendors
+ * overwhelmingly build tenant slugs from it. Then the distinctive words of
+ * the name, which catches spelled-out variants.
+ *
+ * GENERIC WORDS ARE DROPPED, and that is what stops the test quietly becoming
+ * useless: 'university', 'college' and 'state' are in hundreds of names and
+ * most vendor URLs, so keeping them would match everything and re-admit the
+ * errors this exists to prevent.
+ */
+function prTokens_(inst, ownDomain) {
+  const out = [];
+  const label = String(ownDomain || '').split('.')[0].replace(/[^a-z0-9]/g, '');
+  if (label.length >= 3) out.push(label);
+
+  const stop = {
+    university: 1, universities: 1, college: 1, colleges: 1, state: 1,
+    community: 1, institute: 1, institution: 1, school: 1, campus: 1,
+    academy: 1, center: 1, centre: 1, technical: 1, technology: 1,
+    seminary: 1, district: 1, system: 1, main: 1, north: 1, south: 1,
+    east: 1, west: 1, saint: 1, national: 1, american: 1, international: 1
+  };
+  String(inst.name || '').toLowerCase().split(/[^a-z0-9]+/).forEach(function (w) {
+    if (w.length >= 4 && !stop[w] && out.indexOf(w) === -1) out.push(w);
+  });
+  return out;
+}
+
+/**
+ * Does this address belong to THIS school?
+ *
+ * Returns { ok, why, viaException }. `why` is written to be pasted in front of
+ * a reviewer, not parsed.
+ *
+ * THREE WAYS TO PASS, and the order matters:
+ *
+ *   1. It is on the school's own domain or a subdomain of it.
+ *   2. An Ownership exceptions row for this UNITID names a string the address
+ *      contains. CHECKED BEFORE EITHER REFUSAL, deliberately: an exception has
+ *      to be able to rescue both refusal shapes, or the table only solves half
+ *      the problem and the other half still needs a developer.
+ *   3. It is on a recognised vendor AND carries a recognisable form of the
+ *      school's name -- cm.maxient.com/reportingform.php?SamfordUniv.
+ *
+ * WHAT IT CANNOT DO is attribute an address that names nobody at all. See
+ * prIsOpaqueFormHost_ for how those are handled and why they are not simply
+ * refused.
+ */
+function prBelongsTo_(url, inst, allowedStrings) {
+  const host = prDomain_(url);
+  if (!host) return { ok: false, why: 'the address has no readable host.' };
+
+  const own = prDomain_(inst.url);
+  if (own && (host === own || host.slice(-(own.length + 1)) === '.' + own)) {
+    return { ok: true };
+  }
+
+  const flat = prFlatten_(url);
+
+  for (let i = 0; i < allowedStrings.length; i++) {
+    const needle = prFlatten_(allowedStrings[i]);
+    if (needle && flat.indexOf(needle) !== -1) {
+      return { ok: true, viaException: allowedStrings[i] };
+    }
+  }
+
+  if (!prIsVendorHost_(url)) {
+    return {
+      ok: false,
+      why: 'this address is on neither the school\'s own domain nor a recognised ' +
+           'conduct-reporting vendor, so there is no basis for treating it as this ' +
+           'school\'s page. This is the Seattle Pacific failure -- its Report Form ' +
+           'was a umass.edu page.'
+    };
+  }
+
+  const tokens = prTokens_(inst, own);
+  for (let t = 0; t < tokens.length; t++) {
+    if (flat.indexOf(tokens[t]) !== -1) return { ok: true };
+  }
+
+  return {
+    ok: false,
+    why: 'this address is on a conduct-reporting vendor but carries nothing ' +
+         'identifying this school, which is exactly how one school\'s reporting ' +
+         'form gets filed against another.'
+  };
+}
+
+/**
+ * Hosts where a form CANNOT carry an institutional identifier at all.
+ *
+ * docs.google.com/forms/d/e/1FAIpQLSd.../viewform names nobody. Neither does
+ * a bare Qualtrics or Microsoft Forms id. There is no way to attribute one
+ * from the URL, and there never will be.
+ *
+ * THESE ARE FLAGGED, NOT REFUSED, AND THAT IS A DELIBERATE DEPARTURE FROM
+ * SearchProbe.gs, WHICH REFUSES THEM. The reason is the inverted cost stated
+ * at the top: SearchProbe is filtering machine output, where dropping an
+ * unattributable candidate costs nothing. Here a human has already opened the
+ * school's page and confirmed this is the form it links to. Refusing would
+ * throw that away, leave the school looking non-compliant, and demand an
+ * exception row for every school that uses Google Forms -- which is a lot of
+ * them.
+ *
+ * AND NOTE WHAT THE RISK ACTUALLY IS. An opaque form names nobody, so it is
+ * not evidence of the WRONG school; it is merely no evidence of the right
+ * one. That is a different and smaller danger than umass.edu appearing on a
+ * Seattle Pacific row, which names a different institution outright.
+ *
+ * TO MAKE THESE REFUSALS INSTEAD, set PR_OPAQUE_FORM_BLOCK to true. Expect to
+ * add a lot of exception rows if you do.
+ */
+const PR_OPAQUE_FORM_HOSTS = [
+  'docs.google.com', 'forms.gle', 'forms.office.com', 'forms.microsoft.com'
+];
+const PR_OPAQUE_FORM_BLOCK = false;
+
+function prIsOpaqueFormHost_(url) {
+  const host = prDomain_(url);
+  if (!host) return false;
+  for (let i = 0; i < PR_OPAQUE_FORM_HOSTS.length; i++) {
+    const v = PR_OPAQUE_FORM_HOSTS[i];
+    if (host === v || host.slice(-(v.length + 1)) === '.' + v) return true;
+  }
+  return false;
+}
+
+/** Which contradictory pairs are both present on this row? */
+function prContradictionsIn_(categoryName, terms) {
+  const pairs = PR_CONTRADICTIONS[categoryName] || [];
+  const out = [];
+  pairs.forEach(function (pair) {
+    if (terms.indexOf(pair[0]) !== -1 && terms.indexOf(pair[1]) !== -1) out.push(pair);
+  });
+  return out;
+}
+
+
+// =========================================================================
+// WHAT GETS WRITTEN BACK ONTO THE CANDIDATE ROW
+// =========================================================================
+
+/** The note for a row that promoted but carries flags. */
+function prNoteFromFlags_(op) {
+  const lines = ['PROMOTED, but flagged ' + prStamp_() + ':'];
+  op.flags.forEach(function (f, i) { lines.push('  ' + (i + 1) + '. ' + f); });
+  lines.push('');
+  lines.push('This row DID publish to the live site. Nothing was blocked. Untick ' +
+             'Promote flagged only by fixing what it names -- the next run re-ticks it ' +
+             'otherwise, and clears it by itself once the cause is gone.');
+  return lines.join('\n');
+}
+
+/** The note for a row that was refused. */
+function prNoteFromSkip_(s) {
+  return 'NOT PROMOTED ' + prStamp_() + '.\n\n' + (s.reason || 'no reason recorded') +
+         '\n\nNothing was written to 50 States for this row. It will be reconsidered ' +
+         'on every run, so fixing the cause is all that is needed -- there is no queue ' +
+         'to re-add it to.';
+}
+
+function prStamp_() {
+  return 'on ' + Utilities.formatDate(new Date(),
+    Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm z');
+}
+
+/**
+ * Queue a Promote status / note / flag write, unless all three already match.
+ *
+ * THE WHOLE TRIPLE OR NOTHING. Writing a subset would let a stale note outlive
+ * the condition it describes, which is the failure this file has hit twice in
+ * other forms -- a correct value with a comment underneath saying the
+ * opposite. Airtable charges the same for one field or three.
+ */
+function prPushStamp_(stamps, recordId, beforeStatus, beforeNote, beforeFlagged,
+                      status, note, flagged) {
+  if (!recordId) return;
+  if (beforeStatus === status &&
+      String(beforeNote || '') === String(note || '') &&
+      (beforeFlagged === true) === (flagged === true)) return;
+  const f = {};
+  f[PR_C_PROMOTE_STATUS]  = status;
+  f[PR_C_PROMOTE_NOTE]    = note || '';
+  f[PR_C_PROMOTE_FLAGGED] = !!flagged;
+  stamps.push({ recordId: recordId, fields: f });
+}
+
+
+// =========================================================================
+// THE RUN SUMMARY EMAIL
+// =========================================================================
+
+/**
+ * One email per applying run.
+ *
+ * IT EXISTS FOR TRIGGERED RUNS AND NOTHING ELSE. A person running this by
+ * hand has the log open. A trigger has no log anyone will read -- the
+ * Executions panel exists but nobody visits it unprompted -- so without this
+ * a scheduled promotion could refuse forty rows in silence for a month.
+ *
+ * BLOCKED FIRST, THEN CHECKMARK REMOVALS, THEN FLAGS. Ordered by what needs a
+ * person soonest, not by what the run did most of. The counts are last, since
+ * they are the part that is also in the log.
+ */
+function prEmail_(r) {
+  const to = PR_EMAIL_TO || Session.getEffectiveUser().getEmail();
+  if (!to) { Logger.log('No address to send the run summary to; skipped.'); return; }
+
+  const needsAttention = r.skips.length + r.clearedList.length + r.flaggedList.length;
+  const subject = 'HazingInfo promote: ' + r.written + ' school(s) written, ' +
+    r.skips.length + ' refused, ' + r.flaggedList.length + ' flagged' +
+    (r.failedCount ? ', ' + r.failedCount + ' WRITE FAILURES' : '');
+
+  const b = [];
+  b.push('Promote ran at ' + r.started.toISOString() + ' and wrote to the live site.');
+  b.push('');
+
+  if (!r.ownershipLive) {
+    b.push('*** THE OWNERSHIP CHECK DID NOT RUN. The Institutions table returned no');
+    b.push('rows, so no address was compared against the school it claims to belong');
+    b.push('to. A URL belonging to a different school would NOT have been caught.');
+    b.push('');
+  }
+
+  if (r.failedCount) {
+    b.push('*** ' + r.failedCount + ' school(s) FAILED TO SAVE to 50 States. Those rows are');
+    b.push('stamped "' + PR_STATUS_FAILED + '" with the error in Promote note.');
+    b.push('');
+  }
+
+  if (r.skips.length) {
+    b.push('REFUSED -- ' + r.skips.length + ' row(s) did not publish');
+    b.push('Each is stamped "' + PR_STATUS_SKIPPED + '" with the reason in Promote note.');
+    b.push('An ownership refusal on a school you know is correct is fixed by adding a');
+    b.push('row to the Ownership exceptions table in PAGES, not by changing code.');
+    b.push('');
+    r.skips.forEach(function (s) {
+      b.push('  ' + (s.unitid || '(no UNITID)') + ' / ' +
+        (s.categoryName || '(no category)') + ': ' + s.reason);
+    });
+    b.push('');
+  }
+
+  if (r.clearedList.length) {
+    b.push('CHECKMARKS REMOVED -- ' + r.clearedList.length + ' school(s) lost a check');
+    b.push('These pages now show no checkmark where they previously did, because a');
+    b.push('reviewer marked the page below standard. This is the most consequential');
+    b.push('thing this script does. If any of these look wrong, they are worth');
+    b.push('checking today rather than at the next review.');
+    b.push('');
+    r.clearedList.forEach(function (s) { b.push('  ' + s); });
+    b.push('');
+  }
+
+  if (r.flaggedList.length) {
+    b.push('PUBLISHED BUT FLAGGED -- ' + r.flaggedList.length + ' row(s)');
+    b.push('These DID go live. Nothing was stopped. Each is ticked "Promote flagged"');
+    b.push('on Candidate URLs, so filter a view on that field rather than working');
+    b.push('from this list.');
+    b.push('');
+    r.flaggedList.forEach(function (s) { b.push('  ' + s); });
+    b.push('');
+  }
+
+  if (!needsAttention) {
+    b.push('Nothing needs attention: no refusals, no checkmarks removed, no flags.');
+    b.push('');
+  }
+
+  b.push('---');
+  b.push('Promotable rows read: ' + r.rows);
+  b.push('Schools written:      ' + r.written);
+  b.push('Rows stamped:         ' + r.stamped);
+  b.push('Checkmarks gained:    ' + r.gained);
+  b.push('Checkmarks removed:   ' + r.cleared);
+  b.push('Refused:              ' + r.skips.length);
+  b.push('Published but flagged:' + r.flaggedList.length);
+  b.push('');
+  b.push('Discovery gates on the compliance fields, so every school promoted with');
+  b.push('below-standard terms stays in the discovery queue. That is intended.');
+
+  MailApp.sendEmail(to, subject, b.join('\n'));
+  Logger.log('Run summary emailed to ' + to + '.');
 }
 
 
@@ -924,4 +1688,91 @@ function prPatch_(pat, baseId, tableId, targets) {
   );
   Utilities.sleep(PR_SLEEP_MS);
   return { ok: resp.getResponseCode() === 200, error: resp.getContentText() };
+}
+
+
+/**
+ * UNITID -> { name, url } for every institution, from the PAGES mirror.
+ *
+ * FAILS SOFT, RETURNING AN EMPTY OBJECT. The caller reads an empty result as
+ * "stand the ownership check down and say so loudly" rather than "refuse
+ * everything". A lookup table that cannot be read is an infrastructure
+ * problem; turning it into 231 refusals would make it a publishing problem
+ * too, and the second is much more expensive to undo.
+ *
+ * Adds roughly fifteen seconds to a run that took thirty-eight. Comfortable
+ * against the six-minute cap, and it is the price of the check.
+ */
+function prInstitutions_(pat) {
+  const out = {};
+  try {
+    const rows = prListAll_(pat, PR_PAGES_BASE, PR_INST_TABLE,
+      [PR_I_UNITID, PR_I_NAME, PR_I_URL], '');
+    rows.forEach(function (r) {
+      const u = String(r.fields[PR_I_UNITID] || '').trim();
+      if (!u) return;
+      out[u] = {
+        name: String(r.fields[PR_I_NAME] || ''),
+        url:  prFirstUrl_(r.fields[PR_I_URL])
+      };
+    });
+  } catch (e) {
+    Logger.log('Could not read Institutions, so the ownership check will not run ' +
+      'this time: ' + e);
+    return {};
+  }
+  return out;
+}
+
+/**
+ * Institution URL is multilineText, sometimes holds more than one value, and
+ * often has no scheme. Take the first token that looks like a host.
+ */
+function prFirstUrl_(value) {
+  const parts = String(value || '').split(/[\s,;]+/);
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i].trim();
+    if (!p) continue;
+    if (/^(?:https?:\/\/)?[^\/\s:]+\.[^\/\s:]+/i.test(p)) return p;
+  }
+  return '';
+}
+
+/**
+ * UNITID -> [allowed strings], from the Ownership exceptions table.
+ *
+ * ONLY ACTIVE ROWS. Unticking Active retires an exception while keeping the
+ * record of why it once existed, which is worth more than a tidy table.
+ *
+ * FAILS SOFT AND EMPTY, but note this failure is the opposite direction from
+ * the Institutions one: with no exceptions loaded the check gets STRICTER,
+ * and a school with a legitimate exception is refused rather than published.
+ * That is the right way round -- an unread exceptions table costs a refusal
+ * someone will see and complain about, where an unread Institutions table
+ * would cost a silent gap in the check.
+ */
+function prExceptions_(pat) {
+  const out = {};
+  try {
+    const rows = prListAll_(pat, PR_PAGES_BASE, PR_EXC_TABLE,
+      [PR_X_UNITID, PR_X_ALLOW, PR_X_ACTIVE], '');
+    rows.forEach(function (r) {
+      if (r.fields[PR_X_ACTIVE] !== true) return;
+      const u = String(r.fields[PR_X_UNITID] || '').trim();
+      const a = String(r.fields[PR_X_ALLOW] || '').trim();
+      if (!u || !a) return;
+      (out[u] = out[u] || []).push(a);
+    });
+  } catch (e) {
+    Logger.log('Could not read Ownership exceptions, so none will apply this run. ' +
+      'Any school that depends on one will be refused: ' + e);
+    return {};
+  }
+  return out;
+}
+
+function prExceptionCount_(exceptions) {
+  let n = 0;
+  for (const k in exceptions) n += exceptions[k].length;
+  return n;
 }
