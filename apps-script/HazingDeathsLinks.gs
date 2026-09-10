@@ -59,6 +59,13 @@
 //   hdlFindArchives()            record them. Resumable.
 //   hdlArchiveMissingDryRun25()  list live sources with no snapshot.
 //   hdlArchiveMissing10()        ask the Archive to make ten of them.
+//                                *** BROKEN since 2026-09-10 -- Apps Script
+//                                cannot connect to web.archive.org/save/ and
+//                                every submission throws after ~50 seconds.
+//                                Make snapshots BY HAND in a browser at
+//                                web.archive.org/save/, then hdlFindArchives()
+//                                to record them. See HDL_WAYBACK_SAVE. The
+//                                availability lookups are NOT affected. ***
 //
 // -------------------------------------------------------------------------
 // BEFORE THE FIRST RUN -- TWO HAND EDITS IN AIRTABLE
@@ -295,6 +302,37 @@ const HDL_EMAIL_MAX_ROWS = 40;
 //
 // SAVE PAGE NOW is a write to somebody else's service: it asks the Archive to
 // go and crawl a page, which takes ten to thirty seconds and is rate limited.
+//
+// SAVE PAGE NOW DOES NOT WORK FROM APPS SCRIPT AS THIS FILE CALLS IT, and has
+// not since at least 2026-09-10. Every submission fails with a THROWN
+// exception -- "Address unavailable: https://web.archive.org/save/..." --
+// after roughly fifty seconds. Two consecutive hdlArchiveMissing(10) runs that
+// day submitted 0 and failed 6 apiece, the six being all the 4.5-minute budget
+// had room for at fifty seconds each.
+//
+// READ THE FAILURE SHAPE, because it says which problem this is. The fetch
+// sets muteHttpExceptions: true, so an HTTP answer of ANY status -- 403, 429,
+// 503 -- comes back as a response code and is logged as "declined (nnn)". A
+// THROWN exception therefore means no HTTP response arrived at all: the
+// connection was never established. This is not the Archive declining. It is
+// Apps Script unable to reach web.archive.org.
+//
+// IT IS THE SAVE ENDPOINT SPECIFICALLY, NOT ARCHIVE.ORG. Measured the same
+// day, minutes apart: hdlFindArchivesDryRun25() asked archive.org for 25
+// availability lookups and got 6 real snapshots back. So the availability host
+// answers from Apps Script and the save host does not. Do not "fix" this by
+// touching hdlWayback_ or the availability endpoint -- they work.
+//
+// The cause was not established. The two candidates are that archive.org
+// refuses Google's egress on the save route, or that the anonymous /save/
+// route no longer accepts unauthenticated requests, which is what this file
+// sends. Save Page Now supports authenticated submission with archive.org S3
+// -style keys; adding that is the obvious repair and is NOT DONE HERE.
+//
+// UNTIL IT IS FIXED, snapshots are made BY HAND -- paste the address into
+// web.archive.org/save/ in a browser -- and hdlFindArchives() records them
+// afterwards. That is the whole workaround, and for a few dozen sources it
+// costs less than the repair does.
 //
 // Both live in their own hand-run passes. A slow third party must never share
 // an execution with the job someone is waiting for.
@@ -1353,6 +1391,18 @@ function hdlFindArchives_(opts) {
 /**
  * Asks the Wayback Machine to archive live sources that have no snapshot.
  *
+ * BROKEN AS OF 2026-09-10, AND NOT BECAUSE OF ANYTHING IN THIS FILE. Every
+ * submission throws "Address unavailable" after about fifty seconds: Apps
+ * Script cannot connect to web.archive.org/save/ at all. Two runs that day
+ * submitted 0 and failed 6 each. Archive.org's AVAILABILITY host answers
+ * normally from the same script in the same minutes, so hdlFindArchives()
+ * still works and is where the value is right now.
+ *
+ * Full diagnosis, including how to tell a connection failure from a decline
+ * and what a repair would involve, is in the HDL_WAYBACK_SAVE comment above.
+ * DO NOT SPEND TIME HERE BEFORE READING IT. Meanwhile, make snapshots by hand
+ * at web.archive.org/save/ and let hdlFindArchives() record them.
+ *
  * CAPPED AND HAND-RUN, and the cap is required rather than polite: each
  * submission takes ten to thirty seconds, it is rate limited, and it is a
  * write to somebody else's infrastructure.
@@ -1417,12 +1467,24 @@ function hdlArchive_(opts) {
       const resp = UrlFetchApp.fetch(HDL_WAYBACK_SAVE + c.url,
         { muteHttpExceptions: true, followRedirects: true });
       const code = resp.getResponseCode();
-      // 200 and 302 both mean accepted. Anything else is usually the Archive
-      // declining -- a page it cannot reach, or one whose robots it will not
-      // crawl. Not an error worth stopping for.
+      // 200 and 302 both mean accepted. Anything else IS the Archive declining
+      // -- a page it cannot reach, or one whose robots it will not crawl. Not
+      // an error worth stopping for.
+      //
+      // THE TWO OUTCOMES BELOW ARE DIFFERENT PROBLEMS AND THE LOG SAYS WHICH.
+      // Reaching this line at all means an HTTP response arrived, because
+      // muteHttpExceptions: true turns every status into a code rather than a
+      // throw. So "declined (nnn)" is the Archive answering and saying no, and
+      // is per-URL: another URL may still succeed in the same run.
       if (code === 200 || code === 302) { sent++; Logger.log('  saved: ' + c.url.slice(0, 110)); }
       else { failed++; Logger.log('  declined (' + code + '): ' + c.url.slice(0, 100)); }
     } catch (e) {
+      // "failed:" IS NOT A DECLINE. Landing here means no HTTP response
+      // arrived -- the connection was never made. "Address unavailable" here
+      // is the 2026-09-10 condition described at HDL_WAYBACK_SAVE: Apps Script
+      // cannot reach web.archive.org/save/ at all, every URL fails identically
+      // after ~50 seconds, and re-running will not help. If EVERY line in a run
+      // reads "failed:", stop running it and read that comment.
       failed++;
       Logger.log('  failed: ' + c.url.slice(0, 100) + '  ' + e);
     }
