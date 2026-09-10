@@ -235,7 +235,7 @@
 //
 // CMD+A BEFORE PASTING. Twice on 2026-09-10 a paste landed on top of the
 // wrong file, once destroying SiteCensus.gs entirely. Check the final line
-// number afterwards: this file is 1,966 lines (it was 927 before the
+// number afterwards: this file is 1,971 lines (it was 927 before the
 // hardening pass, and 1,788 before the 3pm calibration pass).
 // =========================================================================
 
@@ -894,8 +894,8 @@ function prRun_(dryRun) {
         Logger.log('');
         Logger.log('On the skips: an ownership refusal on a school you know is correct ' +
           'is fixed by adding a row to the Ownership exceptions table in PAGES -- ' +
-          'UNITID plus the string the address is allowed to contain -- not by ' +
-          'editing this file. Then re-run.');
+          'the UNITID, and the refused address PASTED WHOLE into Allowed URL -- not ' +
+          'by editing this file. Then re-run.');
       }
       return {
         dryRun: true, rows: rows.length, schools: targets.length,
@@ -1622,7 +1622,12 @@ const PR_LABEL_MIN = 5;
  * dismiss is worse than no flag.
  */
 const PR_PATH_FORM = [
-  /maxient\.com\/reportingform\.php/i,
+  // BOTH MAXIENT FORM PATHS. reportingform.php is the common one; reporting.php
+  // is an older variant still used by 12 schools, counted against 50 States on
+  // 2026-09-10 after Catholic University turned up on it in a dry run and this
+  // list did not recognise it. Every pattern here was checked against real rows
+  // rather than guessed; check the next one the same way.
+  /maxient\.com\/reporting(?:form)?\.php/i,
   /symplicity\.com\/public_report/i,
   /ethicspoint\.com\/.*\/(?:issues\.html|report_company\.asp)/i,
   /ethicspoint\.com\/custom\/.*\/report/i
