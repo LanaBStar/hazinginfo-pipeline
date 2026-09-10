@@ -235,8 +235,8 @@
 //
 // CMD+A BEFORE PASTING. Twice on 2026-09-10 a paste landed on top of the
 // wrong file, once destroying SiteCensus.gs entirely. Check the final line
-// number afterwards: this file is 1,788 lines (it was 927 before the
-// hardening pass).
+// number afterwards: this file is 1,966 lines (it was 927 before the
+// hardening pass, and 1,788 before the 3pm calibration pass).
 // =========================================================================
 
 
@@ -315,8 +315,15 @@ const PR_STATUS_SKIPPED  = 'Skipped - needs attention';
 // THE WAY OUT IS THE Ownership exceptions TABLE, NOT A CODE CHANGE. That was
 // a requirement, not a nicety: the people who will run this after the 15th
 // are not the people who can edit Apps Script. A row in that table naming a
-// UNITID and a string the URL is allowed to contain lets a refused address
-// through, and adding one is adding a row in Airtable.
+// UNITID and THE PASTED ADDRESS lets a refused URL through, and adding one is
+// adding a row in Airtable.
+//
+// THE FIELD TAKES A WHOLE URL, DELIBERATELY. It held a fragment in the first
+// draft, which was worse in both directions: nobody can be asked to decide
+// which part of an address is "the distinctive bit" without knowing what a
+// substring is, and somebody typing maxient.com into it would have let every
+// school's Maxient form through for that school. Copy the address from the
+// Candidate URLs row, paste it here. That is the entire instruction.
 //
 // Texas A&M-Victoria is the seed case, and it turned out to be a lesson in
 // checking rather than reasoning. Its Maxient tenant slug still reads
@@ -353,7 +360,7 @@ const PR_I_URL      = 'fld5s03AW9U65Z34W';   // Institution URL, multilineText
 
 const PR_EXC_TABLE  = 'tblP5FXdjG2zv8Nar';   // Ownership exceptions (PAGES)
 const PR_X_UNITID   = 'fld2hFZp9oinC7ikk';
-const PR_X_ALLOW    = 'fld1CYLnxN0JPz9QM';   // string the URL may contain
+const PR_X_ALLOW    = 'fld1CYLnxN0JPz9QM';   // Allowed URL -- a PASTED address
 const PR_X_REASON   = 'fld8ixTRKEpLVPleN';
 const PR_X_ACTIVE   = 'fld162zf3pqrjhEso';   // unticked rows are ignored
 
@@ -367,11 +374,15 @@ const PR_X_ACTIVE   = 'fld162zf3pqrjhEso';   // unticked rows are ignored
  * automatically a host worth publishing, and pointing both at one array would
  * make every future change to either a silent change to the other.
  *
- * Used for TWO different jobs below, and they pull in opposite directions:
- *   - the ownership check, where being on a vendor host is what EARNS a URL
- *     the chance to match on a name token rather than being refused outright;
- *   - the category check, where being on a vendor host is EVIDENCE that a URL
- *     is a report form and therefore does not belong in CHTR or Hazing Policy.
+ * USED FOR THE OWNERSHIP CHECK ONLY. Being on a vendor host is what earns an
+ * off-domain URL the chance to match on a name token instead of being refused
+ * outright.
+ *
+ * IT IS NOT EVIDENCE OF WHAT THE PAGE IS. The first draft of the category
+ * check used this list for exactly that and was wrong: cm.maxient.com serves
+ * transparency reports as well as forms, and 79 schools publish their CHTR
+ * page there. The category check keys on the PATH instead -- see
+ * PR_PATH_FORM.
  */
 const PR_VENDOR_HOSTS = [
   'maxient.com', 'symplicity.com', 'ethicspoint.com', 'navexglobal.com',
@@ -1143,29 +1154,36 @@ function prPlan_(row, byUnitid, instByUnitid, exceptions, ownershipLive) {
     } else {
       const verdict = prBelongsTo_(url, inst, exceptions[unitid] || []);
 
-      // An address that names NOBODY is a different problem from one that
-      // names somebody else. See prIsOpaqueFormHost_ for why this one is
-      // flagged rather than refused, and how to change that.
-      if (!verdict.ok && prIsOpaqueFormHost_(url) && !PR_OPAQUE_FORM_BLOCK) {
-        flags.push('ownership UNVERIFIABLE -- this form is on ' + prDomain_(url) +
-                   ', where the address carries no institutional identifier of any ' +
-                   'kind, so it can be neither confirmed nor disproved as this ' +
-                   'school\'s. Promoted on the reviewer\'s judgement. Worth opening ' +
-                   'SIGNED OUT to confirm the public can actually reach it.');
+      // THREE WAYS TO FAIL, AND ONLY ONE OF THEM IS A REFUSAL.
+      //
+      //   wrong-school    the address points somewhere that is positively not
+      //                   this school. Refuse.
+      //   unattributable  the address names nobody at all. Not evidence of the
+      //                   wrong school; no evidence of the right one. Flag.
+      //   cannot-test     nothing distinctive could be derived from THIS
+      //                   school to test with. The check has no opinion, so it
+      //                   must not pretend to one. Flag.
+      const softFail = verdict.kind === 'unattributable'
+        ? !PR_UNATTRIBUTABLE_BLOCK
+        : verdict.kind === 'cannot-test';
+
+      if (!verdict.ok && softFail) {
+        flags.push('ownership NOT CONFIRMED -- ' + verdict.why + ' Promoted on the ' +
+                   'reviewer\'s judgement. Worth opening SIGNED OUT to confirm the ' +
+                   'public can actually reach it.');
       } else if (!verdict.ok) {
         base.reason = 'BLOCKED -- ' + verdict.why + ' URL: "' + url + '". ' +
           'The school\'s own site is ' + prDomain_(inst.url) + '. ' +
           'IF THIS ADDRESS IS ACTUALLY CORRECT, add a row to the Ownership ' +
-          'exceptions table in PAGES: UNITID ' + unitid + ', and the distinctive ' +
-          'string the address is allowed to contain (a vendor tenant slug, not a ' +
-          'bare hostname). No code change is needed and the exception survives ' +
+          'exceptions table in PAGES: UNITID ' + unitid + ', and PASTE THIS ADDRESS ' +
+          'into Allowed URL. No code change is needed and the exception survives ' +
           'future candidate rows for this school. Then re-run.';
         return base;
       }
       if (verdict.viaException) {
-        flags.push('ownership allowed by exception ("' + verdict.viaException + '") -- ' +
-                   'off-domain address accepted because a row in Ownership exceptions ' +
-                   'says it is this school\'s');
+        flags.push('ownership allowed by exception -- off-domain address accepted ' +
+                   'because a row in Ownership exceptions says it is this school\'s ' +
+                   '("' + String(verdict.viaException).slice(0, 120) + '")');
       }
     }
   }
@@ -1204,19 +1222,36 @@ function prPlan_(row, byUnitid, instByUnitid, exceptions, ownershipLive) {
                'built from these will read as nonsense. Fix the terms on this row.');
   });
 
-  // The Dominican NY case. Its CHTR promotion would have replaced a working
-  // transparency-report index with a Maxient REPORTING FORM url, kept the
-  // checkmark, and fired no warning at all. A vendor host is strong evidence
-  // of a report form and weak-to-no evidence of anything else, which is why
-  // this fires in one direction only: policy and CHTR pages live on the
-  // school's own domain and their slugs overlap far too much -- "hazing
-  // report" appears in both -- for a keyword rule to be anything but noise.
-  if (categoryName !== 'Report Form' && prIsVendorHost_(url)) {
-    flags.push('a conduct-reporting VENDOR address is being promoted into ' +
-               categoryName + '. Vendor URLs are reporting forms almost without ' +
-               'exception, so this is very likely the wrong category -- check ' +
-               'whether it belongs in Report Form instead, and whether this ' +
-               'promotion is about to overwrite a working ' + categoryName + ' page.');
+  // The Dominican NY case: a Maxient REPORTING FORM promoted into CHTR, which
+  // would have replaced a working transparency-report index, kept the
+  // checkmark, and fired no warning at all.
+  //
+  // THIS KEYS ON THE PATH, NOT THE HOST, AND THE FIRST DRAFT GOT THAT WRONG.
+  // It flagged any vendor host promoted into a non-form category, on the
+  // reasoning that vendor URLs are reporting forms. They are not: 79 schools
+  // publish their transparency report at cm.maxient.com/chtr.php, verified
+  // against 50 States on 2026-09-10, and the host rule would have flagged
+  // every one of them. It did flag two in the first dry run -- Endicott and
+  // Texas A&M-San Antonio -- and both were correct pages.
+  //
+  // The path is the real signal and it is unambiguous. Maxient serves forms
+  // from reportingform.php and transparency reports from chtr.php. Seventy-
+  // nine false positives become zero, and Dominican NY is still caught.
+  //
+  // A FLAG THAT FIRES ON CORRECT ROWS IS WORSE THAN NO FLAG, because people
+  // learn to dismiss it and then dismiss the true one too. Keep this narrow.
+  const purpose = prUrlPurpose_(url);
+  if (purpose === 'form' && categoryName !== 'Report Form') {
+    flags.push('this address is a VENDOR REPORTING FORM (' + prPurposeEvidence_(url) +
+               ') but is being promoted into ' + categoryName + '. That is very likely ' +
+               'the wrong category -- check whether it belongs in Report Form, and ' +
+               'whether this promotion is about to overwrite a working ' +
+               categoryName + ' page. This is the Dominican NY shape.');
+  }
+  if (purpose === 'transparency' && categoryName !== 'CHTR') {
+    flags.push('this address is a VENDOR TRANSPARENCY REPORT (' + prPurposeEvidence_(url) +
+               ') but is being promoted into ' + categoryName + '. Check whether it ' +
+               'belongs in CHTR instead.');
   }
 
   // ---- what 50 States holds now ----------------------------------------
@@ -1389,44 +1424,68 @@ function prTokens_(inst, ownDomain) {
  *      school's name -- cm.maxient.com/reportingform.php?SamfordUniv.
  *
  * WHAT IT CANNOT DO is attribute an address that names nobody at all. See
- * prIsOpaqueFormHost_ for how those are handled and why they are not simply
- * refused.
+ * prIsUnattributableHost_ for how those are handled and why they are not
+ * simply refused.
  */
-function prBelongsTo_(url, inst, allowedStrings) {
+function prBelongsTo_(url, inst, allowedUrls) {
   const host = prDomain_(url);
-  if (!host) return { ok: false, why: 'the address has no readable host.' };
+  if (!host) {
+    return { ok: false, kind: 'wrong-school', why: 'the address has no readable host.' };
+  }
 
   const own = prDomain_(inst.url);
   if (own && (host === own || host.slice(-(own.length + 1)) === '.' + own)) {
     return { ok: true };
   }
 
-  const flat = prFlatten_(url);
+  const hit = prExceptionMatch_(url, allowedUrls);
+  if (hit) return { ok: true, viaException: hit };
 
-  for (let i = 0; i < allowedStrings.length; i++) {
-    const needle = prFlatten_(allowedStrings[i]);
-    if (needle && flat.indexOf(needle) !== -1) {
-      return { ok: true, viaException: allowedStrings[i] };
-    }
-  }
+  const flat  = prFlatten_(url);
+  const label = prFlatten_(String(own || '').split('.')[0]);
 
   if (!prIsVendorHost_(url)) {
+    // The school's own domain label inside somebody else's address: rented
+    // infrastructure serving the school's own document. NAME WORDS ARE NOT
+    // CONSULTED HERE -- see PR_LABEL_MIN.
+    if (label.length >= PR_LABEL_MIN && flat.indexOf(label) !== -1) {
+      return { ok: true, viaLabel: label };
+    }
+    if (prIsUnattributableHost_(url)) {
+      return {
+        ok: false, kind: 'unattributable',
+        why: 'this address is on ' + host + ', where the URL carries no institutional ' +
+             'identifier of any kind, so it can be neither confirmed nor disproved as ' +
+             'this school\'s.'
+      };
+    }
     return {
-      ok: false,
+      ok: false, kind: 'wrong-school',
       why: 'this address is on neither the school\'s own domain nor a recognised ' +
-           'conduct-reporting vendor, so there is no basis for treating it as this ' +
-           'school\'s page. This is the Seattle Pacific failure -- its Report Form ' +
-           'was a umass.edu page.'
+           'conduct-reporting vendor, and does not contain the school\'s own domain ' +
+           'name, so there is no basis for treating it as this school\'s page. This is ' +
+           'the Seattle Pacific failure -- its Report Form was a umass.edu page.'
     };
   }
 
   const tokens = prTokens_(inst, own);
+  if (!tokens.length) {
+    // National University: the label "nu" is below the three-character floor
+    // and "national" is a stop word, so nothing distinctive survives. There is
+    // no test to run, which is not the same as failing one.
+    return {
+      ok: false, kind: 'cannot-test',
+      why: 'nothing distinctive can be derived from this school\'s name or domain to ' +
+           'match against a vendor address -- the domain label is too short and every ' +
+           'word of the name is too generic -- so ownership could not be tested here.'
+    };
+  }
   for (let t = 0; t < tokens.length; t++) {
     if (flat.indexOf(tokens[t]) !== -1) return { ok: true };
   }
 
   return {
-    ok: false,
+    ok: false, kind: 'wrong-school',
     why: 'this address is on a conduct-reporting vendor but carries nothing ' +
          'identifying this school, which is exactly how one school\'s reporting ' +
          'form gets filed against another.'
@@ -1434,42 +1493,161 @@ function prBelongsTo_(url, inst, allowedStrings) {
 }
 
 /**
- * Hosts where a form CANNOT carry an institutional identifier at all.
+ * Does any Ownership exceptions row for this school match this address?
+ *
+ * THE FIELD HOLDS A PASTED URL. That was Lana's call on 2026-09-10 and it is
+ * the right one twice over. It is the only thing a non-technical person can
+ * be asked to do without explaining what a "string" is -- copy the address
+ * from the Candidate URLs row, paste it here -- and it is SAFER than the
+ * substring design it replaced, where somebody typing "maxient.com" into the
+ * field would have let every school's Maxient form through for that school.
+ *
+ * Compared with scheme, www and trailing slash ignored, and matched in either
+ * direction so that a stored address still covers the same page when a
+ * tracking parameter is added or dropped.
+ *
+ * A VALUE THAT IS NOT A URL IS TREATED AS A SUBSTRING, for the rows written
+ * under the older design. Both shapes keep working; new rows should be URLs.
+ */
+function prExceptionMatch_(url, allowedUrls) {
+  const cand = prNormaliseUrl_(url);
+  const flat = prFlatten_(url);
+  for (let i = 0; i < allowedUrls.length; i++) {
+    const raw = String(allowedUrls[i] || '').trim();
+    if (!raw) continue;
+    if (/^https?:\/\//i.test(raw) || /^[^\/\s]+\.[a-z]{2,}\//i.test(raw)) {
+      const stored = prNormaliseUrl_(raw);
+      if (stored && (cand.indexOf(stored) === 0 || stored.indexOf(cand) === 0)) return raw;
+    } else {
+      const needle = prFlatten_(raw);
+      if (needle && flat.indexOf(needle) !== -1) return raw;
+    }
+  }
+  return '';
+}
+
+/** Lowercased, scheme-less, www-less, no trailing slash. For comparing URLs. */
+function prNormaliseUrl_(url) {
+  return String(url || '').trim().toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\d*\./, '')
+    .replace(/\/+$/, '');
+}
+
+/**
+ * Hosts where an address CANNOT carry an institutional identifier at all.
  *
  * docs.google.com/forms/d/e/1FAIpQLSd.../viewform names nobody. Neither does
- * a bare Qualtrics or Microsoft Forms id. There is no way to attribute one
- * from the URL, and there never will be.
+ * a Microsoft Forms id, an emailmeform builder id, a casetracker number, a
+ * syntrio code, or a numbered pcdn.co CDN bucket. There is no way to
+ * attribute any of them from the URL, and there never will be.
  *
  * THESE ARE FLAGGED, NOT REFUSED, AND THAT IS A DELIBERATE DEPARTURE FROM
  * SearchProbe.gs, WHICH REFUSES THEM. The reason is the inverted cost stated
  * at the top: SearchProbe is filtering machine output, where dropping an
  * unattributable candidate costs nothing. Here a human has already opened the
- * school's page and confirmed this is the form it links to. Refusing would
- * throw that away, leave the school looking non-compliant, and demand an
- * exception row for every school that uses Google Forms -- which is a lot of
- * them.
+ * school's page and confirmed this is what it links to. Refusing would throw
+ * that away and demand an exception row for every school using Google Forms,
+ * which is a lot of them.
  *
- * AND NOTE WHAT THE RISK ACTUALLY IS. An opaque form names nobody, so it is
- * not evidence of the WRONG school; it is merely no evidence of the right
- * one. That is a different and smaller danger than umass.edu appearing on a
+ * AND NOTE WHAT THE RISK ACTUALLY IS. An unattributable address names nobody,
+ * so it is not evidence of the WRONG school; it is merely no evidence of the
+ * right one. That is a different and smaller danger than umass.edu on a
  * Seattle Pacific row, which names a different institution outright.
  *
- * TO MAKE THESE REFUSALS INSTEAD, set PR_OPAQUE_FORM_BLOCK to true. Expect to
- * add a lot of exception rows if you do.
+ * THE ENTRIES AFTER THE FORM HOSTS CAME FROM THE 2026-09-10 DRY RUN, where
+ * they were refused as wrong-school and every one turned out to be the
+ * school's own document on somebody else's infrastructure -- Millikin on
+ * syntrio, St. Francis on casetracker, Shaw on emailmeform, Missouri Baptist
+ * on a pcdn.co WordPress CDN. Add to this list when the same shape recurs;
+ * do not add a host that normally DOES name its tenant (see below).
+ *
+ * DO NOT ADD MAXIENT, SYMPLICITY OR ETHICSPOINT HERE. Those name their tenant
+ * as a matter of course -- BYU's EthicsPoint URL carries
+ * companyname=Brigham%20Young%20University -- so an address on one of them
+ * with no identifier is genuinely suspicious rather than merely unreadable.
+ * That is the Alcorn State case, and it should stay a refusal.
+ *
+ * TO MAKE THESE REFUSALS INSTEAD, set PR_UNATTRIBUTABLE_BLOCK to true. Expect
+ * to add a lot of exception rows if you do.
  */
-const PR_OPAQUE_FORM_HOSTS = [
-  'docs.google.com', 'forms.gle', 'forms.office.com', 'forms.microsoft.com'
+const PR_UNATTRIBUTABLE_HOSTS = [
+  'docs.google.com', 'forms.gle', 'forms.office.com', 'forms.microsoft.com',
+  'syntrio.com', 'casetracker.app', 'emailmeform.com', 'pcdn.co'
 ];
-const PR_OPAQUE_FORM_BLOCK = false;
+const PR_UNATTRIBUTABLE_BLOCK = false;
 
-function prIsOpaqueFormHost_(url) {
+function prIsUnattributableHost_(url) {
   const host = prDomain_(url);
   if (!host) return false;
-  for (let i = 0; i < PR_OPAQUE_FORM_HOSTS.length; i++) {
-    const v = PR_OPAQUE_FORM_HOSTS[i];
+  for (let i = 0; i < PR_UNATTRIBUTABLE_HOSTS.length; i++) {
+    const v = PR_UNATTRIBUTABLE_HOSTS[i];
     if (host === v || host.slice(-(v.length + 1)) === '.' + v) return true;
   }
   return false;
+}
+
+/**
+ * Shortest domain label accepted as proof of ownership off a vendor host.
+ *
+ * FIVE, AND THE FLOOR IS THE WHOLE POINT. Lane College's handbook lives at
+ * s3.../lanecollegeedu/, Life Pacific's at lifepacific-web.s3..., Cumberland's
+ * catalogue at cumberland.smartcatalogiq.com. All three are plainly the
+ * school's own document on rented infrastructure, and all three were refused
+ * on 2026-09-10 because the check never looked past the host.
+ *
+ * ONLY THE DOMAIN LABEL COUNTS HERE, NEVER A WORD FROM THE NAME, and that
+ * restriction is load-bearing. Lana's objection, and she is right: the
+ * realistic error is a reviewer confusing two similarly-named schools, and a
+ * name-word match passes exactly those -- St. Francis College and Saint
+ * Francis University both contain "francis". A domain label is specific to
+ * one institution in a way a name word is not. The five-character floor then
+ * keeps short labels like sfc and spu out, since those are the ones most
+ * likely to appear inside an unrelated string by accident.
+ */
+const PR_LABEL_MIN = 5;
+
+/**
+ * What a vendor address is FOR, judged by its path.
+ *
+ * Returns 'form', 'transparency', or '' when the address says nothing either
+ * way -- which is most of the time, and the right answer when it is.
+ *
+ * WHY PATHS AND NOT HOSTS: see the note at the call site. The one-line
+ * version is that cm.maxient.com serves both kinds and 79 schools publish
+ * their transparency report there, so the host is evidence of nothing.
+ *
+ * ONLY ADD A PATTERN YOU HAVE CHECKED AGAINST REAL ROWS. A pattern that is
+ * merely plausible turns this from a signal into noise, and a flag people
+ * dismiss is worse than no flag.
+ */
+const PR_PATH_FORM = [
+  /maxient\.com\/reportingform\.php/i,
+  /symplicity\.com\/public_report/i,
+  /ethicspoint\.com\/.*\/(?:issues\.html|report_company\.asp)/i,
+  /ethicspoint\.com\/custom\/.*\/report/i
+];
+const PR_PATH_TRANSPARENCY = [
+  /maxient\.com\/chtr\.php/i
+];
+
+function prUrlPurpose_(url) {
+  const s = String(url || '');
+  for (let i = 0; i < PR_PATH_TRANSPARENCY.length; i++) {
+    if (PR_PATH_TRANSPARENCY[i].test(s)) return 'transparency';
+  }
+  for (let i = 0; i < PR_PATH_FORM.length; i++) {
+    if (PR_PATH_FORM[i].test(s)) return 'form';
+  }
+  return '';
+}
+
+/** The part of the address that decided prUrlPurpose_, for the note. */
+function prPurposeEvidence_(url) {
+  const m = /\/([A-Za-z0-9_.-]+\.(?:php|html|asp|aspx))/i.exec(String(url || ''));
+  if (m) return m[1];
+  const p = /(public_report|report_company|issues)/i.exec(String(url || ''));
+  return p ? p[1] : prDomain_(url);
 }
 
 /** Which contradictory pairs are both present on this row? */
