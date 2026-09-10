@@ -784,6 +784,33 @@ function hdlCheckOne_(url, ignoreSet) {
     return out;
   }
 
+  // A STUBBORN HOST IS NO LONGER FETCHED EITHER (2026-09-10). It used to be
+  // fetched and its 401/403 classified as unverifiable. That was pointless
+  // and, as the Post proved, dangerous.
+  //
+  // Pointless: this list exists precisely because these hosts "answer 403 for
+  // a live article and a dead one identically" -- see HDL_STUBBORN_HOSTS. The
+  // best outcome a fetch can produce is therefore Unverifiable, which is what
+  // skipping produces, at no cost and with no wait.
+  //
+  // Dangerous: washingtonpost.com is on this list and does not answer 403 at
+  // all -- it accepts the connection and never replies, killing the execution
+  // and blocking every row behind it. newspapers.com carries ~17 rows here and
+  // nytimes, wsj, ft, latimes, bostonglobe, jstor and proquest are all the same
+  // shape. Fetching them was buying a hang risk for an answer we would discard.
+  //
+  // WHAT THIS GIVES UP: a stubborn host that unexpectedly returns 200 would
+  // have been recorded as working. Accepted -- by this list's own definition
+  // that does not happen, and if one of these ever opens up, take it off the
+  // list deliberately rather than paying for the possibility on every run.
+  if (hdlIsStubborn_(url)) {
+    out.unverifiable = true;
+    out.label = 'Not fetched - this host refuses every automated request and answers ' +
+                'the same whether or not the page still exists, so an automated check ' +
+                'cannot tell you anything. Open it by hand.';
+    return out;
+  }
+
   let current = url;
   let code = 0;
   let hops = 0;
