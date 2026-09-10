@@ -73,10 +73,11 @@
 //    file does not read it and the mute rule above replaces it.
 //
 // The six old fields on U.S. Hazing Deaths -- link_status, broken_links,
-// link_last_checked, links_to_ignore, link_review, archive_url -- are no
-// longer read or written by anything once this file is in place. Delete them
-// AFTER one clean run of this file, not before: if you need to fall back to
-// the old version for any reason, they are what it works from.
+// link_last_checked, links_to_ignore, link_review and archive_url -- were
+// deleted on 2026-09-10 after this file's first clean run. Nothing here reads
+// them. The plain URL field on that table was KEPT: it is the frozen record
+// of every address as it stood in September, which is what makes deleting a
+// dead source row safe.
 //
 // -------------------------------------------------------------------------
 // WHY THIS EXISTS
@@ -140,8 +141,16 @@ const HDL_TABLE_ID = 'tblKNek3GVwR7kMnN';   // Hazing Death Sources
 const HDL_F_URL      = 'fldh4cPl26UAitDQu';   // URL -- exactly one address
 const HDL_F_DEATH    = 'fld3H49pInnewYt8K';   // Death record (link)
 const HDL_F_MUTED    = 'fldJCX0COluCh8YnI';   // Muted (checkbox)
-const HDL_F_REVIEW   = 'fldrr0Y0EIPQghdQJ';   // Review -- read for the email only
 const HDL_F_ORIGINAL = 'fldfeh83BDch22yCx';   // Original URL
+// NOTHING ELSE. A field listed here is REQUESTED BY ID on every read, and
+// Airtable answers a request for a field that no longer exists with
+// 422 "Could not find a field" -- which fails the read, and therefore fails
+// every function in this file, not just the one that wanted the field.
+//
+// That is not hypothetical: the Review field was read here for an email
+// label, and deleting it would have taken the whole checker down for the sake
+// of one line of decoration. If you delete a field from Hazing Death Sources,
+// take it out of hdlReadRows_ FIRST.
 
 // Write
 const HDL_F_TITLE    = 'fldNIkCcQgQaDVTNu';   // Title (primary)
@@ -652,7 +661,6 @@ function hdlWorkLocked_(opts) {
         url: row.url,
         first: !row.status,
         muted: !!row.muted,
-        review: row.review || '',
         label: res.label
       });
     }
@@ -1506,8 +1514,7 @@ function hdlPat_() {
  */
 function hdlReadRows_(pat) {
   const fields = [HDL_F_URL, HDL_F_TITLE, HDL_F_DEATH, HDL_F_STATUS, HDL_F_DETAIL,
-                  HDL_F_ARCHIVE, HDL_F_CHECKED, HDL_F_MUTED, HDL_F_REVIEW,
-                  HDL_F_ORIGINAL];
+                  HDL_F_ARCHIVE, HDL_F_CHECKED, HDL_F_MUTED, HDL_F_ORIGINAL];
   const out = [];
   let offset = null, guard = 0;
 
@@ -1537,7 +1544,6 @@ function hdlReadRows_(pat) {
         archive:  f[HDL_F_ARCHIVE]  || '',
         checked:  f[HDL_F_CHECKED]  || '',
         muted:    f[HDL_F_MUTED]    === true,
-        review:   f[HDL_F_REVIEW]   || '',
         original: f[HDL_F_ORIGINAL] || ''
       });
     });
@@ -1667,7 +1673,6 @@ function hdlEmail_(rows) {
       (r.title ? ' &mdash; ' + hdlEsc_(r.title) : '') +
       (r.first ? ' <i>(first check)</i>' : '') +
       (r.muted ? ' <i>(mute cleared)</i>' : '') +
-      (r.review ? ' &mdash; already marked <i>' + hdlEsc_(r.review) + '</i>' : '') +
       '</p><pre style="font-size:12px;white-space:pre-wrap">' +
       hdlEsc_(r.url) + '\n' + hdlEsc_(r.label) + '</pre>';
   });
