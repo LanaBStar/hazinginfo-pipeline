@@ -1097,7 +1097,7 @@ function scoreToConfidence_(score) {
 //     the stored Seed link text, exactly as xsPickByKeyword_ scored it at
 //     creation time. sameSite/isSeed reconstructed from Seed URL.
 //   - Sitemap-discovered Report Form: repickPick_ on the stored outbound
-//     link list (Outbound report links), exactly as repickRun_ does.
+//     link list (Outbound page links), exactly as repickRun_ does.
 //   - Cross-seeded Report Form: repickPick_ on a single reconstructed
 //     link (Candidate URL + Seed link text), since cross-seed never
 //     stored an outbound list for these rows -- there is nothing to
@@ -2968,7 +2968,7 @@ let RFL_DUP_SEEN = {};
  * fresh proposal on another row.
  *
  * Rows awaiting this pass cannot pollute the set: rflFormula_ selects rows
- * with Outbound report links empty, and rflWrite_ writes outbound and
+ * with Outbound page links empty, and rflWrite_ writes outbound and
  * Linked form URL in the same PATCH, so an unprocessed row has neither.
  */
 function rflDupLoadSeen_(pat) {
@@ -3018,7 +3018,7 @@ function rflIsReviewed_(v) {
 }
 
 // Selection: Report Form, successfully fetched, not yet link-scanned.
-// Requires Outbound report links to be EMPTY, so improving the extractor
+// Requires Outbound page links to be EMPTY, so improving the extractor
 // does not by itself re-process finished rows. Re-picking from stored links
 // is free and covers most rule changes; only a change to what gets
 // EXTRACTED needs the field cleared first, at a fetch per row.
