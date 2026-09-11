@@ -58,7 +58,7 @@
 // every such row exactly once. rflOneRow_ now calls rflResolvePrefilter_
 // (added to SitemapFinder.gs) at the end of every branch, and rflWrite_
 // writes the result in the SAME PATCH call that already writes Linked
-// form URL / host / Outbound report links. No second read, no second
+// form URL / host / Outbound page links. No second read, no second
 // write, no separate trigger -- and once real scheduling gets built,
 // 'linkpass' is already one of the three PIPELINE_STAGES, so this comes
 // along for free rather than needing a fourth stage bolted on.
@@ -200,7 +200,7 @@ function pfBackfill_(dryRun) {
  * One-time backfill for Report Form rows captured before this patch --
  * same decision rflResolvePrefilter_ makes going forward, run once here
  * because those rows will never pass through rflOneRow_ again unless
- * their Outbound report links field is cleared. Reads the STORED
+ * their Outbound page links field is cleared. Reads the STORED
  * Pre-filter signals text and whatever Linked form URL already holds;
  * does not re-fetch.
  */
