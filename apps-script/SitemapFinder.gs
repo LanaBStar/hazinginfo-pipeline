@@ -3022,9 +3022,20 @@ function rflIsReviewed_(v) {
 // does not by itself re-process finished rows. Re-picking from stored links
 // is free and covers most rule changes; only a change to what gets
 // EXTRACTED needs the field cleared first, at a fetch per row.
+//
+// WIDENED TO CHTR. Until then the AI reviewing a transparency page saw the
+// page's text with every address stripped out, so a link to the report
+// arrived as the bare word "View" and the model had to guess whether a report
+// existed at all. It guessed differently on two runs of the same page. Giving
+// it the actual addresses removes the guess.
+//
+// THE TWO CATEGORIES ARE SCANNED BY THE SAME PASS BUT KEPT ON DIFFERENT
+// RULES. See rflReportLinks_ for why the filter has two arms, and rflWrite_
+// for the three Report Form fields a CHTR row must never be given.
 function rflFormula_() {
   return encodeURIComponent(
-    'AND({' + CF.category + '} = "Report Form", ' +
+    'AND(OR({' + CF.category + '} = "Report Form", ' +
+             '{' + CF.category + '} = "CHTR"), ' +
         '{' + CF.fetchStatus + '} = "Fetched", ' +
         '{' + RFL.outbound + '} = "")'
   );
@@ -3058,7 +3069,13 @@ function rflFetchRows_(pat, howMany) {
     '?filterByFormula=' + rflFormula_() + '&pageSize=' + Math.min(100, howMany) +
     '&returnFieldsByFieldId=true&fields[]=' + CF.candidateUrl +
     '&fields[]=' + CF.signals + '&fields[]=' + PF_F_RESULT +
-    '&fields[]=' + SM_CF_UNITID + '&fields[]=' + CAND_F_DETERMINATION;
+    '&fields[]=' + SM_CF_UNITID + '&fields[]=' + CAND_F_DETERMINATION +
+    // Read since the pass covers two categories. EVERY downstream decision
+    // branches on it -- which links are kept, which fields are written, and
+    // whether the Report Form pre-filter runs at all -- so a row arriving
+    // without it would be treated as Report Form and given form fields it
+    // has no business carrying.
+    '&fields[]=' + CF.category;
   const resp = UrlFetchApp.fetch(url, {
     headers: { Authorization: 'Bearer ' + pat }, muteHttpExceptions: true });
   if (resp.getResponseCode() !== 200) throw new Error('Airtable list error: ' + resp.getContentText());
@@ -3068,7 +3085,15 @@ function rflFetchRows_(pat, howMany) {
 
 function rflOneRow_(record) {
   const pageUrl = record.fields[CF.candidateUrl] || '';
-  const out = { id: record.id, linkedUrl: '', linkedHost: '', tier: '', outbound: '' };
+  // Category is read here and carried on `out` all the way to rflWrite_.
+  // A row whose category is missing or unrecognised is treated as CHTR, the
+  // narrower of the two: it gets its links stored and nothing else. Guessing
+  // "Report Form" on an unknown row would hand it a form tier and a
+  // pre-filter verdict, which is the failure worth avoiding.
+  const category = String(record.fields[CF.category] || '');
+  const isForm = category === 'Report Form';
+  const out = { id: record.id, category: category, isForm: isForm,
+                linkedUrl: '', linkedHost: '', tier: '', outbound: '' };
   if (!pageUrl) { out.outbound = '(no candidate URL)'; rflResolvePrefilter_(out, record); return out; }
 
   let resp;
@@ -3085,9 +3110,11 @@ function rflOneRow_(record) {
   }
 
   const html = resp.getContentText();
-  const links = rflReportLinks_(html, pageUrl);
+  const links = rflReportLinks_(html, pageUrl, isForm);
   if (!links.length) {
-    out.outbound = '(no report-like outbound links)'; rflResolvePrefilter_(out, record); return out;
+    out.outbound = isForm ? '(no report-like outbound links)'
+                          : '(no outbound links worth keeping)';
+    rflResolvePrefilter_(out, record); return out;
   }
 
   // STORE EVERYTHING, PICK FROM A SUBSET. The outbound list keeps links the
@@ -3096,8 +3123,15 @@ function rflOneRow_(record) {
   // while re-extracting costs a fetch per row. Rules change; fetches do not
   // come back.
   out.outbound = links.map(function (l) { return l.text + ' -> ' + l.url; }).join('\n').slice(0, 90000);
-  const best = rflPick_(links);
-  if (best) { out.linkedUrl = best.url; out.linkedHost = best.host; out.tier = best.tier; }
+
+  // PICKING IS A REPORT FORM JOB AND ONLY A REPORT FORM JOB. rflPick_ chooses
+  // the one form a school's row will be judged on and assigns it a Form link
+  // tier. A CHTR row has no such thing to choose: its links are stored so a
+  // person and the AI can read them, and nothing downstream picks a winner.
+  if (isForm) {
+    const best = rflPick_(links);
+    if (best) { out.linkedUrl = best.url; out.linkedHost = best.host; out.tier = best.tier; }
+  }
   rflResolvePrefilter_(out, record);
   return out;
 }
@@ -3118,6 +3152,18 @@ function rflOneRow_(record) {
  * unchanged value.
  */
 function rflResolvePrefilter_(out, record) {
+  // NOT FOR CHTR ROWS, AND THIS GUARD IS LOAD-BEARING. Everything below is
+  // Report Form machinery: Pre-filter result's vocabulary ('Passed',
+  // 'Dropped - no form found') describes whether a page offers a REPORT FORM,
+  // and the duplicate check keys on two rows sharing one form. Run on a CHTR
+  // row it would stamp a meaningless verdict and could mark a real
+  // transparency page a duplicate of an unrelated one.
+  //
+  // Placed inside the function rather than at the call sites because
+  // rflOneRow_ calls this on all five of its exit paths, and a guard that has
+  // to be remembered five times is a guard that gets missed once.
+  if (!out.isForm) return;
+
   const fields = record.fields || {};
   const current = String(fields[PF_F_RESULT] || '');
  
@@ -3154,7 +3200,52 @@ function rflResolvePrefilter_(out, record) {
   out.prefilterResult = (hadForm || out.linkedUrl) ? 'Passed' : 'Dropped - no form found';
 }
 
-function rflReportLinks_(html, pageUrl) {
+/**
+ * A link to a document. Checked before anything else on a CHTR page, because
+ * the transparency report is a file far more often than it is a page.
+ */
+function rflIsDocLink_(href) {
+  return /\.(pdf|docx?|xlsx?|pptx?|rtf|csv)(?:[?#]|$)/i.test(String(href || ''));
+}
+
+/**
+ * Site furniture: the links every page on a university site carries.
+ *
+ * DELIBERATELY SHORT. This is a blocklist on a keep-everything rule, so each
+ * entry removes real links and a wrong entry removes the report. Nothing goes
+ * here unless it could never be a transparency report. "Contact", "policy",
+ * "conduct" and "safety" are all absent on purpose -- each of them sits in
+ * the link text of some school's real report.
+ */
+function rflIsFurniture_(blob) {
+  return /privacy|accessibility|sitemap|site-map|copyright|terms of use|terms-of-use|nondiscrimination|skip to (?:main|content)|\blog ?in\b|\bsign ?in\b|apply now|make a gift|give now|\bdonate\b|\/careers|\/jobs|\bmyaccount\b/.test(blob);
+}
+
+/**
+ * Outbound links worth storing, on TWO DIFFERENT RULES.
+ *
+ * REPORT FORM keeps an ALLOWLIST: a known reporting vendor, or text that
+ * reads like a way to report something. That works because a reporting route
+ * announces itself -- a Maxient host or the word "report" is strong evidence,
+ * and everything else on the page is noise.
+ *
+ * CHTR KEEPS ALMOST EVERYTHING, and it has to. The link to a transparency
+ * report says whatever the school felt like: "View", "2024-2025",
+ * "Fall 2025 (PDF)", "Download", a bare year. McMurry's says "View" and
+ * nothing else. An allowlist looking for report-ish words drops exactly the
+ * links this change exists to capture, so the CHTR arm inverts it: keep the
+ * link unless it is obviously site furniture, and require only that it be a
+ * document, on the school's own site, or on a known vendor.
+ *
+ * NOISE IS THE CHEAP FAILURE HERE. A few extra links in a text field cost
+ * nothing -- a reader, human or model, skips them. A missing link costs a
+ * school its checkmark, silently. Keep the blocklist short.
+ *
+ * DOCUMENTS ARE LISTED FIRST on CHTR rows. Whatever reads this field reads
+ * the top of it most carefully, and on a transparency page the report is
+ * usually the PDF.
+ */
+function rflReportLinks_(html, pageUrl, isForm) {
   const origin = (/^(https?:\/\/[^\/]+)/i.exec(pageUrl) || [])[1] || '';
   const site = repickSite_(pageUrl);
   const seen = {}, out = [];
@@ -3181,11 +3272,22 @@ function rflReportLinks_(html, pageUrl) {
 
     const blob = (href + ' ' + text).toLowerCase();
 
-    // Keep a link if it points at a known reporting vendor, or reads like a
-    // way to report something. Vendor match alone is enough -- the link
-    // text is sometimes just "here".
     const host = repickVendor_(href, blob, pageUrl);
-    if (!host && !/report|incident|complaint|concern|submit|file a/.test(blob)) continue;
+    const isDoc = rflIsDocLink_(href);
+    const onSite = !!site && repickSite_(href) === site;
+
+    if (isForm) {
+      // Keep a link if it points at a known reporting vendor, or reads like a
+      // way to report something. Vendor match alone is enough -- the link
+      // text is sometimes just "here".
+      if (!host && !/report|incident|complaint|concern|submit|file a/.test(blob)) continue;
+    } else {
+      // CHTR: keep unless it is furniture, and require some reason to think
+      // it could be the school's own report -- a document, its own site, or a
+      // vendor that hosts transparency reports (cm.maxient.com/chtr.php).
+      if (rflIsFurniture_(blob)) continue;
+      if (!isDoc && !onSite && !host) continue;
+    }
 
     const key = href.toLowerCase();
     if (seen[key]) continue;
@@ -3196,14 +3298,28 @@ function rflReportLinks_(html, pageUrl) {
       host: host,
       blob: blob,
       hazing: /hazing/.test(blob),
-      sameSite: !!site && repickSite_(href) === site,
+      sameSite: onSite,
+      isDoc: isDoc,
       // A report you READ is not a report you FILE. Annual security
       // reports, Clery pages and transparency reports all match "report"
       // and none of them collect anything. Flagged rather than dropped so
       // the stored outbound list stays complete.
       readNotFile: repickIsReadNotFile_(blob, href)
     });
-    if (out.length >= 40) break;
+    // 40 for Report Form, unchanged. 20 for CHTR: a transparency page that
+    // genuinely offers more than twenty candidate links is not a page a
+    // longer list would rescue.
+    if (out.length >= (isForm ? 40 : 20)) break;
+  }
+
+  // Documents first on CHTR rows, appearance order preserved within each
+  // group. Report Form order is untouched -- rflPick_ scores every link and
+  // does not care what order they arrive in, but changing it would change
+  // nothing visibly and could change a tie-break invisibly.
+  if (!isForm) {
+    const docs = [], rest = [];
+    out.forEach(function (l) { (l.isDoc ? docs : rest).push(l); });
+    return docs.concat(rest);
   }
   return out;
 }
@@ -3217,10 +3333,23 @@ function rflWrite_(pat, results) {
   let failures = 0;
   const payload = results.map(function (r) {
     const f = {};
+    // Outbound links are written for BOTH categories. That is the whole point
+    // of the widening.
     f[RFL.outbound] = r.outbound;
-    f[RFL.linkedUrl] = r.linkedUrl;
-    f[RFL.linkedHost] = r.linkedHost;
-    f[RFL.tier] = repickTierLabel_(r.tier);
+
+    // THESE THREE ARE REPORT FORM ONLY, AND THE GUARD MATTERS MOST FOR THE
+    // THIRD. Linked form URL and Linked form host describe the one form a
+    // Report Form row is judged on; a CHTR row has no such form, so writing
+    // them would state something false. Form link tier is worse: this PATCH
+    // sends typecast: true, and a value that matches no existing choice MINTS
+    // A NEW ONE. That is how the field acquired a nameless option across 32
+    // rows. repickTierLabel_ returns null rather than '' for exactly this
+    // reason -- and a CHTR row must not reach it at all.
+    if (r.isForm) {
+      f[RFL.linkedUrl] = r.linkedUrl;
+      f[RFL.linkedHost] = r.linkedHost;
+      f[RFL.tier] = repickTierLabel_(r.tier);
+    }
     // Only set when rflResolvePrefilter_ actually decided something this
     // round -- a row already Passed or Dropped - terms only in navigation
     // from capture must not be sent back to undefined/blank.
