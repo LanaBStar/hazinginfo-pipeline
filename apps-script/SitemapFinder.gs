@@ -202,9 +202,95 @@ const SM_BROWSER_HEADERS = {
 // 1. SITEMAP FINDER
 // =========================================================================
 
-const SITEMAP_RECORDS_PER_RUN = 15;   // 50 States records pulled per call
-const MAX_SITEMAP_URLS = 1500;        // cap per sitemap file
-const MAX_CHILD_SITEMAPS = 5;         // cap on child sitemaps for index files
+// LOWERED 15 -> 8 ON 2026-09-12, with the fold. The six-minute execution
+// cap DOES NOT THROW -- no catch, no finally, nothing in memory survives --
+// so a batch that cannot finish is silently truncated work. At the old caps
+// a school was a couple of seconds; at 25 children / 15,000 URLs it can be
+// tens. 15 schools would not reliably fit.
+//
+// SET TO 10 ON 2026-09-12, AFTER 20 BLEW THE SIX-MINUTE CAP.
+//
+// The history is the lesson. dscDryRun10Chtr() measured 7.2s per school,
+// so 20 looked safe with headroom. In the live sweep the per-school cost
+// CLIMBED -- 7.2s, then 9.4s, then past 18s -- because the schools are
+// ordered by UNITID, not by size, and a run of large sites lands together.
+// Batch 7 exceeded the cap and lost its writes entirely.
+//
+// TWO CHANGES CAME OUT OF THAT. This number halved, and runNextSitemapBatch_
+// now stops on its own budget and saves what it finished (see the guard
+// there). The guard is the real protection; this number just makes hitting
+// it rare.
+//
+// Earlier note, kept because the reasoning still holds:
+//
+// DELIBERATELY BELOW THE NUMBER THE DRY RUN PRINTS. That figure is just
+// 270 / (seconds per school) and it assumes every school costs the mean.
+// They do not: in that sample of ten, one school published 7,413 URLs and
+// another 74. A batch sized for the mean meets a run of slow schools and
+// exceeds the six-minute cap -- which DOES NOT THROW, so the overrun is
+// silent and the offset still advances. 20 leaves roughly a third of the
+// budget as headroom for that tail.
+//
+// Re-measure with dscDryRun10Chtr() before changing it. Do not raise it to
+// the printed number.
+const SITEMAP_RECORDS_PER_RUN = 10;   // 50 States records pulled per call
+// TOMBSTONE, 2026-09-12. MAX_SITEMAP_URLS = 1500 and MAX_CHILD_SITEMAPS = 5
+// were discovery's caps until the fold. They are replaced by DSC_MAX_URLS /
+// DSC_MAX_CHILDREN below, at the census's values. The names are left here
+// as a marker because decisions-log #243 and several working-state docs
+// name them, and a reader chasing those references should land on this
+// note rather than on nothing.
+//
+// WHICH CAP BOUND, SETTLED TWICE: the URL check sat INSIDE the child loop,
+// so a large school's first child sitemap usually blew past 1,500 on its
+// own and the limit of 5 children was never reached. Sampled schools
+// publish 2,488 / 4,295 / 7,413 / 11,315 URLs against that 1,500 cap --
+// which is to say discovery was reading a fraction of a big school's site
+// and calling the result "nothing matched".
+const DSC_MAX_URLS     = 15000;   // was MAX_SITEMAP_URLS = 1500
+const DSC_MAX_CHILDREN = 25;      // was MAX_CHILD_SITEMAPS = 5
+
+// ---- What discovery now RECORDS on Institutions -------------------------
+// Discovery used to throw away everything except the URL list:
+// fetchXmlSafely_ returned null for a 404, a 403, a timeout and a
+// genuinely empty sitemap alike, and processRecord_ collapsed every
+// failure to one in-memory label, 'noSitemapFound', that was never written
+// anywhere. Four different facts about a school, one unreadable label.
+//
+// TWO OF THESE FIELD IDS ARE NEW. Sitemap child count and Census match
+// summary were deleted from Institutions and recreated 2026-09-12, and
+// Airtable cannot reuse a deleted field's ID. SiteCensus.gs still names
+// the dead ones and was deliberately not patched -- it is being retired.
+// Dead, do not use: fldgUgdBInARK8AYZ, fldyDPxEty7PGIcjj.
+const DSC_W_STATUS   = 'fldScBd3Uxsle4wWZ';   // Sitemap status
+const DSC_W_CHILDREN = 'fldQ2dh2DZHEgfEMa';   // Sitemap child count  (NEW ID)
+const DSC_W_URLS     = 'fldUNCXMweHU5V7Wd';   // Sitemap URLs seen
+const DSC_W_CHECKED  = 'fldL6KuyK16M9AFDt';   // Sitemap last checked
+const DSC_W_SUMMARY  = 'fldtQRL2LDPjHwrU8';   // Census match summary (NEW ID)
+
+const DSC_W_OUTCOME = {
+  chtr:         'fld3rCEo6bUNlKFyS',
+  hazingPolicy: 'fldaXEvpvDu2Tyuz3',
+  reportForm:   'fldmiSNRwue9uv8d1'
+};
+
+// These strings must match the select choices EXACTLY. Verified against the
+// live schema 2026-09-12. A value matching no choice would be MINTED,
+// because the write sends typecast: true.
+const DSC_ST_REACHABLE = 'Reachable';
+const DSC_ST_NONE      = 'No sitemap';
+const DSC_ST_BLOCKED   = 'Blocked';
+const DSC_ST_ERROR     = 'Fetch error';
+
+// Discovery can only ever write these three. The other four choices
+// ('Skipped - already answered', 'Skipped - candidates pending', 'Not yet
+// checked', and the gap label) describe schools discovery never sees,
+// because the gate excludes them before this code runs.
+const DSC_OUT_PROPOSED   = 'Candidates proposed';
+const DSC_OUT_NOTHING    = 'Searched, nothing matched';
+const DSC_OUT_NO_SITEMAP = 'Not searched - no sitemap';
+
+const DSC_WRITE_BATCH = 10;   // Airtable's cap per PATCH
 const MAX_CANDIDATES_KEPT = 5;        // ranked candidates kept per school
 const CRAWL_POLITENESS_DELAY_MS = 250;
 const INTAKE_CREATE_BATCH = 10;       // Airtable's cap per create call
@@ -407,6 +493,26 @@ const PIPELINE_CATEGORY_LABEL = {
 // -------------------------------------------------------------------------
 // ENTRY POINTS (called from the web page)
 // -------------------------------------------------------------------------
+// ZERO-ARGUMENT ENTRY POINTS FOR THE EDITOR'S RUN DROPDOWN.
+//
+// runOrResumeSitemapBatch takes a category and is called that way by the
+// web app. The dropdown cannot pass arguments -- it would call it with
+// categoryKey undefined, which throws 'Unknown category: undefined'. These
+// three are what to select by hand. Same reason dscDryRunChtr and friends
+// exist, and scDryRun30 before them.
+//
+// EACH CALL DOES ONE BATCH (SITEMAP_RECORDS_PER_RUN schools) and saves its
+// resume point, so run it repeatedly until the result reports done: true.
+// resetSitemapProgress(categoryKey) starts a category over.
+function runChtrBatch()         { return runOrResumeSitemapBatch('chtr'); }
+function runHazingPolicyBatch() { return runOrResumeSitemapBatch('hazingPolicy'); }
+function runReportFormBatch()   { return runOrResumeSitemapBatch('reportForm'); }
+
+// Zero-argument resets, for the same reason.
+function resetChtrProgress()         { return resetSitemapProgress('chtr'); }
+function resetHazingPolicyProgress() { return resetSitemapProgress('hazingPolicy'); }
+function resetReportFormProgress()   { return resetSitemapProgress('reportForm'); }
+
 function runOrResumeSitemapBatch(categoryKey) {
   const category = CATEGORIES[categoryKey];
   if (!category) throw new Error('Unknown category: ' + categoryKey);
@@ -437,20 +543,37 @@ function resetSitemapProgress(categoryKey) {
 // -------------------------------------------------------------------------
 // MAIN BATCH LOGIC
 // -------------------------------------------------------------------------
+// A batch must finish inside this, leaving room for the writes that follow.
+// The six-minute platform cap DOES NOT run a catch or a finally -- when it
+// fires, the candidate rows are not created, the Institutions recording does
+// not happen, and the resume offset is not saved. The whole batch is lost.
+// Measured 2026-09-12: a 20-school batch at >18s per school hit the cap and
+// lost everything it had done.
+const SITEMAP_BATCH_BUDGET_MS = 4 * 60 * 1000;
+
 function runNextSitemapBatch_(category, startOffset) {
+  const startedAt = Date.now();
   const pat = capPat_();
   const props = PropertiesService.getScriptProperties();
   const categoryKey = category.key;
 
   const page = fetchBlankRecordsPageWithRecovery_(pat, category, startOffset, props);
   const results = [];
+  let budgetHit = false;
 
   for (let i = 0; i < page.records.length; i++) {
+    // STOP BEFORE THE PLATFORM DOES. Breaking here means everything already
+    // processed still gets written below; letting the cap fire means none
+    // of it does. Per-school cost is not predictable from a sample -- it
+    // climbed from 7.2s to over 18s across one afternoon, because schools
+    // are ordered by UNITID and big sites arrive in runs.
+    if (Date.now() - startedAt > SITEMAP_BATCH_BUDGET_MS) { budgetHit = true; break; }
     results.push(processRecord_(page.records[i], category));
     Utilities.sleep(CRAWL_POLITENESS_DELAY_MS);
   }
 
   const write = writeSitemapCandidates_(pat, category, results);
+  const instWrite = dscWriteInstitutions_(pat, category, results);
 
   const cumulative = JSON.parse(props.getProperty(PROP_SITEMAP_SUMMARY_PREFIX + categoryKey) || '{}');
   mergeSitemapSummary_(cumulative, results);
@@ -464,29 +587,127 @@ function runNextSitemapBatch_(category, startOffset) {
 
   const processedSoFar =
     parseInt(props.getProperty(PROP_SITEMAP_PROCESSED_PREFIX + categoryKey) || '0', 10) +
-    page.records.length;
+    results.length;
   props.setProperty(PROP_SITEMAP_PROCESSED_PREFIX + categoryKey, String(processedSoFar));
 
-  const done = !page.nextOffset;
-  if (done) props.deleteProperty(PROP_SITEMAP_OFFSET_PREFIX + categoryKey);
-  else props.setProperty(PROP_SITEMAP_OFFSET_PREFIX + categoryKey, page.nextOffset);
+  // THE OFFSET ONLY ADVANCES ON A COMPLETE PAGE. Airtable's offset points
+  // past the whole page, not at a record within it, so advancing after a
+  // partial batch would skip the schools that were not reached -- silently,
+  // and permanently for this sweep. Leaving it put means the next run
+  // re-reads this page and redoes the finished schools; that costs fetches
+  // but loses nothing, and dedupe stops the rows doubling.
+  const done = !page.nextOffset && !budgetHit;
+  if (budgetHit) {
+    // leave the offset exactly where it was
+  } else if (done) {
+    props.deleteProperty(PROP_SITEMAP_OFFSET_PREFIX + categoryKey);
+  } else {
+    props.setProperty(PROP_SITEMAP_OFFSET_PREFIX + categoryKey, page.nextOffset);
+  }
+
+  // LOG THE SUMMARY, DO NOT ONLY RETURN IT.
+  //
+  // This function returns its result to the web app, which renders it. Run
+  // by hand from the editor's dropdown the return value goes nowhere, so
+  // the run looked silent -- no way to tell whether the Institutions
+  // recording landed, and dscWriteInstitutions_ deliberately does not throw
+  // on a failed write. A pass whose only failure signal is a field on an
+  // unread return value has no failure signal.
+  const log = [];
+  log.push('');
+  log.push('======== SITEMAP BATCH -- ' + category.label + ' ========');
+  if (page.recovered) {
+    log.push('NOTE: saved resume point had expired. Restarted from the beginning;');
+    log.push('processed count and summary were reset. Nothing was lost -- dedupe');
+    log.push('stops already-proposed URLs being recreated.');
+  }
+  log.push('Schools this batch: ' + results.length + ' of ' + page.records.length +
+           ' pulled   |   cumulative: ' + processedSoFar);
+  log.push('Elapsed: ' + Math.round((Date.now() - startedAt) / 1000) + 's' +
+           (results.length
+             ? '   |   ' + (Math.round((Date.now() - startedAt) / results.length / 100) / 10) +
+               's per school'
+             : ''));
+  if (budgetHit) {
+    log.push('');
+    log.push('*** STOPPED ON THE 4-MINUTE BUDGET, before the platform cap.');
+    log.push('    Everything above WAS written. The resume point was NOT advanced,');
+    log.push('    so the next run re-reads this page -- the schools already done');
+    log.push('    will be redone and deduped. If this keeps happening, lower');
+    log.push('    SITEMAP_RECORDS_PER_RUN (currently ' + SITEMAP_RECORDS_PER_RUN + ').');
+  }
+  log.push('Candidate rows created: ' + write.created +
+           '   |   already present (deduped): ' + write.skipped);
+  log.push('Institutions recorded: ' + instWrite.written + ' of ' + page.records.length);
+  log.push('');
+
+  const statuses = {}, outcomes = {};
+  results.forEach(function (r) {
+    const st = r.sitemap ? r.sitemap.status : '(no fetch)';
+    statuses[st] = (statuses[st] || 0) + 1;
+    const oc = r.discoveryOutcome || '(none)';
+    outcomes[oc] = (outcomes[oc] || 0) + 1;
+  });
+  log.push('Sitemap status: ' + Object.keys(statuses).sort().map(function (k) {
+    return k + ' ' + statuses[k];
+  }).join('  |  '));
+  log.push('Outcome written: ' + Object.keys(outcomes).sort().map(function (k) {
+    return k + ' ' + outcomes[k];
+  }).join('  |  '));
+  log.push('');
+
+  const found = results.filter(function (r) { return r.candidates.length; });
+  if (found.length) {
+    log.push('--- CANDIDATES FOUND (' + found.length + ') ---');
+    found.forEach(function (r) {
+      log.push('  ' + String(r.institution).slice(0, 50) + ' (' + r.unitid + ')  [' +
+               r.topCandidateConfidence + ']');
+      log.push('      ' + String(r.topCandidateUrl).slice(0, 110));
+    });
+    log.push('');
+  }
+
+  if (instWrite.errors.length) {
+    log.push('*** INSTITUTIONS WRITE ERRORS (' + instWrite.errors.length + ') ***');
+    log.push('    Candidate rows still landed -- this pass does not throw on a');
+    log.push('    recording failure, so that a failed write cannot discard real work.');
+    instWrite.errors.forEach(function (e) { log.push('    ' + e); });
+    log.push('');
+  }
+  if (cumulativeWriteErrors.length) {
+    log.push('Candidate-row write errors so far this sweep: ' + cumulativeWriteErrors.length);
+    log.push('');
+  }
+
+  log.push(done
+    ? 'DONE. Every eligible school in this category has been processed.'
+    : 'NOT DONE -- run this again to continue from the saved resume point.');
+  log.push('');
+  Logger.log(log.join('\n'));
 
   return {
     done: done,
     category: categoryKey,
     categoryLabel: category.label,
     recovered: page.recovered,
-    recordsProcessedThisBatch: page.records.length,
+    recordsProcessedThisBatch: results.length,
+    recordsPulled: page.records.length,
+    budgetHit: budgetHit,
     cumulativeProcessed: processedSoFar,
     rowsCreatedThisBatch: write.created,
     rowsAlreadyPresent: write.skipped,
+    institutionsRecorded: instWrite.written,
+    institutionsWriteErrors: instWrite.errors,
     cumulativeSummary: cumulative,
     writeErrors: cumulativeWriteErrors,
     sampleResults: results.map(function (r) {
       return {
         institution: r.institution,
         topCandidate: r.topCandidateUrl,
-        confidence: r.topCandidateConfidence
+        confidence: r.topCandidateConfidence,
+        sitemapStatus: r.sitemap ? r.sitemap.status : null,
+        urlsSeen: r.sitemap ? r.sitemap.urlsSeen : null,
+        children: r.sitemap ? r.sitemap.children : null
       };
     })
   };
@@ -540,7 +761,11 @@ function smBlankClause_(fieldIds) {
 function fetchBlankRecordsPage_(pat, category, startOffset, maxRecords) {
   let records = [];
   let offset = startOffset || null;
-  const fieldIds = [SM_F_INSTITUTION, SM_F_INST_URL, SM_F_UNITID];
+  // Census match summary is read as well as written, because it is SHARED
+  // across the three categories and discovery runs ONE CATEGORY AT A TIME.
+  // Writing it blind would mean each category pass wiped the other two.
+  // dscMergeSummary_ replaces only this category's block.
+  const fieldIds = [SM_F_INSTITUTION, SM_F_INST_URL, SM_F_UNITID, DSC_W_SUMMARY];
   const fieldsParam = fieldIds.map(function (f) { return 'fields[]=' + f; }).join('&');
   // THE DISCOVERY GATE. Every one of category.blankFields is blank, AND
   // nothing is already waiting for a reviewer. The pending-review clause
@@ -548,12 +773,27 @@ function fetchBlankRecordsPage_(pat, category, startOffset, maxRecords) {
   // unreviewed can only re-propose URLs already in the table, which dedup
   // then discards -- a whole sitemap fetch for nothing.
   //
-  // blankFields checks the LOCATED field for every category (2026-08-26)
-  // -- chtr_index_url, located_hazing_policy_url, located_report_form_url
-  // -- never the compliance field. See CATEGORIES' header comment for why
-  // this is safe: located_* is now a verified superset of compliance for
-  // all three categories, so "already answered" needs only one field, the
-  // same way it always has for CHTR.
+  // blankFields checks the COMPLIANCE field for every category, NOT the
+  // located_* record field. CORRECTED 2026-09-12: this comment described
+  // the pre-2026-09-10 state and had been wrong since that change. The
+  // values actually in CATEGORIES[].blankFields are, and have been since
+  // 2026-09-10:
+  //
+  //     Report Form    fldIrTzWzi87nD7EU   (compliance)
+  //     Hazing Policy  fldD9gEpDcw2l35II   (compliance)
+  //     CHTR           fldGJPC0iyuPcWtlK   (compliance)
+  //
+  // The paired record fields -- located_report_form_url fldeBRiCU8dnIKsYk,
+  // located_hazing_policy_url fldKyIAd65Yfn5g0V, chtr_index_url
+  // fldqQrSD83OVoteFx -- are named on each CATEGORIES line for reference
+  // and are NOT read here.
+  //
+  // Why compliance rather than located_*: a page that was found but judged
+  // below standard fills the record field while leaving compliance blank.
+  // Gating on the record field would retire that school from discovery on
+  // the strength of a page that does not meet the standard, which is the
+  // opposite of what should happen -- it is exactly the school that still
+  // needs a better URL found.
   //
   // Pending-review count fields carry their conditions in the Airtable UI,
   // which the API cannot read or write. An unconditioned count silently
@@ -598,7 +838,15 @@ function processRecord_(record, category) {
     candidates: [],
     topCandidateUrl: '',
     topCandidateConfidence: null,
-    outcome: null
+    outcome: null,
+    // THE FOLD'S ADDITIONS. `outcome` stays exactly as it was -- it is an
+    // in-memory tally key that mergeSitemapSummary_ counts, and changing
+    // its vocabulary would silently rewrite the run summary. These are
+    // separate fields carrying what gets WRITTEN to Institutions.
+    sitemap: null,            // { status, children, urlsSeen, trace }
+    discoveryOutcome: null,   // one of the DSC_OUT_* select values
+    summaryLine: '',          // this category's block in Census match summary
+    existingSummary: String((record.fields || {})[DSC_W_SUMMARY] || '')
   };
 
   // No UNITID means the row cannot be filed against a school -- the
@@ -610,14 +858,62 @@ function processRecord_(record, category) {
 
   institutionUrl = normalizeBaseUrl_(institutionUrl);
 
-  let sitemapUrls = [];
-  try { sitemapUrls = discoverSitemapUrls_(institutionUrl); }
-  catch (err) { sitemapUrls = []; }
+  let read;
+  try { read = discoverSitemapUrls_(institutionUrl); }
+  catch (err) {
+    read = { status: DSC_ST_ERROR, children: 0, urls: [],
+             trace: ['threw: ' + (err && err.message ? err.message : String(err))] };
+  }
 
-  if (sitemapUrls.length === 0) { result.outcome = 'noSitemapFound'; return result; }
+  result.sitemap = {
+    status: read.status,
+    children: read.children,
+    urlsSeen: read.urls.length,
+    trace: read.trace
+  };
 
-  const ranked = rankCandidates_(sitemapUrls, category);
-  if (ranked.length === 0) { result.outcome = 'noKeywordMatch'; return result; }
+  // NOT REACHABLE. Nothing was searched, and the trace says what was tried.
+  if (read.status !== DSC_ST_REACHABLE) {
+    result.outcome = 'noSitemapFound';
+    result.discoveryOutcome = DSC_OUT_NO_SITEMAP;
+    result.summaryLine = 'Nothing searched (' + read.status + '). What was tried:\n' +
+      read.trace.join('\n');
+    return result;
+  }
+
+  // REACHABLE BUT EMPTY IS NOT A SEARCH. A sitemap index whose children all
+  // failed, or a urlset with no entries, leaves nothing to score -- and
+  // scoring nothing returns "no match" for the category, which reads as a
+  // finding about the school. Status stays Reachable because it is true and
+  // URLs seen says 0, but the outcome has to say nothing was looked at.
+  if (!read.urls.length) {
+    result.outcome = 'noSitemapFound';
+    result.discoveryOutcome = DSC_OUT_NO_SITEMAP;
+    result.summaryLine = 'Sitemap reachable but yielded 0 URLs -- nothing was searched.\n' +
+      read.trace.join('\n');
+    return result;
+  }
+
+  const ranked = rankCandidates_(read.urls, category);
+
+  // A school with more children than the cap was read PARTIALLY, so
+  // "nothing matched" is weaker there than the phrase suggests. Said on the
+  // row rather than left to be inferred from Sitemap child count.
+  const partial = read.children > DSC_MAX_CHILDREN
+    ? '\nNOTE: ' + read.children + ' child sitemaps, only the first ' +
+      DSC_MAX_CHILDREN + ' were read. Coverage is partial.'
+    : '';
+  const capped = read.urls.length >= DSC_MAX_URLS
+    ? '\nNOTE: hit the ' + DSC_MAX_URLS + '-URL cap. Coverage is partial.'
+    : '';
+
+  if (ranked.length === 0) {
+    result.outcome = 'noKeywordMatch';
+    result.discoveryOutcome = DSC_OUT_NOTHING;
+    result.summaryLine = category.label + ': 0 of ' + read.urls.length +
+      ' URLs matched.' + partial + capped;
+    return result;
+  }
 
   // Rank and confidence are both settled HERE, at the moment of ranking,
   // and stored as-is. That is the whole point of writing rows directly:
@@ -629,6 +925,11 @@ function processRecord_(record, category) {
   result.topCandidateUrl = result.candidates[0].url;
   result.topCandidateConfidence = result.candidates[0].confidence;
   result.outcome = result.topCandidateConfidence;
+  result.discoveryOutcome = DSC_OUT_PROPOSED;
+  result.summaryLine = category.label + ': ' + ranked.length + ' of ' +
+    read.urls.length + ' URLs matched (top: ' +
+    ranked[0].url.slice(0, 160) + ', ' + scoreToConfidence_(ranked[0].score) + ')' +
+    partial + capped;
   return result;
 }
 
@@ -639,65 +940,166 @@ function normalizeBaseUrl_(rawUrl) {
   return url.replace(/\/+$/, '');
 }
 
+/**
+ * Read a school's sitemap, and REPORT WHAT HAPPENED.
+ *
+ * Returns { urls, status, children, trace } instead of a bare array. This
+ * is the fold: the census's reader, at the census's caps, in the function
+ * discovery already calls, so there is one fetch and one record rather than
+ * two passes to keep in sync.
+ *
+ * THREE THINGS CHANGED AND EACH IS LOAD BEARING.
+ *
+ * 1. BROWSER HEADERS. The old fetch sent none, so it went out with the
+ *    default Apps Script User-Agent, which identifies as Google.
+ *    SM_BROWSER_HEADERS exists precisely because university WAFs reject
+ *    that outright -- measured in August 2026 as manufacturing false
+ *    "blocked" readings at roughly a 99:1 rate. scFetch_ in SiteCensus.gs
+ *    was given the fix; discovery never was, and has been reading sitemaps
+ *    with the rejected UA ever since. This is a candidate explanation for
+ *    schools recorded as having no sitemap that plainly publish one.
+ *
+ * 2. THE CAPS. 25 children / 15,000 URLs, not 5 / 1,500. See the tombstone
+ *    at DSC_MAX_URLS for which cap actually bound and why the old pair
+ *    meant big schools were scored on a fraction of their site.
+ *
+ * 3. THE STATUS AND THE TRACE. Four outcomes, not one silent empty array:
+ *
+ *      Reachable    a sitemap was read. urls may still be 0, which is
+ *                   true and different from finding nothing in it.
+ *      Blocked      403/401 -- a WAF answered. Retryable, not a finding.
+ *      Fetch error  DNS, TLS, timeout, no response. We failed to ask.
+ *      No sitemap   the server answered 404. The only one that is a
+ *                   finding about the school.
+ *
+ *    ORDER MATTERS, and it is the census's order for the census's reason:
+ *    a connection failure OUTRANKS a 404, because "the site did not answer"
+ *    is not "the site says there is no sitemap", and No sitemap gets read
+ *    as a finding while Fetch error gets read as a retry.
+ *
+ *    The trace is the whole value of a negative. Without it, No sitemap is
+ *    indistinguishable from a WAF 404 to a datacenter IP and from an
+ *    Institution URL pointing at the wrong host -- three facts, one label.
+ *
+ * SOFT 404s ARE NOT SITEMAPS. A university CMS commonly serves an HTML
+ * "page not found" with a 200. That contains '<' in abundance, and the old
+ * check was exactly `indexOf('<') === -1`, so such a page counted as a
+ * reachable sitemap with zero URLs -- a claim that a school was checked
+ * when nothing was read. Requiring <urlset or <sitemapindex is the fix.
+ */
 function discoverSitemapUrls_(baseUrl) {
-  let sitemapLocations = [baseUrl + '/sitemap.xml'];
-  sitemapLocations = sitemapLocations.concat(getSitemapsFromRobotsTxt_(baseUrl));
+  const result = { status: DSC_ST_ERROR, children: 0, urls: [], trace: [] };
 
-  const allUrls = [];
-  const seenSitemaps = {};
+  const locs = [baseUrl + '/sitemap.xml'];
+  const robots = dscFetch_(baseUrl + '/robots.txt');
+  result.trace.push('robots.txt -> ' + dscCode_(robots));
+  if (robots.ok && robots.text) {
+    robots.text.split('\n').forEach(function (line) {
+      const t = line.trim();
+      if (/^sitemap:/i.test(t)) {
+        const u = t.replace(/^sitemap:/i, '').trim();
+        if (u) locs.push(u);
+      }
+    });
+  }
 
-  for (let i = 0; i < sitemapLocations.length; i++) {
-    const loc = sitemapLocations[i];
-    if (seenSitemaps[loc]) continue;
-    seenSitemaps[loc] = true;
+  const seen = {};
+  let sawBlocked = false, sawAny = false, sawMissing = false, sawError = false;
 
-    const xml = fetchXmlSafely_(loc);
-    if (!xml) continue;
+  for (let i = 0; i < locs.length; i++) {
+    if (result.urls.length >= DSC_MAX_URLS) break;
+    const loc = locs[i];
+    if (seen[loc]) continue;
+    seen[loc] = true;
+
+    const r = dscFetch_(loc);
+    Utilities.sleep(CRAWL_POLITENESS_DELAY_MS);
+    result.trace.push(dscShortUrl_(loc) + ' -> ' + dscCode_(r));
+    if (!r.ok) {
+      if (r.code === 403 || r.code === 401) sawBlocked = true;
+      else if (r.code === 404) sawMissing = true;
+      else sawError = true;
+      continue;
+    }
+
+    const xml = r.text || '';
+    if (!/<(urlset|sitemapindex)\b/i.test(xml)) {
+      sawMissing = true;
+      result.trace.push('   (200 but not a sitemap -- soft 404 or HTML page)');
+      continue;
+    }
+    sawAny = true;
 
     if (xml.indexOf('<sitemapindex') !== -1) {
-      const childSitemaps = extractLocs_(xml).slice(0, MAX_CHILD_SITEMAPS);
-      for (let j = 0; j < childSitemaps.length; j++) {
-        const childXml = fetchXmlSafely_(childSitemaps[j]);
-        if (!childXml) continue;
-        Array.prototype.push.apply(allUrls, extractLocs_(childXml));
-        if (allUrls.length >= MAX_SITEMAP_URLS) break;
+      const kids = extractLocs_(xml);
+      // Counted BEFORE the slice, so the field records what the school
+      // publishes rather than what this pass chose to read.
+      result.children += kids.length;
+      const take = kids.slice(0, DSC_MAX_CHILDREN);
+      for (let k = 0; k < take.length; k++) {
+        if (result.urls.length >= DSC_MAX_URLS) break;
+        if (seen[take[k]]) continue;
+        seen[take[k]] = true;
+        const kr = dscFetch_(take[k]);
+        Utilities.sleep(CRAWL_POLITENESS_DELAY_MS);
+        if (!kr.ok || !kr.text) continue;
+        const kl = extractLocs_(kr.text);
+        for (let m = 0; m < kl.length && result.urls.length < DSC_MAX_URLS; m++) {
+          result.urls.push(kl[m]);
+        }
       }
     } else {
-      Array.prototype.push.apply(allUrls, extractLocs_(xml));
+      const ul = extractLocs_(xml);
+      for (let m = 0; m < ul.length && result.urls.length < DSC_MAX_URLS; m++) {
+        result.urls.push(ul[m]);
+      }
     }
-    if (allUrls.length >= MAX_SITEMAP_URLS) break;
   }
-  return allUrls.slice(0, MAX_SITEMAP_URLS);
+
+  if (sawAny) result.status = DSC_ST_REACHABLE;
+  else if (sawBlocked) result.status = DSC_ST_BLOCKED;
+  else if (sawError) result.status = DSC_ST_ERROR;
+  else if (sawMissing) result.status = DSC_ST_NONE;
+  else result.status = DSC_ST_ERROR;
+
+  return result;
 }
 
-function getSitemapsFromRobotsTxt_(baseUrl) {
-  let text = '';
+/**
+ * One fetch, reporting the code rather than swallowing it.
+ *
+ * REPLACES fetchXmlSafely_, which returned null for a 404, a 403, a
+ * timeout and an empty body alike -- the single collapse this whole fold
+ * exists to undo. Uses SM_BROWSER_HEADERS; see discoverSitemapUrls_ note 1.
+ */
+function dscFetch_(url) {
   try {
-    const response = UrlFetchApp.fetch(baseUrl + '/robots.txt',
-      { muteHttpExceptions: true, followRedirects: true });
-    if (response.getResponseCode() === 200) text = response.getContentText();
-  } catch (err) { return []; }
-
-  const matches = [];
-  text.split('\n').forEach(function (line) {
-    const trimmed = line.trim();
-    if (/^sitemap:/i.test(trimmed)) {
-      const sitemapUrl = trimmed.replace(/^sitemap:/i, '').trim();
-      if (sitemapUrl) matches.push(sitemapUrl);
-    }
-  });
-  return matches;
+    const resp = UrlFetchApp.fetch(url, {
+      headers: SM_BROWSER_HEADERS,
+      muteHttpExceptions: true,
+      followRedirects: true,
+      validateHttpsCertificates: true
+    });
+    const code = resp.getResponseCode();
+    if (code !== 200) return { ok: false, code: code, text: '' };
+    return { ok: true, code: code, text: resp.getContentText() };
+  } catch (err) {
+    // DNS, TLS, timeout. Deliberately NOT reported as 404: "the site would
+    // not answer" and "the site answered, there is no sitemap" are
+    // different facts about a school.
+    return { ok: false, code: 0, text: '' };
+  }
 }
 
-function fetchXmlSafely_(url) {
-  try {
-    const response = UrlFetchApp.fetch(url,
-      { muteHttpExceptions: true, followRedirects: true, validateHttpsCertificates: true });
-    if (response.getResponseCode() !== 200) return null;
-    const contentText = response.getContentText();
-    if (contentText.indexOf('<') === -1) return null;
-    return contentText;
-  } catch (err) { return null; }
+/** '200', '404', or 'no response' for a connection that never answered. */
+function dscCode_(r) {
+  if (r.ok) return '200';
+  return r.code ? String(r.code) : 'no response';
+}
+
+/** Just enough of a URL to recognise it in a trace line. */
+function dscShortUrl_(u) {
+  return String(u).replace(/^https?:\/\//i, '').slice(0, 90);
 }
 
 function extractLocs_(xml) {
@@ -1723,6 +2125,13 @@ function runSitemapForSpecificRecords(categoryKey, recordIds) {
   }
 
   const write = writeSitemapCandidates_(pat, category, results);
+  // The targeted runner records too. A hand-picked re-run is exactly when
+  // somebody is asking "what did it actually see for this school", and
+  // leaving the fields stale here would answer with the previous read.
+  const instWrite = dscWriteInstitutions_(pat, category, results);
+  if (instWrite.errors.length) {
+    instWrite.errors.forEach(function (e) { Logger.log('  ' + e); });
+  }
 
   Logger.log('Targeted re-run for ' + category.label + ': ' + results.length +
     ' record(s), ' + write.created + ' row(s) created, ' + write.skipped +
@@ -1747,7 +2156,11 @@ function runSitemapForSpecificRecords(categoryKey, recordIds) {
 }
 
 function fetchRecordsByIds_(pat, recordIds) {
-  const fieldIds = [SM_F_INSTITUTION, SM_F_INST_URL, SM_F_UNITID];
+  // Census match summary is read as well as written, because it is SHARED
+  // across the three categories and discovery runs ONE CATEGORY AT A TIME.
+  // Writing it blind would mean each category pass wiped the other two.
+  // dscMergeSummary_ replaces only this category's block.
+  const fieldIds = [SM_F_INSTITUTION, SM_F_INST_URL, SM_F_UNITID, DSC_W_SUMMARY];
   const fieldsParam = fieldIds.map(function (f) { return 'fields[]=' + f; }).join('&');
   const idFormula = 'OR(' + recordIds.map(function (id) {
     return 'RECORD_ID()="' + id + '"';
@@ -1819,6 +2232,63 @@ function startSitemapSweep() {
   Logger.log('Sweep started from the beginning. First slice in about ' +
     SITEMAP_SLICE_GAP_MINUTES + ' minute(s). It stops on its own when all ' +
     SITEMAP_SWEEP_ORDER.length + ' categories are done.');
+}
+
+/**
+ * Take over a sweep that was driven by hand.
+ *
+ * WHY THIS EXISTS. startSitemapSweep() resets every category's progress --
+ * correct for a fresh sweep, destructive when one is already part-done.
+ * resumeSitemapSweep() refuses unless the sweep's own marker is set, and it
+ * is not set when the batches were run one at a time from the editor
+ * (runChtrBatch and friends). On 2026-09-12 that left 190 CHTR schools
+ * already processed with no way to hand the rest to the chain.
+ *
+ * This sets the sweep marker WITHOUT touching per-category progress, so the
+ * chain picks up at each category's saved resume point. Categories already
+ * finished are skipped in a slice or two; unstarted ones begin at zero.
+ *
+ * Defaults to CHTR because that is SITEMAP_SWEEP_ORDER[0] and the chain
+ * advances on its own. Pass a category key to start the chain further along.
+ *
+ * ONE THING TO EXPECT, AND IT IS NOT A FAILURE: triggered runs share a
+ * roughly 90-minute daily allowance on a personal Google account, and a
+ * full three-category sweep is longer than that. Past the limit Google stops
+ * running triggers SILENTLY -- no error, no log. The sweep simply stops
+ * mid-chain. resumeSitemapSweep() the next day picks it up, because the
+ * per-category offsets are saved as it goes.
+ */
+function adoptSitemapSweep(startCategoryKey) {
+  const props = PropertiesService.getScriptProperties();
+  const key = startCategoryKey || SITEMAP_SWEEP_ORDER[0];
+  const idx = SITEMAP_SWEEP_ORDER.indexOf(key);
+  if (idx === -1) {
+    throw new Error('Unknown category: ' + key + '. One of: ' +
+      SITEMAP_SWEEP_ORDER.join(', '));
+  }
+
+  props.setProperty(PROP_SWEEP_CATEGORY_INDEX, String(idx));
+  props.setProperty(PROP_SWEEP_SLICE_COUNT, '0');
+  scheduleNextSitemapSlice_();
+
+  const done = SITEMAP_SWEEP_ORDER.map(function (k) {
+    return '  ' + k + ': ' +
+      (props.getProperty(PROP_SITEMAP_PROCESSED_PREFIX + k) || '0') + ' processed' +
+      (props.getProperty(PROP_SITEMAP_OFFSET_PREFIX + k) ? ' (resume point saved)' : '');
+  }).join('\n');
+
+  Logger.log(
+    'Sweep adopted at ' + key + '. Per-category progress was NOT reset:\n' + done +
+    '\n\nFirst slice in about ' + SITEMAP_SLICE_GAP_MINUTES + ' minute(s). The chain ' +
+    'advances through ' + SITEMAP_SWEEP_ORDER.join(' -> ') + ' and stops itself when ' +
+    'all are done.\n' +
+    'Watch it with sitemapSweepStatus(). Stop it with stopSitemapSweep().\n\n' +
+    'THIS IS DISCOVERY ONLY. It creates candidate rows and nothing else -- ' +
+    'runCapturePass() and runReportFormLinkPass() are separate and are NOT ' +
+    'scheduled. Drain those before starting a sweep, or the queue grows while ' +
+    'you are working through it.');
+
+  return { adoptedAt: key, categoryIndex: idx };
 }
 
 function resumeSitemapSweep() {
@@ -4594,4 +5064,1310 @@ function recaptureRows_(recordIds) {
   });
   Logger.log(s);
   return { recaptured: rows.length };
+}
+
+// =========================================================================
+// SECTION 6 -- OUTBOUND LINK PROPOSALS
+// Links read from CHTR rows, proposed as HAZING POLICY. See SOURCE vs
+// TARGET below -- those are two settings, and they are not the same value.
+//
+// Added 2026-09-12. MEASURED THE SAME DAY, AND THE MEASUREMENT IS THE
+// POINT -- read the results block below before deciding this pass is worth
+// running at all.
+//
+// The idea: the one-hop answer a reviewer keeps finding by hand is already
+// sitting in a field nothing reads for this purpose -- a CHTR candidate
+// page's own outbound links, extracted and stored by the link pass, then
+// used only to give the AI real addresses to read. This section scores
+// those stored links and proposes the best one as a new candidate row. No
+// fetch, no crawl, nothing but arithmetic over text already paid for.
+//
+// -------------------------------------------------------------------------
+// WHAT IT MEASURED, 2026-09-12, RUN 1 (before the two fixes below)
+// -------------------------------------------------------------------------
+//   Schools with links AND a known CHTR answer          44
+//   Known answer present in the stored links             7   (15.9%)
+//   Of those 7, the pass picked it                       6   (86%)
+//   Overall precision on schools it would propose for   27.3%
+//
+// THE RANKER IS GOOD AND THE CORPUS IS NEARLY EMPTY. Those two numbers
+// have to be kept apart or the wrong thing gets fixed. 86% says ranking is
+// not the problem. 15.9% is a CEILING -- no scoring change can find a link
+// that was never stored -- and it is low for a structural reason: these
+// links come off a candidate page that was itself a guess. If that page
+// does not link the real answer, the answer is not in the corpus.
+//
+// Overall precision of 27.3% sits BELOW sitemap discovery's measured 33%
+// (decisions log #244: Search 65%, Cross-seed 51%, Sitemap 33%). On that
+// number this pass should not be shipped as a proposer. It is kept, fixed
+// and documented because the measurement is worth having and because the
+// two defects run 1 exposed are worth fixing whatever happens to the pass.
+//
+// RUN 2, same day, after adding the ownership test: precision FELL to 10%
+// (1 of 10) and 173 links were dropped as foreign. That was not the rule
+// being strict -- it was a bug in it. Institution URLs are stored with and
+// without a scheme, repickSite_ needs one, and every scheme-less school
+// therefore had all of its links dropped as unattributable. Fixed by
+// normalising in oblInstitutions_; see the comment there. RUN 3 IS THE
+// FIRST TRUSTWORTHY OWNERSHIP NUMBER.
+//
+// THE LESSON, WHICH IS THE ONE THIS PROJECT KEEPS PAYING: a filter that
+// drops things silently, per item, reads exactly like a filter that is
+// working. What surfaced it was the correct answers disappearing, not the
+// wrong ones. Refuse at the level where the fact is missing -- the school --
+// and count the refusal, which is what the code now does.
+//
+// RUN 3 (ownership bug fixed): 80 links dropped instead of 173, the
+// advocacy row gone, precision back to 27.3% and now honestly arrived at.
+// Ceiling unchanged at 15.9%. On that number CHTR->CHTR does not ship: it
+// sits below sitemap discovery's measured 33%.
+//
+// -------------------------------------------------------------------------
+// WHY THE TARGET IS NOW HAZING POLICY, AND WHAT RUN 3's FAILURES SHOWED
+// -------------------------------------------------------------------------
+// Run 3's sixteen wrong proposals are not noise. At least seven are the
+// school's HAZING POLICY, proposed for CHTR:
+//
+//   Friends       Friends-University-Hazing-Policy-06-01-2025.pdf
+//   Neumann       Hazing-Policy-Neumann.pdf
+//   Widener       Anti-Hazing Policy - Final - 7.16.25.pdf
+//   Spartanburg   SMC-Hazing-Policy-Final-6.25.pdf
+//   Kean          /offices/policies/hazing-policy
+//   Minot State   Minot-State-Anti-Hazing-Policy.pdf
+//   Marshall      Student-Code-of-Conduct-24-25.pdf#page=6
+//
+// Those are right answers filed under the wrong question. A CHTR page links
+// to the school's policy far more reliably than it links to another CHTR
+// page, so the corpus is full of policy documents -- and Hazing Policy is
+// the category with NO outbound links of its own and its own backlog.
+//
+// So the links stay where they are and the QUESTION changes. This is the
+// cross-category proposal shape: read from CHTR rows, score with
+// CATEGORIES.hazingPolicy, gate on the Hazing Policy compliance field,
+// dedupe within Hazing Policy, and write Category = Hazing Policy.
+//
+// NOTE ON THE SCORER FOR THIS TARGET. CATEGORIES.hazingPolicy carries
+// excludeKeywords: ['report'] and defines NO strongKeywords. The exclusion
+// is wanted -- a hazing-report PDF is Report Form's, not this category's.
+// The absent strongKeywords means rankCandidatesByBlob_ falls back to its
+// ordinary rule off-site (any primary hit, or two secondary), which would
+// be loose. It is not a problem here because oblOwnDomain_ has already
+// dropped anything that is not the school's own domain or a known vendor,
+// which is the guard strongKeywords was standing in for.
+//
+// THE HYPOTHESIS BEING TESTED, STATED BEFORE THE RUN so the result cannot
+// be read backwards into it: the recall ceiling should be MUCH higher than
+// 15.9%, because a policy document is what these pages actually link to.
+// Precision has to clear sitemap discovery's 33% for this to ship at all.
+// If it does not, this section shelves on data and the discovery fold is
+// the next piece of work.
+//
+// RUN 4 -- CHTR links, HAZING POLICY target. The hypothesis held:
+//
+//                        CHTR -> CHTR      CHTR -> Hazing Policy
+//   Schools measurable        44                    75
+//   Recall ceiling          15.9%                  20%
+//   Precision               27.3%                 42.3%
+//
+// 42.3% clears sitemap discovery's 33% and sits between it and cross-seed
+// (51%). The corpus is full of policy documents because that is what a CHTR
+// page links to.
+//
+// AND 42.3% UNDERSTATES IT. Rogers State was a false miss on a
+// scroll-to-text fragment, fixed in run 5 -- see OBL_TEXT_FRAGMENT_RE --
+// which alone makes it 46.2%. Beyond that, five schools (Friends,
+// Merrimack, Neumann, Spartanburg, Minot State) were scored wrong for
+// proposing the school's actual policy PDF where the RECORDED answer is a
+// landing page. Whether the PDF is the better answer is a reviewer's
+// judgement, not the scorer's, so those are left counted as misses rather
+// than quietly claimed. True precision is somewhere at or above 46.2%.
+//
+// One genuine miss worth keeping in view: UPR Ponce (243212) proposed the
+// /en/ translation of the recorded Spanish page. Same content, different
+// URL, and a real decision for somebody to make rather than a bug.
+//
+// RE-MEASURE WITH oblMeasure() AFTER ANY CHANGE HERE. It writes nothing.
+//
+// -------------------------------------------------------------------------
+// THE TWO DEFECTS RUN 1 EXPOSED, BOTH FIXED BELOW
+// -------------------------------------------------------------------------
+// 1. NOTHING CHECKED THAT A PROPOSAL BELONGS TO THE SCHOOL. SUNY Old
+//    Westbury (196237) scored HIGH (8) on
+//    hazingpreventionnetwork.org/federal-anti-hazing-law-the-stop-campus-hazing-act/
+//    -- an advocacy site, proposed off a source page that is ALSO that
+//    advocacy site. rankCandidatesByBlob_'s off-site strongKeywords gate
+//    passed it because 'stop-campus-hazing' sits in the path, which is
+//    exactly the case its own header comment describes for this exact
+//    school. That gate stops an off-site page qualifying on a WEAK match;
+//    it was never an ownership test, and this section wrongly leaned on it
+//    as one. oblOwnDomain_ is the ownership test.
+//
+// 2. THE MEASUREMENT SCORED A HIT AS A MISS. Minot State (200253): known
+//    answer .../hazing/index.shtml, proposal .../hazing -- the same page.
+//    pipelineUrlKey_ strips scheme and trailing slashes but not a trailing
+//    index file, so the two normalise differently. oblUrlKey_ adds that.
+//    It is used for COMPARISON and as an EXTRA dedupe key, never as a
+//    replacement for pipelineUrlKey_, because that key is shared with the
+//    rest of the pipeline and changing its meaning would silently change
+//    what every other pass considers a duplicate.
+//
+// A third thing run 1 showed is NOT a defect in this code and is left
+// alone: Kettering (169983) proposed a hazing REPORTING FORM as a CHTR
+// answer. Right school, wrong category. That is CATEGORIES.chtr's keyword
+// list admitting a form, and it would do the same through sitemap
+// discovery. Changing it here would make this pass disagree with every
+// other pass about what a CHTR page is.
+//
+// -------------------------------------------------------------------------
+// WHY THE SOURCE CAN ONLY BE CHTR OR REPORT FORM ROWS
+// -------------------------------------------------------------------------
+// rflFormula_() selects Report Form and CHTR rows. It has never selected
+// Hazing Policy. Measured in the live base 2026-09-12: 636 Report Form rows
+// and 125 CHTR rows carry an Outbound page links value, of which 97 CHTR
+// rows carry actual links rather than a sentinel; Hazing Policy rows carry
+// ZERO, because the pass that would fill them does not look at them.
+//
+// This is why OBL_SOURCE_LABEL cannot be 'Hazing Policy' -- there would be
+// nothing to read. It is also why pointing the TARGET at Hazing Policy
+// costs nothing: the links already exist, on CHTR rows, and no new fetch is
+// needed to use them for a different question.
+//
+// Giving Hazing Policy rows outbound links of their own would mean widening
+// rflFormula_() and adding a third scoring arm to rflReportLinks_, at one
+// page fetch per row. Separate change, deliberately not made here.
+//
+// -------------------------------------------------------------------------
+// WHY THIS DOES NOT USE repickParse_, WHICH PARSES THE SAME FIELD
+// -------------------------------------------------------------------------
+// repickParse_ exists and reads exactly this field. It must not be used
+// here, and the reason is specific rather than stylistic: it calls
+// repickIsReadNotFile_, whose last line rejects any link whose blob matches
+//
+//     /annual[- _]?(security|report)|clery|...|transparency[- _]?report|.../
+//
+// and whose first arm rejects any .pdf/.doc/.docx that does not say "form".
+// Both are correct for Report Form -- a report you READ is not a report you
+// FILE. Both are fatal for CHTR, where the thing being looked for is
+// frequently named "transparency report" and is frequently a PDF. Running
+// CHTR proposals through repickParse_ would discard the exact links this
+// section exists to find, silently, and return a clean-looking zero.
+//
+// oblParse_ is repickParse_ minus that one veto, keeping every other guard
+// it has (junk hosts, unwrapping before AND after the junk check, sane-URL,
+// CSS junk in link text, and the self-link veto -- a page cannot be its own
+// transparency report).
+//
+// -------------------------------------------------------------------------
+// THE GATE, AND HOW IT DIFFERS FROM THE DISCOVERY GATE ON PURPOSE
+// -------------------------------------------------------------------------
+// fetchBlankRecordsPage_ gates on TWO conditions: compliance blank, AND
+// pending-review count zero. This section keeps the first and drops the
+// second, because the second exists for a cost reason that does not apply
+// here. Its own comment says so: "re-crawling a school whose candidates are
+// unreviewed can only re-propose URLs already in the table, which dedup
+// then discards -- a whole sitemap fetch for nothing." That clause protects
+// a sitemap FETCH. This pass fetches nothing.
+//
+// Keeping it would have excluded the case worth having. Outbound links live
+// on rows that have been captured; a captured row nobody has reviewed yet
+// makes the school's pending count non-zero; so a pending-zero gate would
+// only ever harvest from schools whose rows are already reviewed, which is
+// not where a reviewer is standing when they go hunting one hop out.
+//
+// What replaces it is an explicit volume cap -- OBL_MAX_PER_SCHOOL, set to
+// 1 -- plus a score floor. The queue cannot grow by more than one row per
+// eligible school per run, and a second run adds nothing, because the row
+// the first run created is then in the dedupe set. A dial rather than a
+// cliff, and it is what the pending clause was doing by accident.
+//
+// WHAT HAS NOT CHANGED, AND MUST NOT: dedupe. sitemapExistingKeys_ and
+// pipelineRegisterKeys_ are reused verbatim, REJECTED ROWS INCLUDED. A URL
+// a reviewer threw out is not re-proposed here any more than anywhere else,
+// and the same corollary applies -- deleting a rejected row un-blocks its
+// URL. Reject, don't delete.
+//
+// -------------------------------------------------------------------------
+// SOURCE IS A SINGLE-SELECT. THE CHOICE NOW EXISTS.
+// -------------------------------------------------------------------------
+// Source fldDgMOzWYGMEL4Xd gained an 'Outbound link' choice on 2026-09-12
+// (verified: selCsn1VwEYAtjnUr). pipelineIntakeFlush_ posts with
+// typecast: true, which MINTS a choice for an unrecognised value rather
+// than erroring, so oblAssertSourceChoice_ still checks before every write
+// and refuses rather than letting a mint happen silently.
+//
+// -------------------------------------------------------------------------
+// ENTRY POINTS
+// -------------------------------------------------------------------------
+//   oblMeasure()    free precision test -- scores links for schools whose
+//                   CHTR answer is ALREADY known and reports recall ceiling
+//                   and precision SEPARATELY. Reads only. Run this first.
+//   oblDryRun30()   what would be proposed, for 30 eligible schools.
+//   oblDryRun()     the same, for every eligible school.
+//   oblRun()        applies. Creates rows.
+//   oblStatus()     how much input exists and how many schools are eligible.
+// =========================================================================
+
+// SOURCE and TARGET are different things and conflating them is what this
+// section did until 2026-09-12 run 4.
+//
+//   OBL_SOURCE_LABEL  which candidate rows the stored links are READ from.
+//                     Only Report Form and CHTR rows have any; see the
+//                     rflFormula_ note in the header.
+//   OBL_TARGET_KEY    which category the winning link is PROPOSED INTO --
+//                     what it is scored against, which compliance field
+//                     gates the school, which category dedupe runs in, and
+//                     which record field oblMeasure checks the answer
+//                     against.
+//
+// They were the same value ('chtr') for runs 1-3. They are deliberately
+// different now: the links are read off CHTR pages and proposed as HAZING
+// POLICY, for the reason run 3's failure list gives in the header.
+const OBL_SOURCE_LABEL   = 'CHTR';
+const OBL_TARGET_KEY     = 'hazingPolicy';
+const OBL_TARGET_LABEL   = 'Hazing Policy';
+const OBL_SOURCE         = 'Outbound link';
+const OBL_MAX_PER_SCHOOL = 1;
+
+// scoreToConfidence_ returns High at >= 6, Medium at >= 3, Low below that.
+// A floor of 3 is "Medium or better". Run 1 note: of six proposals, five
+// were Medium and the single High was the advocacy-site row defect 1
+// describes -- so raising this floor would have kept the worst row and
+// dropped the rest. Confidence is not a proxy for ownership.
+const OBL_SCORE_MIN      = 3;
+
+const OBL_WRITE_BATCH    = 10;      // Airtable's cap per POST
+const OBL_BUDGET_MS      = 4.5 * 60 * 1000;
+
+// The located_* RECORD field on PAGES Institutions for each target -- the
+// school's currently-recorded answer, which is what oblMeasure scores
+// against. NOT the compliance field: compliance says whether the recorded
+// answer met the standard, and a below-standard answer is still the answer
+// this pass would have to match to count as right.
+//
+// Declared here rather than reusing SiteCensus.gs's SC_I_* because that
+// file is being retired in the discovery fold and this section must not
+// acquire a dependency on it.
+const OBL_RECORD_FIELD = {
+  chtr:         'fldqQrSD83OVoteFx',   // chtr_index_url
+  hazingPolicy: 'fldKyIAd65Yfn5g0V',   // located_hazing_policy_url
+  reportForm:   'fldeBRiCU8dnIKsYk'    // located_report_form_url
+};
+
+function oblRecordField_() {
+  const f = OBL_RECORD_FIELD[OBL_TARGET_KEY];
+  if (!f) throw new Error('No record field mapped for target category: ' + OBL_TARGET_KEY);
+  return f;
+}
+
+// Trailing index files that mean "this directory". Stripped by oblUrlKey_.
+const OBL_INDEX_FILE_RE  = /\/index\.(s?html?|php|aspx?|cfm|jsp)$/i;
+
+// A scroll-to-text fragment, stripped by oblUrlKey_.
+//
+// ONLY THIS FRAGMENT, NOT FRAGMENTS IN GENERAL. '#:~:text=' is a browser
+// instruction to highlight a phrase after loading; it is defined never to
+// be part of the resource, and two URLs differing only by one are the same
+// page. Ordinary fragments are NOT stripped, because they can be load
+// bearing -- '#page=6' names a page inside a PDF (Marshall's recorded
+// Student Code of Conduct is exactly that) and '#section' can distinguish
+// one anchor from another.
+//
+// Found 2026-09-12 run 4: Rogers State (207661) recorded
+// .../rsu-hazing-policy/#:~:text=Hazing%20in%20any against a proposal of
+// .../rsu-hazing-policy/ -- the same page, scored as a miss. Precision
+// 42.3% -> 46.2% with this alone.
+const OBL_TEXT_FRAGMENT_RE = /#:~:text=.*$/i;
+
+
+// -------------------------------------------------------------------------
+// ENTRY POINTS
+// -------------------------------------------------------------------------
+
+function oblStatus() {
+  const pat = capPat_();
+  const inst = oblInstitutions_(pat);
+  const rows = oblSourceRows_(pat);
+
+  let eligible = 0, known = 0, noUrl = 0;
+  Object.keys(inst).forEach(function (u) {
+    if (!inst[u].compliance) eligible++;
+    if (inst[u].knownUrl) known++;
+    if (!inst[u].site) noUrl++;
+  });
+
+  const schools = {};
+  rows.forEach(function (r) { if (r.unitid) schools[r.unitid] = true; });
+
+  const s = '\n======== OUTBOUND LINK PROPOSALS -- STATUS ========\n' +
+    'Links read from: ' + OBL_SOURCE_LABEL + ' rows\n' +
+    'Proposed into:   ' + OBL_TARGET_LABEL + '\n' +
+    'Source rows with real links: ' + rows.length + '\n' +
+    'Schools represented in those rows: ' + Object.keys(schools).length + '\n' +
+    'Institutions with blank ' + OBL_TARGET_LABEL + ' compliance (eligible): ' + eligible + '\n' +
+    'Institutions with a known ' + OBL_TARGET_LABEL + ' answer (measurable): ' + known + '\n' +
+    'Institutions with no USABLE Institution URL (cannot ownership-check): ' + noUrl + '\n' +
+    'Cap per school: ' + OBL_MAX_PER_SCHOOL + '   Score floor: ' + OBL_SCORE_MIN + '\n';
+  Logger.log(s);
+  return { sourceRows: rows.length, schools: Object.keys(schools).length,
+           eligible: eligible, measurable: known, noInstitutionUrl: noUrl };
+}
+
+/**
+ * THE FREE PRECISION TEST. Run this before anything else, and after any
+ * change to the parser, the floor or the ownership rule.
+ *
+ * Asks two questions that must not be conflated:
+ *
+ *   RECALL CEILING -- is the known answer present anywhere in the stored
+ *   link list? If it is not, no ranking change can find it, and the pass
+ *   has a ceiling no tuning will move.
+ *
+ *   PRECISION -- when the pass proposes something, is it the known answer?
+ *
+ * Ownership rejections are counted and reported separately from both,
+ * because a link dropped for belonging to somebody else is a different
+ * event from a link that scored too low.
+ *
+ * Comparisons use oblUrlKey_, so .../hazing and .../hazing/index.shtml
+ * count as the same page. Run 1 scored that pair as a miss.
+ *
+ * Nothing is written.
+ */
+function oblMeasure() {
+  const pat = capPat_();
+  const inst = oblInstitutions_(pat);
+  const rows = oblSourceRows_(pat);
+  const category = CATEGORIES[OBL_TARGET_KEY];
+
+  const bySchool = oblGroupBySchool_(rows);
+
+  let measurable = 0, inList = 0, picked = 0, pickedRight = 0, noPick = 0;
+  let ownerDropped = 0, noInstUrl = 0;
+  const wrong = [], missing = [];
+
+  Object.keys(bySchool).forEach(function (unitid) {
+    const school = inst[unitid];
+    const known = school && school.knownUrl;
+    if (!known) return;
+    measurable++;
+
+    const links = oblLinksForSchool_(bySchool[unitid]);
+    const knownKey = oblUrlKey_(known);
+    const present = links.some(function (l) { return oblUrlKey_(l.url) === knownKey; });
+    if (present) inList++;
+    else missing.push((school.name || unitid) + ' (' + unitid + ')');
+
+    // Recall is measurable without an ownership test; picking is not. A
+    // school with no usable site is counted and skipped rather than run
+    // through oblRank_, where every link would fail ownership and the
+    // school would silently read as "scored too low".
+    if (!school.site) { noInstUrl++; return; }
+
+    const ranked = oblRank_(links, category, school);
+    ownerDropped += ranked.ownerDropped;
+
+    if (!ranked.picks.length) { noPick++; return; }
+    picked++;
+    if (oblUrlKey_(ranked.picks[0].url) === knownKey) pickedRight++;
+    else wrong.push((school.name || unitid) + ' (' + unitid + ')\n' +
+      '      known:    ' + known.slice(0, 110) + '\n' +
+      '      proposed: ' + ranked.picks[0].url.slice(0, 110) +
+      '  [' + scoreToConfidence_(ranked.picks[0].score) + ']');
+  });
+
+  const pct = function (n, d) { return d ? (Math.round((n / d) * 1000) / 10) + '%' : 'n/a'; };
+
+  let s = '\n======== OUTBOUND LINK PROPOSALS -- MEASUREMENT ========\n' +
+    'Links read from ' + OBL_SOURCE_LABEL + ' rows, scored and proposed as ' +
+      OBL_TARGET_LABEL + '.\n' +
+    'Measured against schools whose ' + OBL_TARGET_LABEL + ' answer is already recorded.\n' +
+    'Nothing was written.\n\n' +
+    'Schools with links AND a known answer: ' + measurable + '\n' +
+    '   of those, with no USABLE Institution URL (skipped, not scored): ' + noInstUrl + '\n' +
+    'Known answer present in the stored links: ' + inList + '  (' + pct(inList, measurable) + ')\n' +
+    '   -- RECALL CEILING. Ranking cannot beat it. CHTR->CHTR was 7 / 44 = 15.9%.\n' +
+    'Links dropped as belonging to another site: ' + ownerDropped + '\n' +
+    'Schools where the pass would propose something: ' + picked + '\n' +
+    'Schools where it would propose nothing: ' + noPick + '\n' +
+    'Proposal equals the known answer: ' + pickedRight + '  (' + pct(pickedRight, picked) + ' precision)\n' +
+    '   -- compare Search 65%, Cross-seed 51%, Sitemap 33%, CHTR->CHTR here 27.3%.\n';
+
+  if (wrong.length) {
+    s += '\n--- PROPOSED SOMETHING ELSE (' + wrong.length + ') ---\n';
+    wrong.slice(0, 40).forEach(function (w) { s += '  ' + w + '\n'; });
+    if (wrong.length > 40) s += '  ... and ' + (wrong.length - 40) + ' more\n';
+  }
+  if (missing.length) {
+    s += '\n--- KNOWN ANSWER NOT IN THE STORED LINKS AT ALL (' + missing.length + ') ---\n' +
+         '    Coverage, not ranking. Nothing in this file can fix these.\n';
+    missing.slice(0, 40).forEach(function (m) { s += '  ' + m + '\n'; });
+    if (missing.length > 40) s += '  ... and ' + (missing.length - 40) + ' more\n';
+  }
+
+  Logger.log(s);
+  return { measurable: measurable, inList: inList, picked: picked,
+           pickedRight: pickedRight, noPick: noPick, ownerDropped: ownerDropped,
+           noInstitutionUrl: noInstUrl };
+}
+
+function oblDryRun30() { return oblWork_({ write: false, limit: 30 }); }
+function oblDryRun()   { return oblWork_({ write: false, limit: 0 }); }
+function oblRun()      { return oblWork_({ write: true,  limit: 0 }); }
+
+
+// -------------------------------------------------------------------------
+// THE PASS
+// -------------------------------------------------------------------------
+
+function oblWork_(opts) {
+  const started = Date.now();
+  const pat = capPat_();
+  const category = CATEGORIES[OBL_TARGET_KEY];
+  if (!category) throw new Error('Unknown category key: ' + OBL_TARGET_KEY);
+
+  if (opts.write) oblAssertSourceChoice_(pat);
+
+  const inst = oblInstitutions_(pat);
+  const rows = oblSourceRows_(pat);
+  const bySchool = oblGroupBySchool_(rows);
+
+  // ELIGIBILITY: compliance blank. Deliberately NOT pending-count-zero --
+  // see this section's header.
+  const eligible = Object.keys(bySchool).filter(function (u) {
+    return inst[u] && !inst[u].compliance;
+  }).sort();
+
+  const targets = opts.limit ? eligible.slice(0, opts.limit) : eligible;
+
+  // Dedupe keys for exactly these schools, rejected rows included.
+  const seen = sitemapExistingKeys_(pat, OBL_TARGET_LABEL, targets);
+
+  const proposals = [], skippedDupe = [], skippedLow = [], skippedNone = [], skippedNoUrl = [];
+  let ownerDropped = 0;
+  let budgetHit = false;
+
+  for (let i = 0; i < targets.length; i++) {
+    if (Date.now() - started > OBL_BUDGET_MS) { budgetHit = true; break; }
+    const unitid = targets[i];
+    const school = inst[unitid];
+    const name = (school && school.name) || unitid;
+
+    // No Institution URL means ownership cannot be tested. REFUSE rather
+    // than propose untested: the whole purpose of the cap and the floor is
+    // to keep a reviewer's queue worth reading, and an unattributable
+    // proposal is the least worth reading thing here. Counted so the gap is
+    // visible -- a school with no URL of its own is worth fixing in
+    // Institutions regardless of what happens to this pass.
+    if (!school || !school.site) {
+      skippedNoUrl.push(name + ' (' + unitid + ')' +
+        (school && school.url ? '  -- unparseable: "' + school.url.slice(0, 60) + '"' : ''));
+      continue;
+    }
+
+    const links = oblLinksForSchool_(bySchool[unitid]);
+    if (!links.length) { skippedNone.push(name + ' (' + unitid + ')'); continue; }
+
+    const ranked = oblRank_(links, category, school);
+    ownerDropped += ranked.ownerDropped;
+    if (!ranked.picks.length) { skippedLow.push(name + ' (' + unitid + ')'); continue; }
+
+    let taken = 0;
+    for (let j = 0; j < ranked.picks.length && taken < OBL_MAX_PER_SCHOOL; j++) {
+      const pick = ranked.picks[j];
+      // TWO KEYS. pipelineUrlKey_ is the shared key every other pass uses
+      // and is authoritative. oblUrlKey_ additionally collapses a trailing
+      // index file, so .../hazing is recognised as a duplicate of an
+      // existing .../hazing/index.shtml row rather than proposed beside it.
+      // Checked against both; either hit is a duplicate.
+      const k1 = unitid + '|' + pipelineUrlKey_(pick.url);
+      const k2 = unitid + '|' + oblUrlKey_(pick.url);
+      if (seen[k1] || seen[k2]) {
+        skippedDupe.push(name + ' -- ' + pick.url.slice(0, 90));
+        continue;
+      }
+      seen[k1] = true; seen[k2] = true;
+      taken++;
+      proposals.push({
+        unitid: unitid, name: name, url: pick.url,
+        text: pick.text, score: pick.score,
+        confidence: scoreToConfidence_(pick.score),
+        fromPage: pick.fromPage
+      });
+    }
+  }
+
+  let created = 0;
+  const writeErrors = [];
+  if (opts.write && proposals.length) {
+    const pending = proposals.map(function (p) { return oblNewRow_(p); });
+    for (let i = 0; i < pending.length; i += OBL_WRITE_BATCH) {
+      const batch = pending.slice(i, i + OBL_WRITE_BATCH);
+      try { pipelineIntakeFlush_(pat, batch); created += batch.length; }
+      catch (err) { writeErrors.push('batch at ' + i + ': ' + err.message); }
+    }
+  }
+
+  Logger.log(oblReport_({
+    write: !!opts.write, limit: opts.limit || 0,
+    eligible: eligible.length, targets: targets.length,
+    proposals: proposals, created: created, ownerDropped: ownerDropped,
+    skippedDupe: skippedDupe, skippedLow: skippedLow,
+    skippedNone: skippedNone, skippedNoUrl: skippedNoUrl,
+    writeErrors: writeErrors, budgetHit: budgetHit,
+    elapsed: Math.round((Date.now() - started) / 1000)
+  }));
+
+  return { eligible: eligible.length, considered: targets.length,
+           proposed: proposals.length, created: created,
+           duplicates: skippedDupe.length, belowFloor: skippedLow.length,
+           ownerDropped: ownerDropped, noInstitutionUrl: skippedNoUrl.length,
+           errors: writeErrors.length, budgetHit: budgetHit };
+}
+
+
+// -------------------------------------------------------------------------
+// READING
+// -------------------------------------------------------------------------
+
+/**
+ * Every institution, keyed by UNITID, with the four fields this needs.
+ *
+ * NOT filtered server-side, for the reason scInstitutions_ gives: this is a
+ * SYNCED table whose field names are inherited from 50 States, and a rename
+ * there would silently shrink a filtered result rather than error. One full
+ * read of a ~1,500-row table costs a few seconds and cannot fail that way.
+ */
+function oblInstitutions_(pat) {
+  const out = {};
+  const complianceField = CATEGORIES[OBL_TARGET_KEY].blankFields[0];
+  const recordField = oblRecordField_();
+  let offset = null;
+  do {
+    let url = 'https://api.airtable.com/v0/' + PAGES_BASE_ID + '/' + SM_INST_TABLE +
+      '?pageSize=100&returnFieldsByFieldId=true' +
+      '&fields[]=' + SM_F_UNITID +
+      '&fields[]=' + SM_F_INSTITUTION +
+      '&fields[]=' + SM_F_INST_URL +
+      '&fields[]=' + complianceField +
+      '&fields[]=' + recordField;
+    if (offset) url += '&offset=' + offset;
+    const resp = UrlFetchApp.fetch(url, {
+      headers: { Authorization: 'Bearer ' + pat }, muteHttpExceptions: true });
+    if (resp.getResponseCode() !== 200) {
+      throw new Error('Institutions read failed: ' + resp.getContentText().slice(0, 300));
+    }
+    const j = JSON.parse(resp.getContentText());
+    j.records.forEach(function (r) {
+      const f = r.fields || {};
+      const u = String(f[SM_F_UNITID] || '').trim();
+      if (!u) return;
+      // NORMALISE THE INSTITUTION URL HERE, ONCE.
+      // These are stored inconsistently -- some carry a scheme, some do
+      // not ('https://www.richmond.edu/' beside 'www.lakeforest.edu/').
+      // repickSite_ matches on ^https?:// and returns '' without one, so
+      // reading this field raw made every scheme-less school look like it
+      // had no domain, and oblOwnDomain_ then dropped ALL of its links as
+      // unattributable. Measured 2026-09-12 run 2: 173 links dropped,
+      // precision 27.3% -> 10%, five correct answers lost. processRecord_
+      // has always guarded this with normalizeBaseUrl_; so does this now.
+      const rawUrl = String(f[SM_F_INST_URL] || '').trim();
+      const normUrl = rawUrl ? normalizeBaseUrl_(rawUrl) : '';
+      out[u] = {
+        unitid: u,
+        name: f[SM_F_INSTITUTION] || '(unknown)',
+        url: rawUrl,
+        urlNorm: normUrl,
+        site: normUrl ? oblRegistrable_(repickSite_(normUrl)) : '',
+        compliance: String(f[complianceField] || '').trim(),
+        knownUrl: String(f[recordField] || '').trim()
+      };
+    });
+    offset = j.offset || null;
+    Utilities.sleep(210);
+  } while (offset);
+  return out;
+}
+
+/**
+ * Candidate rows in this category that carry an actual stored link list.
+ *
+ * The ' -> ' test is what separates a real list from the sentinels the link
+ * pass writes -- '(no outbound links worth keeping)', '(HTTP 404)',
+ * '(fetch failed: ...)'. Measured 2026-09-12: 125 CHTR rows have a
+ * non-empty value, 97 of them have links.
+ */
+function oblSourceRows_(pat) {
+  const out = [];
+  let offset = null;
+  const formula = encodeURIComponent(
+    'AND({' + CF.category + '}="' + OBL_SOURCE_LABEL + '", ' +
+        'FIND(" -> ", {' + RFL.outbound + '})>0)');
+  do {
+    let url = 'https://api.airtable.com/v0/' + PAGES_BASE_ID + '/' + CAND_TABLE_ID +
+      '?filterByFormula=' + formula +
+      '&pageSize=100&returnFieldsByFieldId=true' +
+      '&fields[]=' + SM_CF_UNITID +
+      '&fields[]=' + CF.candidateUrl +
+      '&fields[]=' + RFL.outbound;
+    if (offset) url += '&offset=' + offset;
+    const resp = UrlFetchApp.fetch(url, {
+      headers: { Authorization: 'Bearer ' + pat }, muteHttpExceptions: true });
+    if (resp.getResponseCode() !== 200) {
+      throw new Error('Candidate rows read failed: ' + resp.getContentText().slice(0, 300));
+    }
+    const j = JSON.parse(resp.getContentText());
+    j.records.forEach(function (r) {
+      const f = r.fields || {};
+      out.push({
+        recordId: r.id,
+        unitid: String(f[SM_CF_UNITID] || '').trim(),
+        pageUrl: String(f[CF.candidateUrl] || '').trim(),
+        outbound: String(f[RFL.outbound] || '')
+      });
+    });
+    offset = j.offset || null;
+    Utilities.sleep(210);
+  } while (offset);
+  return out;
+}
+
+function oblGroupBySchool_(rows) {
+  const out = {};
+  rows.forEach(function (r) {
+    if (!r.unitid) return;
+    if (!out[r.unitid]) out[r.unitid] = [];
+    out[r.unitid].push(r);
+  });
+  return out;
+}
+
+
+// -------------------------------------------------------------------------
+// URL IDENTITY AND OWNERSHIP
+// -------------------------------------------------------------------------
+
+/**
+ * pipelineUrlKey_ plus a trailing index file.
+ *
+ * ADDITIVE, NEVER A REPLACEMENT. pipelineUrlKey_ is shared with cross-seed,
+ * capture and the link pass; changing what it considers the same URL would
+ * change what every one of them considers a duplicate, silently and
+ * everywhere. This key is used here only for comparison and as a SECOND
+ * dedupe probe alongside the shared one.
+ *
+ * Why it exists: Minot State (200253), run 1. Known answer
+ * .../hazing/index.shtml, proposal .../hazing -- the same page, scored as
+ * a miss, which understated precision. Run 4 added the scroll-to-text
+ * fragment for the same reason; see OBL_TEXT_FRAGMENT_RE, which also says
+ * why ordinary fragments are left alone.
+ */
+function oblUrlKey_(url) {
+  // Fragment first, so pipelineUrlKey_'s trailing-slash strip then reaches
+  // the real end of the path: '.../policy/#:~:text=x' has to become
+  // '.../policy/' before the slash can come off, or it never matches
+  // '.../policy'.
+  const bare = String(url || '').replace(OBL_TEXT_FRAGMENT_RE, '');
+  return pipelineUrlKey_(bare).replace(OBL_INDEX_FILE_RE, '');
+}
+
+/**
+ * The registrable part of a host: the last two labels, www- stripped.
+ *
+ * www.miles.edu -> miles.edu;  involved.richmond.edu -> richmond.edu;
+ * new.uno.edu -> uno.edu.
+ *
+ * That last case is deliberately different from spTokens_ in
+ * SearchProbe.gs, which takes the FIRST label and so reads new.uno.edu as
+ * "new" and web.mit.edu as "web" -- a known bug recorded in the 09-12
+ * working state. This function does not inherit it. Fixing spTokens_ itself
+ * is a separate change in a separate file.
+ *
+ * Two labels is right for .edu, .com, .org -- every host this project
+ * actually meets. It is WRONG for a multi-part public suffix such as
+ * .ac.uk, which would collapse to ac.uk. No US IPEDS institution has one,
+ * so this is a stated limit rather than an oversight.
+ */
+function oblRegistrable_(host) {
+  const h = String(host || '').toLowerCase().replace(/^www\./, '');
+  if (!h) return '';
+  const parts = h.split('.');
+  if (parts.length <= 2) return h;
+  return parts.slice(-2).join('.');
+}
+
+/**
+ * Does this URL plausibly belong to this school?
+ *
+ * THIS IS THE FIX FOR DEFECT 1. Run 1 proposed an advocacy site
+ * (hazingpreventionnetwork.org) as SUNY Old Westbury's CHTR page, at HIGH
+ * confidence, because rankCandidatesByBlob_'s off-site strongKeywords gate
+ * asks whether a match is STRONG, never whose site it is.
+ *
+ * Two ways to pass, and only two:
+ *
+ *   1. Same registrable domain as the school's own Institution URL. This
+ *      is what covers subdomains -- involved.richmond.edu is Richmond.
+ *
+ *   2. A recognised reporting vendor host. cm.maxient.com/chtr.php?... is
+ *      a real and common CHTR address; 459949 Texas A&M San Antonio has
+ *      exactly that, Confirmed - promote.
+ *
+ * NO TOKEN TEST ON THE VENDOR ARM, deliberately. spBelongsTo_ requires a
+ * school token to appear in a vendor URL and was measured on 2026-09-12 at
+ * 12.3% false negatives for precisely that reason -- opaque vendor IDs
+ * carry no school name. cm.maxient.com/chtr.php?TAMUSanAntonio would fail
+ * a token test against the domain tamusa.edu. The residual risk here is
+ * proposing another school's vendor page, which requires that page to be
+ * linked from this school's page; that is rare, and a reviewer sees the
+ * address. A false negative would drop a correct answer permanently.
+ *
+ * TAKES THE SCHOOL, NOT A URL STRING, so it uses school.site -- computed
+ * once in oblInstitutions_ from a NORMALISED Institution URL. Deriving it
+ * here from the raw field is what caused run 2's regression; see that
+ * function. A school with no usable site never reaches this, because
+ * oblWork_ and oblMeasure refuse the school outright rather than letting
+ * every one of its links fail here one at a time, which is how the bug
+ * hid: 173 silent per-link drops read as a strict rule working.
+ *
+ * Returns '' when it passes, or a short reason when it does not.
+ */
+function oblOwnDomain_(url, school) {
+  const own = (school && school.site) || '';
+  if (!own) return 'no usable Institution URL to compare against';
+
+  const host = repickSite_(url);
+  if (oblRegistrable_(host) === own) return '';
+
+  const blob = (String(url) + ' ').toLowerCase();
+  if (repickVendor_(url, blob, (school && school.urlNorm) || '')) return '';
+
+  return 'off-domain (' + host + ' is not ' + own + ' and is not a known vendor)';
+}
+
+
+// -------------------------------------------------------------------------
+// PARSING AND RANKING
+// -------------------------------------------------------------------------
+
+/**
+ * repickParse_ minus the report-form veto. See this section's header for
+ * why that veto cannot be used here.
+ *
+ * Everything else repickParse_ guards against is kept, in the same order --
+ * and the order matters: a share widget carries the page's own URL in a
+ * url= parameter, so the junk-host check runs BEFORE unwrapping and again
+ * after.
+ */
+function oblParse_(outbound, pageUrl) {
+  const origin = repickSite_(pageUrl);
+  const lines = String(outbound || '').split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const cut = line.lastIndexOf(' -> ');
+    if (cut === -1) continue;              // sentinel line, not a link
+    let text = repickDecode_(line.slice(0, cut).trim());
+
+    const raw = repickTrim_(repickDecode_(line.slice(cut + 4).trim()));
+    if (!/^https?:/i.test(raw)) continue;
+    if (repickIsJunkHost_(raw)) continue;
+    const url = repickTrim_(repickUnwrap_(raw));
+    if (repickIsJunkHost_(url) || !repickIsSaneUrl_(url)) continue;
+
+    if (repickIsCssJunk_(text) || text === '©' || text === '&copy;') text = '';
+
+    // A page cannot be its own transparency report. Same veto repickParse_
+    // carries, same reason -- nav bars, breadcrumbs and canonical links
+    // routinely point at the current page. Uses oblUrlKey_ so an
+    // index.shtml self-link is caught too.
+    if (pageUrl && oblUrlKey_(url) === oblUrlKey_(pageUrl)) continue;
+
+    out.push({
+      url: url,
+      text: text,
+      sameSite: !!origin && repickSite_(url) === origin,
+      fromPage: pageUrl
+    });
+  }
+  return out;
+}
+
+/** Every parsed link across all of a school's rows, deduped by URL. */
+function oblLinksForSchool_(rows) {
+  const out = [], seen = {};
+  rows.forEach(function (r) {
+    oblParse_(r.outbound, r.pageUrl).forEach(function (l) {
+      const k = oblUrlKey_(l.url);
+      if (seen[k]) return;
+      seen[k] = true;
+      out.push(l);
+    });
+  });
+  return out;
+}
+
+/**
+ * Ownership first, then score.
+ *
+ * ORDER MATTERS AND IS NOT COSMETIC. Dropping foreign links before ranking
+ * means a high-scoring link belonging to somebody else can never outrank a
+ * correct one belonging to this school -- which is exactly what happened to
+ * SUNY Old Westbury in run 1, where the advocacy page scored 8 and won.
+ *
+ * Scoring is rankCandidatesByBlob_, the same scorer cross-seed uses on
+ * URL + link text, so a link that would qualify there qualifies here.
+ * isSeed is false for every item: the page these links came from is
+ * excluded by oblParse_'s self-link veto, so there is no seed among them.
+ *
+ * Returns { picks, ownerDropped } -- the count is reported rather than
+ * discarded, because "dropped as somebody else's" and "scored too low" are
+ * different findings and a single number hides which is happening.
+ */
+function oblRank_(links, category, school) {
+  const result = { picks: [], ownerDropped: 0 };
+  if (!links.length) return result;
+
+  const mine = [];
+  links.forEach(function (l) {
+    if (oblOwnDomain_(l.url, school)) { result.ownerDropped++; return; }
+    mine.push(l);
+  });
+  if (!mine.length) return result;
+
+  const byUrl = {};
+  mine.forEach(function (l) { byUrl[oblUrlKey_(l.url)] = l; });
+
+  const items = mine.map(function (l) {
+    return { url: l.url, text: l.text, sameSite: l.sameSite, isSeed: false };
+  });
+
+  result.picks = rankCandidatesByBlob_(items, category)
+    .filter(function (c) { return c.score >= OBL_SCORE_MIN; })
+    .map(function (c) {
+      const src = byUrl[oblUrlKey_(c.url)] || {};
+      return { url: c.url, score: c.score, text: src.text || '', fromPage: src.fromPage || '' };
+    });
+  return result;
+}
+
+
+// -------------------------------------------------------------------------
+// WRITING
+// -------------------------------------------------------------------------
+
+/**
+ * Refuse to write if Source has no 'Outbound link' choice.
+ *
+ * pipelineIntakeFlush_ posts with typecast: true, which MINTS a choice for
+ * an unrecognised value rather than erroring. A minted choice is invisible
+ * until someone opens the field editor. The choice was added by hand on
+ * 2026-09-12; this check is what makes sure a later edit to the field
+ * cannot turn a run into a silent mint. One metadata call.
+ */
+function oblAssertSourceChoice_(pat) {
+  const resp = UrlFetchApp.fetch(
+    'https://api.airtable.com/v0/meta/bases/' + PAGES_BASE_ID + '/tables',
+    { headers: { Authorization: 'Bearer ' + pat }, muteHttpExceptions: true });
+  if (resp.getResponseCode() !== 200) {
+    throw new Error('Could not read base schema to verify the Source choice: ' +
+      resp.getContentText().slice(0, 300));
+  }
+  const tables = JSON.parse(resp.getContentText()).tables || [];
+  let field = null;
+  tables.forEach(function (t) {
+    if (t.id !== CAND_TABLE_ID) return;
+    (t.fields || []).forEach(function (f) { if (f.id === SM_CF_SOURCE) field = f; });
+  });
+  if (!field) throw new Error('Source field ' + SM_CF_SOURCE + ' not found on Candidate URLs.');
+
+  const choices = ((field.options || {}).choices) || [];
+  const has = choices.some(function (c) { return c.name === OBL_SOURCE; });
+  if (!has) {
+    throw new Error(
+      'REFUSING TO WRITE. The Source field has no "' + OBL_SOURCE + '" choice, and ' +
+      'this pass posts with typecast: true, which would MINT one silently.\n' +
+      'Add it by hand in Airtable: Candidate URLs -> Source -> add option "' +
+      OBL_SOURCE + '", then re-run.\n' +
+      'Current choices: ' + choices.map(function (c) { return c.name; }).join(' / '));
+  }
+}
+
+/**
+ * A new Candidate URLs row for one proposal.
+ *
+ * Deliberately NOT sitemapNewRow_, which hardcodes Source to 'Sitemap
+ * discovery'. Same shape otherwise, and Pre-filter result is stamped at
+ * creation for the reason xsNewRow_ gives: blank and 'Not yet run' meant
+ * the same thing, and the field should carry one value per state.
+ *
+ * Rank is 1 because there is at most one proposal per school here. It is
+ * not a claim about this row against the school's other rows.
+ */
+function oblNewRow_(p) {
+  const f = {};
+  f[SM_CF_UNITID]    = p.unitid;
+  f[SM_CF_INST_LINK] = [p.unitid];         // matched by value
+  f[CF.category]     = OBL_TARGET_LABEL;
+  f[CF.candidateUrl] = p.url;
+  f[SM_CF_RANK]      = 1;
+  f[CF.fetchStatus]  = 'Not yet fetched';
+  f[PF_F_RESULT]     = 'Not yet run';
+  f[SM_CF_SOURCE]    = OBL_SOURCE;
+  return { fields: f };
+}
+
+
+// -------------------------------------------------------------------------
+// THE REPORT
+// -------------------------------------------------------------------------
+
+function oblReport_(r) {
+  const b = [];
+  b.push('');
+  b.push('======== OUTBOUND LINK PROPOSALS -- ' +
+         (r.write ? 'APPLYING' : 'DRY RUN') + ' ========');
+  b.push('Links from: ' + OBL_SOURCE_LABEL + ' rows   ->   proposed as: ' + OBL_TARGET_LABEL);
+  b.push('Cap/school: ' + OBL_MAX_PER_SCHOOL + '   Score floor: ' + OBL_SCORE_MIN);
+  b.push('Eligible schools (compliance blank, links on file): ' + r.eligible);
+  b.push('Considered this run: ' + r.targets + (r.limit ? '  (limit ' + r.limit + ')' : ''));
+  b.push('');
+
+  if (r.proposals.length) {
+    b.push('--- WOULD PROPOSE (' + r.proposals.length + ') ---');
+    r.proposals.forEach(function (p) {
+      b.push('  ' + p.name + ' (' + p.unitid + ')  [' + p.confidence + ', score ' + p.score + ']');
+      b.push('      ' + p.url.slice(0, 130));
+      b.push('      link text: ' + (p.text ? '"' + p.text.slice(0, 70) + '"' : '(none)'));
+      b.push('      found on: ' + String(p.fromPage).slice(0, 110));
+    });
+  } else {
+    b.push('--- NOTHING TO PROPOSE ---');
+  }
+
+  b.push('');
+  b.push('Links dropped as belonging to another site: ' + r.ownerDropped);
+  b.push('Skipped, already on the table (dedupe, rejected rows included): ' + r.skippedDupe.length);
+  r.skippedDupe.slice(0, 15).forEach(function (s) { b.push('    ' + s); });
+  if (r.skippedDupe.length > 15) b.push('    ... and ' + (r.skippedDupe.length - 15) + ' more');
+
+  b.push('Skipped, nothing scored at or above the floor: ' + r.skippedLow.length);
+  b.push('Skipped, no parseable links: ' + r.skippedNone.length);
+  b.push('Skipped, no usable Institution URL to ownership-check against: ' + r.skippedNoUrl.length);
+  r.skippedNoUrl.slice(0, 10).forEach(function (s) { b.push('    ' + s); });
+  if (r.skippedNoUrl.length > 10) b.push('    ... and ' + (r.skippedNoUrl.length - 10) + ' more');
+
+  if (r.budgetHit) {
+    b.push('');
+    b.push('*** STOPPED ON THE TIME BUDGET. Not every eligible school was considered.');
+    b.push('    Re-run -- rows created by this run are in the dedupe set, so nothing doubles.');
+  }
+
+  b.push('');
+  if (r.write) {
+    b.push('CREATED ' + r.created + ' candidate row(s).');
+    if (r.writeErrors.length) {
+      b.push('WRITE ERRORS (' + r.writeErrors.length + '):');
+      r.writeErrors.forEach(function (e) { b.push('    ' + e); });
+    }
+  } else {
+    b.push('DRY RUN -- nothing was written. No rows created, no fields touched.');
+    b.push('Run oblMeasure() after any change here. It reports the recall ceiling');
+    b.push('and precision separately, which is what says whether these proposals');
+    b.push('are worth a reviewer\'s time. CHTR->CHTR (2026-09-12 run 3): ceiling');
+    b.push('15.9%, precision 27.3%, against sitemap discovery\'s measured 33%.');
+  }
+  b.push('Elapsed: ' + r.elapsed + 's');
+  b.push('');
+  return b.join('\n');
+}
+
+
+// =========================================================================
+// SECTION 7 -- WHAT DISCOVERY RECORDS ABOUT EACH SCHOOL
+//
+// Added 2026-09-12 as the first half of the discovery fold. The second half
+// -- the ranking work -- is deliberately separate and not done here.
+//
+// THE PROBLEM THIS SOLVES. Discovery used to answer one question ("what
+// URLs can I score") and throw away the rest. A 404, a 403, a timeout and a
+// genuinely empty sitemap all became an empty array, and every failure
+// became one in-memory label, 'noSitemapFound', that was never written
+// anywhere. So a school recorded as having no candidates could mean: we
+// were blocked, the site never answered, the Institution URL is wrong, the
+// sitemap is real but only a fraction of it was read, or the school truly
+// publishes nothing. Five facts, one silence -- and no way to tell a
+// reviewer which, or to answer "have the data checks actually been done".
+//
+// Discovery now records, per school: Sitemap status, Sitemap child count,
+// Sitemap URLs seen, Sitemap last checked, and a Census match summary
+// carrying the fetch trace. Plus, per category, the discovery outcome.
+//
+// WHY THE SUMMARY IS MERGED RATHER THAN OVERWRITTEN. Census match summary
+// is ONE field shared by three categories, and discovery runs one category
+// at a time (runSitemapSweep walks chtr -> reportForm -> hazingPolicy). A
+// blind write would mean each pass wiped the previous two, and the field
+// would only ever hold whichever category ran last. dscMergeSummary_ keeps
+// one labelled block per category and replaces only its own.
+//
+// THE COST, STATED PLAINLY. Discovery fetches a school's sitemap once per
+// CATEGORY pass, so a school blank in all three is read three times per
+// sweep -- at the new caps, three wide crawls. The census never paid this,
+// because it read once and scored all three categories in one loop. Making
+// discovery per-school rather than per-category is the right end state and
+// is NOT done here: it means reworking the per-category offset/resume
+// machinery, and today's job is getting the wider read running. Measure
+// with dscDryRun30() first, then decide.
+// =========================================================================
+
+const DSC_SUMMARY_MAX = 95000;   // Airtable long text is 100k; leave headroom
+
+/**
+ * Replace this category's block in the shared summary, keep the others.
+ *
+ * Format is one block per category, opened by a bracketed label line:
+ *
+ *     [CHTR Index URL] 2026-09-12
+ *     CHTR Index URL: 3 of 8412 URLs matched (top: ...)
+ *
+ *     [Hazing Policy] 2026-09-11
+ *     ...
+ *
+ * The label is matched on a bracketed line ONLY, so a URL or a trace line
+ * containing brackets cannot be mistaken for a block header.
+ */
+function dscMergeSummary_(existing, label, body) {
+  const blocks = [];
+  const text = String(existing || '');
+  const re = /^\[([^\]\n]+)\][^\n]*$/;
+
+  let current = null;
+  text.split('\n').forEach(function (line) {
+    const m = re.exec(line);
+    if (m) {
+      current = { label: m[1], lines: [line] };
+      blocks.push(current);
+    } else if (current) {
+      current.lines.push(line);
+    }
+    // Text before any header is pre-fold content written by SiteCensus.gs
+    // for all three categories at once. It cannot be attributed to one
+    // category now, so it is dropped rather than duplicated into each.
+  });
+
+  const kept = blocks
+    .filter(function (b) { return b.label !== label; })
+    .map(function (b) { return b.lines.join('\n').replace(/\s+$/, ''); });
+
+  const stamp = Utilities.formatDate(new Date(), 'UTC', 'yyyy-MM-dd');
+  kept.push('[' + label + '] ' + stamp + '\n' + body);
+
+  return kept.join('\n\n').slice(0, DSC_SUMMARY_MAX);
+}
+
+/**
+ * Write the sitemap fields and this category's discovery outcome.
+ *
+ * ONLY STAMPS THE SITEMAP FIELDS WHEN A FETCH ACTUALLY HAPPENED. A school
+ * resolved before any fetch -- no UNITID, no Institution URL -- would
+ * otherwise get a Sitemap last checked date claiming a read that never
+ * ran, and every other sitemap field's meaning hangs on that date.
+ *
+ * DOES NOT THROW ON A FAILED WRITE, unlike scFlush_. This runs AFTER the
+ * candidate rows have been created; throwing here would abandon a batch
+ * whose real work succeeded, and the offset would still advance. Errors are
+ * collected and surfaced in the batch result instead.
+ */
+function dscWriteInstitutions_(pat, category, results) {
+  const outcomeField = DSC_W_OUTCOME[category.key];
+  if (!outcomeField) {
+    return { written: 0, errors: ['No outcome field mapped for category: ' + category.key] };
+  }
+
+  const rows = [];
+  results.forEach(function (r) {
+    if (!r.id) return;
+    const f = {};
+
+    if (r.sitemap) {
+      f[DSC_W_STATUS]   = r.sitemap.status;
+      f[DSC_W_URLS]     = r.sitemap.urlsSeen;
+      f[DSC_W_CHECKED]  = Utilities.formatDate(new Date(), 'UTC', 'yyyy-MM-dd');
+      // 0 is meaningful -- a flat urlset has no children -- so this is
+      // written whenever a fetch happened, not only when non-zero.
+      f[DSC_W_CHILDREN] = r.sitemap.children || 0;
+    }
+    if (r.discoveryOutcome) f[outcomeField] = r.discoveryOutcome;
+    if (r.summaryLine) {
+      f[DSC_W_SUMMARY] = dscMergeSummary_(r.existingSummary, category.label, r.summaryLine);
+    }
+
+    if (Object.keys(f).length) rows.push({ id: r.id, fields: f });
+  });
+
+  let written = 0;
+  const errors = [];
+  for (let i = 0; i < rows.length; i += DSC_WRITE_BATCH) {
+    const batch = rows.slice(i, i + DSC_WRITE_BATCH);
+    const resp = UrlFetchApp.fetch(
+      'https://api.airtable.com/v0/' + PAGES_BASE_ID + '/' + SM_INST_TABLE,
+      { method: 'patch',
+        headers: { Authorization: 'Bearer ' + pat, 'Content-Type': 'application/json' },
+        payload: JSON.stringify({ records: batch, typecast: true }),
+        muteHttpExceptions: true });
+    if (resp.getResponseCode() === 200) { written += batch.length; }
+    else {
+      errors.push('Institutions write at ' + i + ' (' + resp.getResponseCode() + '): ' +
+        resp.getContentText().slice(0, 300) +
+        '  -- if this says the field is computed or unknown, it is an ' +
+        'INHERITED column from the 50 States sync rather than one added ' +
+        'locally in PAGES. Only locally-added fields are writable here.');
+    }
+    Utilities.sleep(210);
+  }
+  return { written: written, errors: errors };
+}
+
+
+// -------------------------------------------------------------------------
+// THE DRY RUN -- run this before letting the wide read loose
+// -------------------------------------------------------------------------
+
+// ZERO-ARGUMENT ENTRY POINTS, ONE PER CATEGORY.
+//
+// The editor's Run dropdown cannot pass arguments -- it calls the selected
+// function with nothing, so dscDryRun30(categoryKey) would arrive with
+// categoryKey undefined and throw. Same reason scDryRun10 / scDryRun30
+// exist in SiteCensus.gs. These are what to pick from the dropdown.
+function dscDryRunChtr()         { return dscDryRun('chtr', 30); }
+function dscDryRunHazingPolicy() { return dscDryRun('hazingPolicy', 30); }
+function dscDryRunReportForm()   { return dscDryRun('reportForm', 30); }
+
+// Smaller first looks, for when 30 schools will not fit in the six minutes.
+function dscDryRun10Chtr()         { return dscDryRun('chtr', 10); }
+function dscDryRun10HazingPolicy() { return dscDryRun('hazingPolicy', 10); }
+function dscDryRun10ReportForm()   { return dscDryRun('reportForm', 10); }
+
+// Kept for calling from another function or the Apps Script API, where
+// arguments CAN be passed. Not selectable usefully from the dropdown.
+function dscDryRun30(categoryKey) { return dscDryRun(categoryKey, 30); }
+
+/**
+ * Process up to `howMany` eligible schools and report, WITHOUT WRITING
+ * ANYTHING -- no candidate rows, no Institutions fields.
+ *
+ * This is the number that decides three things:
+ *   - whether the browser headers and the wider caps actually find
+ *     candidates the old read missed;
+ *   - what the status distribution really is (Blocked and Fetch error are
+ *     retryable; only No sitemap is a finding about the school);
+ *   - seconds per school, which is what SITEMAP_RECORDS_PER_RUN has to be
+ *     set from. Do not guess that number -- take it from here.
+ *
+ * The six-minute cap does not throw, so this stops itself at 4.5 minutes
+ * and says how far it got.
+ *
+ * Call as dscDryRun30('chtr'), dscDryRun30('hazingPolicy') or
+ * dscDryRun30('reportForm').
+ */
+function dscDryRun(categoryKey, howMany) {
+  const started = Date.now();
+  const category = CATEGORIES[categoryKey];
+  if (!category) {
+    throw new Error('Unknown category: ' + categoryKey +
+      '. One of: chtr, hazingPolicy, reportForm.');
+  }
+  const limit = Math.max(1, howMany || 30);
+  const pat = capPat_();
+
+  const page = fetchBlankRecordsPage_(pat, category, null, limit);
+  const results = [];
+  let budgetHit = false;
+
+  for (let i = 0; i < page.records.length; i++) {
+    if (Date.now() - started > 4.5 * 60 * 1000) { budgetHit = true; break; }
+    results.push(processRecord_(page.records[i], category));
+  }
+
+  const statuses = {}, outcomes = {};
+  let totalUrls = 0, fetched = 0, withCandidates = 0, capHits = 0, childCapHits = 0;
+
+  results.forEach(function (r) {
+    const st = r.sitemap ? r.sitemap.status : '(no fetch -- ' + r.outcome + ')';
+    statuses[st] = (statuses[st] || 0) + 1;
+    const oc = r.discoveryOutcome || '(none -- ' + r.outcome + ')';
+    outcomes[oc] = (outcomes[oc] || 0) + 1;
+    if (r.sitemap) {
+      fetched++;
+      totalUrls += r.sitemap.urlsSeen;
+      if (r.sitemap.urlsSeen >= DSC_MAX_URLS) capHits++;
+      if (r.sitemap.children > DSC_MAX_CHILDREN) childCapHits++;
+    }
+    if (r.candidates.length) withCandidates++;
+  });
+
+  const elapsed = (Date.now() - started) / 1000;
+  const perSchool = results.length ? elapsed / results.length : 0;
+
+  const b = [];
+  b.push('');
+  b.push('======== DISCOVERY DRY RUN -- ' + category.label + ' ========');
+  b.push('NOTHING WAS WRITTEN. No candidate rows, no Institutions fields.');
+  b.push('Caps: ' + DSC_MAX_CHILDREN + ' children / ' + DSC_MAX_URLS +
+         ' URLs   (was 5 / 1500)');
+  b.push('Browser headers: ON   (was OFF -- default Apps Script UA)');
+  b.push('');
+  b.push('Schools processed: ' + results.length + ' of ' + page.records.length + ' pulled');
+  b.push('Schools where a fetch happened: ' + fetched);
+  b.push('Schools with at least one candidate: ' + withCandidates);
+  b.push('Mean URLs seen per fetched school: ' +
+         (fetched ? Math.round(totalUrls / fetched) : 0));
+  b.push('Hit the ' + DSC_MAX_URLS + '-URL cap: ' + capHits +
+         '   |   more than ' + DSC_MAX_CHILDREN + ' children: ' + childCapHits);
+  b.push('');
+  b.push('--- SITEMAP STATUS ---');
+  Object.keys(statuses).sort().forEach(function (k) {
+    b.push('  ' + k + ': ' + statuses[k]);
+  });
+  b.push('  (Blocked and Fetch error are RETRYABLE. Only No sitemap is a');
+  b.push('   finding about the school.)');
+  b.push('');
+  b.push('--- DISCOVERY OUTCOME THAT WOULD BE WRITTEN ---');
+  Object.keys(outcomes).sort().forEach(function (k) {
+    b.push('  ' + k + ': ' + outcomes[k]);
+  });
+  b.push('');
+  b.push('--- PER SCHOOL ---');
+  results.forEach(function (r) {
+    b.push('  ' + String(r.institution).slice(0, 55) + ' (' + r.unitid + ')');
+    if (r.sitemap) {
+      b.push('      ' + r.sitemap.status + ', ' + r.sitemap.urlsSeen +
+             ' URLs, ' + r.sitemap.children + ' children');
+    }
+    if (r.candidates.length) {
+      b.push('      ' + r.candidates.length + ' candidate(s), top [' +
+             r.topCandidateConfidence + ']: ' + String(r.topCandidateUrl).slice(0, 100));
+    } else {
+      b.push('      no candidates -- ' + (r.discoveryOutcome || r.outcome));
+    }
+    if (r.sitemap && r.sitemap.status !== DSC_ST_REACHABLE) {
+      r.sitemap.trace.slice(0, 4).forEach(function (t) { b.push('        ' + t); });
+    }
+  });
+  b.push('');
+  if (budgetHit) {
+    b.push('*** STOPPED AT THE 4.5-MINUTE BUDGET after ' + results.length + ' schools.');
+  }
+  b.push('Elapsed: ' + Math.round(elapsed) + 's   Seconds per school: ' +
+         (Math.round(perSchool * 10) / 10));
+  b.push('SET SITEMAP_RECORDS_PER_RUN TO ABOUT ' +
+         (perSchool ? Math.max(1, Math.floor(270 / perSchool)) : '?') +
+         ' BASED ON THIS RUN. It is currently ' + SITEMAP_RECORDS_PER_RUN + '.');
+  b.push('');
+  Logger.log(b.join('\n'));
+
+  return {
+    category: categoryKey, processed: results.length, fetched: fetched,
+    withCandidates: withCandidates, statuses: statuses, outcomes: outcomes,
+    secondsPerSchool: perSchool, budgetHit: budgetHit
+  };
 }
