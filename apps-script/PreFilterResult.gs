@@ -1,4 +1,3 @@
-IN github, the old copy of pre-filter has it:
 // =========================================================================
 // PRE-FILTER RESULT  (2026-08-24)  -- NEW FILE, paste alongside SitemapFinder.gs
 //
