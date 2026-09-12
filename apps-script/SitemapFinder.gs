@@ -3209,16 +3209,35 @@ function rflIsDocLink_(href) {
 }
 
 /**
- * Site furniture: the links every page on a university site carries.
+ * How likely a link is to BE the transparency report. CHTR rows only.
  *
- * DELIBERATELY SHORT. This is a blocklist on a keep-everything rule, so each
- * entry removes real links and a wrong entry removes the report. Nothing goes
- * here unless it could never be a transparency report. "Contact", "policy",
- * "conduct" and "safety" are all absent on purpose -- each of them sits in
- * the link text of some school's real report.
+ * THIS REPLACED A BLOCKLIST, AND THE REASON IS WORTH KEEPING. The first
+ * version kept every same-site link that was not obvious furniture, then
+ * capped at 20. McMurry's page returned twenty header-nav links -- "Visit
+ * Campus", "How to Apply", "Find Your Major" -- because nav comes first in
+ * the HTML and the cap was spent before the parser reached the content. The
+ * report link, the entire reason for the change, never got collected. A
+ * blocklist cannot be written ahead of time against a university's menu.
+ *
+ * SCORE THE WHOLE BLOB, HREF INCLUDED, and that is what makes this work where
+ * a text-only rule would not. McMurry's link says only "View" -- but its
+ * address carries the year, the word, or the file extension. Meanwhile
+ * "Visit Campus" pointing at /admissions-overview/campus-tours/ has no signal
+ * anywhere in either half, and falls out without anyone naming it.
+ *
+ * BEING ON THE SCHOOL'S OWN SITE IS NOT, BY ITSELF, A REASON TO KEEP A LINK.
+ * Every nav item is on the school's own site. It counts only once something
+ * else already does.
  */
-function rflIsFurniture_(blob) {
-  return /privacy|accessibility|sitemap|site-map|copyright|terms of use|terms-of-use|nondiscrimination|skip to (?:main|content)|\blog ?in\b|\bsign ?in\b|apply now|make a gift|give now|\bdonate\b|\/careers|\/jobs|\bmyaccount\b/.test(blob);
+function rflChtrScore_(blob, isDoc, host, onSite) {
+  let s = 0;
+  if (isDoc) s += 100;                                            // a file, usually the report
+  if (/hazing|transparency|chtr/.test(blob)) s += 60;
+  if (/report|incident|violation|disclosure|biannual|bi-annual|annual/.test(blob)) s += 40;
+  if (/(?:19|20)\d{2}/.test(blob)) s += 25;                       // "2024-2025", "Fall 2025"
+  if (host) s += 15;                                              // a known vendor
+  if (s > 0 && onSite) s += 10;                                   // tiebreak only
+  return s;
 }
 
 /**
@@ -3276,17 +3295,16 @@ function rflReportLinks_(html, pageUrl, isForm) {
     const isDoc = rflIsDocLink_(href);
     const onSite = !!site && repickSite_(href) === site;
 
+    let score = 0;
     if (isForm) {
       // Keep a link if it points at a known reporting vendor, or reads like a
       // way to report something. Vendor match alone is enough -- the link
       // text is sometimes just "here".
       if (!host && !/report|incident|complaint|concern|submit|file a/.test(blob)) continue;
     } else {
-      // CHTR: keep unless it is furniture, and require some reason to think
-      // it could be the school's own report -- a document, its own site, or a
-      // vendor that hosts transparency reports (cm.maxient.com/chtr.php).
-      if (rflIsFurniture_(blob)) continue;
-      if (!isDoc && !onSite && !host) continue;
+      // CHTR: keep only links carrying a positive signal. See rflChtrScore_.
+      score = rflChtrScore_(blob, isDoc, host, onSite);
+      if (score <= 0) continue;
     }
 
     const key = href.toLowerCase();
@@ -3300,26 +3318,32 @@ function rflReportLinks_(html, pageUrl, isForm) {
       hazing: /hazing/.test(blob),
       sameSite: onSite,
       isDoc: isDoc,
+      score: score,
       // A report you READ is not a report you FILE. Annual security
       // reports, Clery pages and transparency reports all match "report"
       // and none of them collect anything. Flagged rather than dropped so
       // the stored outbound list stays complete.
       readNotFile: repickIsReadNotFile_(blob, href)
     });
-    // 40 for Report Form, unchanged. 20 for CHTR: a transparency page that
-    // genuinely offers more than twenty candidate links is not a page a
-    // longer list would rescue.
-    if (out.length >= (isForm ? 40 : 20)) break;
+    // REPORT FORM CAPS DURING COLLECTION, AS IT ALWAYS HAS. CHTR DOES NOT --
+    // it caps after ranking, below. Capping a page-ordered walk throws away
+    // whatever sits furthest down the HTML, and on a university page that is
+    // the content: the nav is at the top. This is the bug that returned
+    // twenty menu items for McMurry and left out the report.
+    //
+    // The ceiling here is a runaway guard, not a limit anyone should hit.
+    if (isForm && out.length >= 40) break;
+    if (!isForm && out.length >= 300) break;
   }
 
-  // Documents first on CHTR rows, appearance order preserved within each
-  // group. Report Form order is untouched -- rflPick_ scores every link and
-  // does not care what order they arrive in, but changing it would change
-  // nothing visibly and could change a tie-break invisibly.
   if (!isForm) {
-    const docs = [], rest = [];
-    out.forEach(function (l) { (l.isDoc ? docs : rest).push(l); });
-    return docs.concat(rest);
+    // Rank, THEN trim. Highest score first; appearance order breaks ties, so
+    // two equally plausible links stay in the order the page put them.
+    out.forEach(function (l, i) { l.pos = i; });
+    out.sort(function (a, b) {
+      return (b.score - a.score) || (a.pos - b.pos);
+    });
+    return out.slice(0, 20);
   }
   return out;
 }
