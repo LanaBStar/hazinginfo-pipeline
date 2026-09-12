@@ -17,6 +17,14 @@
 // below-standard reason fields, which WriteBack.gs never touches. Keeping
 // them separate is deliberate. Do not merge them.
 //
+// TWO PASSES LIVE IN THIS FILE. promoteDryRun / promoteApply* promote URLs
+// and checkmarks. promoteHotlineContactDryRun / promoteHotlineContactApply*
+// promote the hotline and the university contact, and are a SEPARATE pass
+// because a hotline decision is not a verdict about the page -- the reasoning
+// is in the SECOND PASS section header at the bottom of this file. Neither
+// pass reads or writes the other's fields, and each has its own status and
+// note fields on Candidate URLs.
+//
 // -------------------------------------------------------------------------
 // TWO DETERMINATIONS PROMOTE, AND THEY DIFFER ONLY IN WHICH URL IS WRITTEN
 // -------------------------------------------------------------------------
@@ -622,6 +630,11 @@ function promoteApply() {
 function promoteApplyForReal() {
   return prRun_(false);
 }
+
+// The hotline / contact pass has its own three entry points --
+// promoteHotlineContactDryRun(), promoteHotlineContactApply() and
+// promoteHotlineContactApplyForReal() -- declared at the bottom of this file,
+// next to the logic they run.
 
 
 // =========================================================================
@@ -1974,4 +1987,999 @@ function prExceptionCount_(exceptions) {
   let n = 0;
   for (const k in exceptions) n += exceptions[k].length;
   return n;
+}
+
+// =========================================================================
+// SECOND PASS -- HOTLINE AND CONTACT
+// =========================================================================
+//
+// WHY THIS IS A SEPARATE PASS AND NOT PART OF prPlan_. A reviewer's hotline
+// or contact decision is about a phone number and an email address that
+// happen to appear on a page. It is NOT a verdict about the page. Measured
+// 2026-09-12: of the twenty decided rows that produced a write, SEVEN sat on
+// rows whose Reviewer determination is "Rejected - wrong page" or "Duplicate
+// of confirmed page" -- the page was thrown out and the phone number was
+// still correct. Every one of those rows hits an early return inside
+// prPlan_, and the no-op filter in prRun_ would drop a hotline-only write
+// even on the rows that survive. Folding this into the URL path would
+// therefore lose a third of the work silently, which is the exact failure
+// shape this file exists to prevent.
+//
+// So: its own entry points, its own gate, its own run, its own status fields.
+// It reuses the UNITID join, prListAll_ and prPatch_ from above and touches
+// nothing else.
+//
+// HC IS SHORT FOR HOTLINE/CONTACT. Everything this pass declares is prefixed
+// PR_HC_ or prHc, which keeps it inside this file's PR_/pr namespace while
+// staying obviously separable from the URL pass.
+//
+// -------------------------------------------------------------------------
+// WHAT GATES A WRITE -- THE DECISION FIELD, NOT THE DETERMINATION
+// -------------------------------------------------------------------------
+//   Hotline decision = Accepted                               -> write TEST AI hotline
+//   Hotline decision = Rejected - use proposed hotline instead -> write Proposed hazing hotline
+//   Contact decision = Accepted                               -> write TEST AI contact
+//   Contact decision = Rejected - use proposed contact instead -> write Proposed university contact
+//
+//   Rejected              -> NOTHING IS WRITTEN AND NOTHING IS CLEARED
+//   Needs second opinion  -> nothing
+//   (blank)               -> nothing
+//
+// REJECTED DOES NOT CLEAR. Rejected means the AI read the wrong number off
+// the page. It does not mean the school has no hotline. Clearing on Rejected
+// would delete hand-collected values in 50 States that nobody asked us to
+// touch -- 427 rows already carry both a hotline and a contact.
+//
+// -------------------------------------------------------------------------
+// A PROMOTED ITEM IS NEVER RECONSIDERED, AND THAT IS THE POINT
+// -------------------------------------------------------------------------
+// THE BUG THIS FIXES. The first version of this pass re-checked every decided
+// row on every run and rewrote 50 States whenever the value differed. That
+// makes an old decision permanent and retroactive: a hotline Accepted in 2026
+// would overwrite a better number somebody typed into 50 States by hand in
+// 2029, silently, on the next run, forever. A decision is a statement about
+// what was true when it was made, not a standing instruction to keep
+// asserting it.
+//
+// So each item carries its own status, and an item reading "Promoted" is
+// SETTLED: the pass does not look at its value again and cannot overwrite
+// anything. It also keeps the work bounded. Candidate URLs grows by a review
+// cycle twice a year; the settled rows drop out of scope, so the run reads
+// what is unresolved rather than everything ever decided.
+//
+//   Hotline promote status   fldxQTuaXowzfZSI9   Promoted / Refused / Write failed
+//   Contact promote status   fldnGjhXBelpjQnaK   Promoted / Refused / Write failed
+//   Hotline/contact promote note   fldbYVFzNy2uGoAtX   long text, shared
+//
+// TWO STATUS FIELDS, NOT ONE, BECAUSE THE TWO ITEMS SETTLE INDEPENDENTLY. A
+// row can have a good hotline and an unusable contact. One combined status
+// could only say "partly promoted", which leaves the pass unable to tell
+// which half to leave alone -- so the settled half would keep being
+// re-asserted, which is the bug above in miniature. Two fields also retire
+// the "partly promoted" value entirely: two fields disagreeing says it
+// plainly, and a schema that states the thing beats a vocabulary term that
+// summarises it.
+//
+// TO FORCE A RE-PROMOTE, CLEAR THE STATUS FIELD. That is the documented
+// escape hatch, and it is why the fields are worth a Data Dictionary entry.
+// If the AI field is re-run years later and produces a different number, the
+// row does NOT silently re-promote: the reviewer accepted the value they
+// actually saw, and a new value deserves a new decision.
+//
+// SEPARATE FROM Promote status / Promote note / Promote flagged, deliberately.
+// Writing "Promoted" into Promote status for a hotline write would assert
+// that the page published, on rows where the page was explicitly rejected --
+// and the two passes would overwrite each other's notes, leaving whichever
+// ran last describing only half of what happened.
+//
+// THE NOTE IS SHARED, REWRITTEN IN FULL EVERY RUN, AND CARRIES SETTLED LINES
+// FORWARD VERBATIM. Rewriting rather than appending keeps it from describing
+// a condition that has since been fixed. Carrying the settled lines forward
+// is what preserves the date an item actually reached the public site --
+// without it, a run that promoted the contact would replace the hotline's
+// "WROTE this on 2026-09-11" with nothing at all, and the record of when a
+// value went live is the whole reason these fields exist.
+//
+// AND THE STAMP IS CLEARED per item when a row stops having anything to
+// promote -- a reviewer changing Accepted to Rejected wipes that item's
+// status rather than leaving "Promoted" under a decision that no longer says
+// so.
+//
+// -------------------------------------------------------------------------
+// THE SHAPE GUARD IS NOT OPTIONAL
+// -------------------------------------------------------------------------
+// The AI writes prose, and two of its habits reach these fields:
+//
+//   "none" / "not collected"   -- the sentinel for nothing found. Measured
+//                                 2026-09-12, "none" is sitting in TEST AI
+//                                 hotline or TEST AI contact on 14 rows.
+//   "[email protected]"       -- a redaction artifact lifted out of page
+//                                 text. It is on FOUR rows, and it passes
+//                                 the existing Contact check formula, which
+//                                 only asks whether an "@" is present.
+//
+// Neither is a value. A decision field is a human saying "yes, that one" and
+// is not a guarantee the string underneath is well formed, so the guard runs
+// on every write regardless of what was decided. A value that fails it is
+// refused, recorded on the row, and never silently dropped.
+//
+// THE NATIONAL HOTLINE IS REFUSED TOO, AND THIS ONE IS A JUDGEMENT CALL.
+// 888-668-4293 is the national anti-hazing line, not any school's own. The
+// Hotline check formula already calls it "Reject - NOT-HAZE hotline". If a
+// reviewer Accepts it anyway this pass refuses it and says so on the row
+// rather than publishing it as a school's number. Delete PR_HC_NOT_HAZE and
+// the two lines that read it if the organisation decides the reviewer's
+// Accept should win.
+//
+// -------------------------------------------------------------------------
+// WHAT MAKES IT SAFE TO RE-RUN
+// -------------------------------------------------------------------------
+// Settled items are not read at all. For the rest, the pass reads the current
+// 50 States value and drops the write if it already matches. Phones compare
+// on the ten digits that identify the line and emails case-insensitively, so
+// a reformatted-but-identical value is a no-op rather than a write.
+//
+// TWO ROWS FOR ONE SCHOOL THAT DISAGREE ARE REFUSED, NOT RESOLVED. A school
+// has up to three Candidate rows, one per category, and each can carry its
+// own decision. Where two rows would write DIFFERENT values into the same 50
+// States field, both are refused, both rows are stamped, and the conflict is
+// named. Taking the first and moving on is how a silently chosen verdict
+// happens.
+//
+// The benign version of that -- the same value Accepted on one row and
+// Rejected on another, which is what 157863, 200059 and 451866 look like
+// today -- is not a conflict. Rejected writes nothing, so there is nothing
+// to disagree with.
+//
+// STILL READS ALL OF 50 STATES, and that read is the dominant cost of a run
+// -- five to twenty seconds for about 1,477 rows. It does not grow: that is
+// roughly how many institutions exist. Fetching only the rows a run needs, by
+// UNITID, is the obvious next optimisation and is not worth its complexity
+// until a run approaches the six-minute cap.
+// =========================================================================
+
+// ---- Candidate URLs fields this pass reads -------------------------------
+const PR_HC_C_AI_HOTLINE    = 'fldFbCOyTYeU8pD7a';   // TEST AI hotline (formula)
+const PR_HC_C_AI_CONTACT    = 'fldfTMSWqvRXImJT4';   // TEST AI contact (formula)
+const PR_HC_C_HOTLINE_DEC   = 'fldPv0sfLDhOiSAhX';   // Hotline decision
+const PR_HC_C_CONTACT_DEC   = 'fldMqpnRY8IUBVNA5';   // Contact decision
+const PR_HC_C_PROP_HOTLINE  = 'fldXVrCGrD6hJtdd8';   // Proposed hazing hotline (phone)
+const PR_HC_C_PROP_CONTACT  = 'fldJ4XBLbVQuIyIle';   // Proposed university contact (email)
+
+// ---- Candidate URLs fields this pass WRITES ------------------------------
+const PR_HC_C_HOT_STATUS = 'fldxQTuaXowzfZSI9';   // Hotline promote status
+const PR_HC_C_CON_STATUS = 'fldnGjhXBelpjQnaK';   // Contact promote status
+const PR_HC_C_NOTE       = 'fldbYVFzNy2uGoAtX';   // Hotline/contact promote note
+
+// ---- 50 States fields this pass writes -----------------------------------
+const PR_HC_S_HOTLINE = 'fldx3LwZMhNLw8GMl';   // Hazing Hotline (phoneNumber)
+const PR_HC_S_CONTACT = 'fldqmnxOGSuDb86aV';   // University Contact (multilineText)
+
+// ---- The decisions this pass acts on -------------------------------------
+// Written by NAME, like everything else in this file. A renamed choice in
+// Airtable keeps the rows already carrying it and breaks the next read, so
+// these strings have to match the single-selects exactly.
+const PR_HC_DEC_ACCEPTED    = 'Accepted';
+const PR_HC_DEC_USE_HOTLINE = 'Rejected - use proposed hotline instead';
+const PR_HC_DEC_USE_CONTACT = 'Rejected - use proposed contact instead';
+
+// ---- The three status values, shared by both status fields ---------------
+// Also written by name, with typecast:false, so a mismatch fails the write
+// loudly instead of minting a fourth choice nobody meant to create.
+const PR_HC_ST_PROMOTED = 'Promoted';
+const PR_HC_ST_REFUSED  = 'Refused';
+const PR_HC_ST_FAILED   = 'Write failed';
+
+// The national anti-hazing line, the ten digits that identify it. See header.
+const PR_HC_NOT_HAZE = '8886684293';
+
+// Sentinels the AI writes when it found nothing. Compared lowercased.
+const PR_HC_SENTINELS = ['none', 'not collected', 'not found', 'n/a', 'na',
+                         'unknown', 'not listed', 'not stated', 'blank', '-'];
+
+// A ceiling, not a target. A run that wants to touch more schools than this
+// has almost certainly read something wrong, and stopping is cheaper than
+// undoing.
+const PR_HC_MAX_WRITES = 200;
+
+
+// =========================================================================
+// ENTRY POINTS -- HOTLINE AND CONTACT
+// =========================================================================
+
+/**
+ * Reports what promoteHotlineContactApplyForReal() would do. Writes nothing,
+ * to either base, and stamps nothing on the Candidate rows. Run this first,
+ * every time.
+ */
+function promoteHotlineContactDryRun() {
+  return prHcRun_(true);
+}
+
+/**
+ * Honours PR_DRY_RUN_DEFAULT, so this is a dry run while that stays true.
+ */
+function promoteHotlineContactApply() {
+  return prHcRun_(PR_DRY_RUN_DEFAULT ? true : false);
+}
+
+/**
+ * Applies for real, ignoring PR_DRY_RUN_DEFAULT. Same reasoning as
+ * promoteApplyForReal(): arming the script is an explicit act that leaves the
+ * file unchanged.
+ */
+function promoteHotlineContactApplyForReal() {
+  return prHcRun_(false);
+}
+
+
+// =========================================================================
+// THE HOTLINE / CONTACT RUN
+// =========================================================================
+function prHcRun_(dryRun) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(1000)) {
+    Logger.log('Another script run holds the lock. Nothing done.');
+    return { blocked: true };
+  }
+  try {
+    const pat = prRequirePat_();
+    const started = new Date();
+
+    Logger.log(dryRun
+      ? '=== HOTLINE / CONTACT -- DRY RUN, nothing will be written ==='
+      : '=== HOTLINE / CONTACT -- APPLYING, writing to 50 States ===');
+    Logger.log('Started ' + started.toISOString());
+    Logger.log('');
+
+    const rows = prListAll_(pat, PR_PAGES_BASE, PR_CAND_TABLE,
+      [PR_C_UNITID, PR_C_CATEGORY,
+       PR_HC_C_HOTLINE_DEC, PR_HC_C_CONTACT_DEC,
+       PR_HC_C_AI_HOTLINE, PR_HC_C_AI_CONTACT,
+       PR_HC_C_PROP_HOTLINE, PR_HC_C_PROP_CONTACT,
+       PR_HC_C_HOT_STATUS, PR_HC_C_CON_STATUS, PR_HC_C_NOTE],
+      prHcFormula_());
+
+    Logger.log('Rows needing attention: ' + rows.length);
+    Logger.log('(Rows whose hotline AND contact both read "' +
+      PR_HC_ST_PROMOTED + '" are settled and are not read. Clear a status ' +
+      'field to bring one back.)');
+    if (!rows.length) {
+      Logger.log('');
+      Logger.log('Nothing to do. Every decision has been acted on. If that is ' +
+        'a surprise, check that the decision and status names in PR_HC_DEC_* ' +
+        'and PR_HC_ST_* still match the Airtable single-selects exactly -- a ' +
+        'renamed choice breaks the read, not the rows.');
+      return { rows: 0, written: 0 };
+    }
+
+    const institutions = prListAll_(pat, PR_STATES_BASE, PR_STATES_TABLE,
+      [PR_S_UNITID, PR_S_INSTITUTION, PR_HC_S_HOTLINE, PR_HC_S_CONTACT], '');
+    Logger.log('50 States rows read: ' + institutions.length);
+
+    // UNITID -> record(s). An ARRAY, so a duplicate UNITID is detectable.
+    const byUnitid = {};
+    institutions.forEach(function (r) {
+      const u = String(r.fields[PR_S_UNITID] || '').trim();
+      if (!u) return;
+      (byUnitid[u] = byUnitid[u] || []).push(r);
+    });
+
+    // ---- plan every row -------------------------------------------------
+    const plans = [];
+    const skips = [];
+    let settledItems = 0;
+    rows.forEach(function (row) {
+      const p = prHcPlan_(row, byUnitid);
+      p.skips.forEach(function (s) { skips.push(s); });
+      p.outcomes.forEach(function (o) { if (o.kind === 'settled') settledItems++; });
+      plans.push(p);
+    });
+
+    // ---- merge per 50 States record, refusing real conflicts ------------
+    const merged    = {};
+    const conflicts = [];
+    plans.forEach(function (p) {
+      p.writes.forEach(function (w) {
+        const slot = merged[p.targetId] = merged[p.targetId] ||
+          { school: p.school, unitid: p.unitid, fields: {}, sources: {},
+            poisoned: {} };
+        const prior = slot.fields[w.fieldId];
+        if (prior !== undefined && !w.same(prior, w.value)) {
+          const text = p.unitid + ' ' + p.school + ' / ' + w.label + ': "' +
+            prior + '" (' + slot.sources[w.fieldId].categoryName + ') vs "' +
+            w.value + '" (' + p.categoryName + ') -- BOTH REFUSED, decide ' +
+            'which is right';
+          conflicts.push(text);
+          prHcMarkConflict_(plans, slot.sources[w.fieldId].candidateId,
+                            w.fieldId, text);
+          prHcMarkConflict_(plans, p.candidateId, w.fieldId, text);
+          delete slot.fields[w.fieldId];
+          delete slot.sources[w.fieldId];
+          slot.poisoned[w.fieldId] = true;
+          return;
+        }
+        if (slot.poisoned[w.fieldId]) {
+          prHcMarkConflict_(plans, p.candidateId, w.fieldId,
+            'refused because two other rows for this school disagreed on the ' +
+            w.label);
+          return;
+        }
+        slot.fields[w.fieldId]  = w.value;
+        slot.sources[w.fieldId] = { categoryName: p.categoryName,
+                                    candidateId: p.candidateId };
+      });
+    });
+
+    // ---- drop the no-ops ------------------------------------------------
+    const targets   = [];
+    const willWrite = [];
+    const noops     = [];
+    for (const targetId in merged) {
+      const slot = merged[targetId];
+      const rec  = prHcFindRecord_(institutions, targetId);
+      const out  = {};
+      for (const fieldId in slot.fields) {
+        const value   = slot.fields[fieldId];
+        const current = rec ? String(rec.fields[fieldId] || '') : '';
+        const label   = (fieldId === PR_HC_S_HOTLINE) ? 'hotline' : 'contact';
+        const same = (fieldId === PR_HC_S_HOTLINE)
+          ? prHcSameHotline_(current, value)
+          : prHcSameContact_(current, value);
+        if (same) {
+          noops.push(slot.unitid + ' / ' + label + ': already "' + current + '"');
+          prHcMarkOutcome_(plans, targetId, fieldId, 'noop', current);
+          continue;
+        }
+        out[fieldId] = value;
+        willWrite.push(slot.unitid + ' ' + slot.school + ' / ' + label + ': ' +
+          (current ? '"' + current + '" -> ' : 'blank -> ') + '"' + value + '"');
+        prHcMarkOutcome_(plans, targetId, fieldId, 'written', value);
+      }
+      if (Object.keys(out).length) {
+        targets.push({ recordId: targetId, fields: out });
+      }
+    }
+
+    // ---- report ---------------------------------------------------------
+    Logger.log('');
+    Logger.log('Schools to write:    ' + targets.length);
+    Logger.log('Field writes:        ' + willWrite.length);
+    Logger.log('Already correct:     ' + noops.length);
+    Logger.log('Settled, not read:   ' + settledItems + ' item(s) on rows that ' +
+      'still had other work');
+    Logger.log('Refused:             ' + skips.length);
+    Logger.log('Conflicts refused:   ' + conflicts.length);
+    Logger.log('');
+
+    if (willWrite.length) {
+      Logger.log('--- WOULD WRITE ---');
+      willWrite.forEach(function (s) { Logger.log('  ' + s); });
+      Logger.log('');
+    }
+    if (skips.length) {
+      Logger.log('--- REFUSED ---');
+      skips.forEach(function (s) {
+        Logger.log('  ' + (s.unitid || '(no UNITID)') + ' / ' +
+          (s.categoryName || '(no category)') + ': ' + s.reason);
+      });
+      Logger.log('');
+    }
+    if (conflicts.length) {
+      Logger.log('--- CONFLICTS, BOTH SIDES REFUSED ---');
+      conflicts.forEach(function (s) { Logger.log('  ' + s); });
+      Logger.log('');
+    }
+    if (noops.length) {
+      Logger.log('--- ALREADY CORRECT, NOT WRITTEN ---');
+      noops.forEach(function (s) { Logger.log('  ' + s); });
+      Logger.log('');
+    }
+
+    if (targets.length > PR_HC_MAX_WRITES) {
+      Logger.log('STOPPING. ' + targets.length + ' schools is more than ' +
+        'PR_HC_MAX_WRITES (' + PR_HC_MAX_WRITES + '). Nothing was written. ' +
+        'A jump this size means a decision field or a parser changed meaning, ' +
+        'not that the review queue moved.');
+      return { rows: rows.length, written: 0, halted: true };
+    }
+
+    if (dryRun) {
+      Logger.log('=== DRY RUN -- nothing written. The two promote status ' +
+        'fields and the note were NOT stamped either; a dry run that stamped ' +
+        'the source rows would not be a dry run. Run ' +
+        'promoteHotlineContactApplyForReal() to apply. ===');
+      return {
+        rows: rows.length, planned: targets.length, writes: willWrite.length,
+        noops: noops.length, settledItems: settledItems,
+        skips: skips, conflicts: conflicts, dryRun: true
+      };
+    }
+
+    // ---- write to 50 States ---------------------------------------------
+    let written = 0;
+    let failedCount = 0;
+    const failures = [];
+    for (let i = 0; i < targets.length; i += PR_WRITE_BATCH) {
+      const batch = targets.slice(i, i + PR_WRITE_BATCH);
+      const res = prPatch_(pat, PR_STATES_BASE, PR_STATES_TABLE, batch);
+      if (res.ok) {
+        written += batch.length;
+      } else {
+        failedCount += batch.length;
+        failures.push(res.error);
+        Logger.log('WRITE FAILED for ' + batch.length + ' school(s): ' + res.error);
+        batch.forEach(function (t) { prHcMarkFailed_(plans, t.recordId, res.error); });
+      }
+    }
+
+    // ---- stamp the Candidate rows ---------------------------------------
+    // AFTER the 50 States write, never before, so the stamp reports what
+    // happened rather than what was intended. All three fields move together:
+    // a stale note under a fresh status is the failure mode.
+    const stamps = [];
+    plans.forEach(function (p) {
+      const s = prHcStampFor_(p);
+      if (s === null) return;
+      if (String(p.beforeHotStatus || '') === String(s.hotStatus || '') &&
+          String(p.beforeConStatus || '') === String(s.conStatus || '') &&
+          String(p.beforeNote || '')      === String(s.note || '')) return;
+      const fields = {};
+      fields[PR_HC_C_HOT_STATUS] = s.hotStatus;   // null clears it
+      fields[PR_HC_C_CON_STATUS] = s.conStatus;
+      fields[PR_HC_C_NOTE]       = s.note;
+      stamps.push({ recordId: p.candidateId, fields: fields });
+    });
+
+    let stamped = 0;
+    for (let i = 0; i < stamps.length; i += PR_WRITE_BATCH) {
+      const batch = stamps.slice(i, i + PR_WRITE_BATCH);
+      const res = prPatch_(pat, PR_PAGES_BASE, PR_CAND_TABLE, batch);
+      if (res.ok) {
+        stamped += batch.length;
+      } else {
+        Logger.log('STAMP FAILED for ' + batch.length + ' row(s). The 50 ' +
+          'States write already happened and stands; only the record of it ' +
+          'is missing, so those items will be re-promoted next run: ' + res.error);
+      }
+    }
+
+    const elapsed = Math.round((new Date() - started) / 1000);
+    Logger.log('');
+    Logger.log('Schools written: ' + written + ', failed: ' + failedCount +
+      ', rows stamped: ' + stamped + ', in ' + elapsed + 's.');
+    Logger.log('Re-run the dry run to confirm: every item promoted just now is ' +
+      'settled, so it should report far fewer rows needing attention.');
+
+    const result = {
+      rows: rows.length, written: written, writes: willWrite.length,
+      failedCount: failedCount, failures: failures, noops: noops.length,
+      settledItems: settledItems, skips: skips, conflicts: conflicts,
+      willWrite: willWrite, stamped: stamped, started: started
+    };
+
+    if (PR_EMAIL_ON_APPLY) prHcEmail_(result);
+    return result;
+
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+
+/**
+ * The read filter, built from the same constants the code compares against so
+ * a renamed choice cannot make the formula and the logic disagree.
+ *
+ * FOUR CLAUSES, AND EACH EARNS ITS PLACE:
+ *   1-2  an actionable decision whose item is not yet Promoted -- work to do
+ *   3-4  a status sitting on an item whose decision is no longer actionable --
+ *        a stamp to clear
+ * An item that is actionable AND Promoted is settled, matches nothing, and is
+ * never read. That is the whole scaling and no-overwrite story in one filter.
+ */
+function prHcFormula_() {
+  const hotAct = 'OR({' + PR_HC_C_HOTLINE_DEC + '} = "' + PR_HC_DEC_ACCEPTED +
+                 '", {' + PR_HC_C_HOTLINE_DEC + '} = "' + PR_HC_DEC_USE_HOTLINE + '")';
+  const conAct = 'OR({' + PR_HC_C_CONTACT_DEC + '} = "' + PR_HC_DEC_ACCEPTED +
+                 '", {' + PR_HC_C_CONTACT_DEC + '} = "' + PR_HC_DEC_USE_CONTACT + '")';
+  const hotSt  = '{' + PR_HC_C_HOT_STATUS + '} & ""';
+  const conSt  = '{' + PR_HC_C_CON_STATUS + '} & ""';
+  return 'OR(' +
+    'AND(' + hotAct + ', ' + hotSt + ' != "' + PR_HC_ST_PROMOTED + '"), ' +
+    'AND(' + conAct + ', ' + conSt + ' != "' + PR_HC_ST_PROMOTED + '"), ' +
+    'AND(NOT(' + hotAct + '), ' + hotSt + ' != ""), ' +
+    'AND(NOT(' + conAct + '), ' + conSt + ' != "")' +
+  ')';
+}
+
+
+/**
+ * One Candidate row -> nothing, or one or two queued field writes.
+ *
+ * candidateId is the row in Candidate URLs; targetId is the row in 50 States.
+ * They were one field called recordId in the first version of this pass, which
+ * is exactly the kind of ambiguity that produces a write to the wrong base, so
+ * they are two names now.
+ */
+function prHcPlan_(row, byUnitid) {
+  const f = row.fields || {};
+  const unitid = String(f[PR_C_UNITID] || '').trim();
+  const categoryName = prHcSelectName_(f[PR_C_CATEGORY]) || '(no category)';
+
+  const hotlineDec = prHcSelectName_(f[PR_HC_C_HOTLINE_DEC]);
+  const contactDec = prHcSelectName_(f[PR_HC_C_CONTACT_DEC]);
+
+  const out = {
+    candidateId: row.id, unitid: unitid, school: '',
+    categoryName: categoryName, targetId: '',
+    writes: [], skips: [], outcomes: [],
+    beforeHotStatus: prHcSelectName_(f[PR_HC_C_HOT_STATUS]),
+    beforeConStatus: prHcSelectName_(f[PR_HC_C_CON_STATUS]),
+    beforeNote: String(f[PR_HC_C_NOTE] || ''),
+    hotActionable: (hotlineDec === PR_HC_DEC_ACCEPTED ||
+                    hotlineDec === PR_HC_DEC_USE_HOTLINE),
+    conActionable: (contactDec === PR_HC_DEC_ACCEPTED ||
+                    contactDec === PR_HC_DEC_USE_CONTACT)
+  };
+
+  // SETTLED ITEMS ARE NOT EVEN READ. Their value is live, their note line is
+  // carried forward verbatim, and nothing about them can be overwritten.
+  const hotSettled = out.hotActionable &&
+                     out.beforeHotStatus === PR_HC_ST_PROMOTED;
+  const conSettled = out.conActionable &&
+                     out.beforeConStatus === PR_HC_ST_PROMOTED;
+  if (hotSettled) out.outcomes.push({ label: 'hotline', kind: 'settled' });
+  if (conSettled) out.outcomes.push({ label: 'contact', kind: 'settled' });
+
+  const wantsHotline = out.hotActionable && !hotSettled;
+  const wantsContact = out.conActionable && !conSettled;
+
+  // Nothing to do and nothing to clear. Not a refusal: Rejected and Needs
+  // second opinion are decisions that write nothing by design, and the refusal
+  // list is only useful if every line on it is something a reviewer can act on.
+  if (!wantsHotline && !wantsContact) return out;
+
+  if (!unitid) {
+    out.skips.push({ unitid: '', categoryName: categoryName, label: 'row',
+      reason: 'no UNITID on the Candidate row, so there is no 50 States row ' +
+              'to write to' });
+    return out;
+  }
+
+  const matches = byUnitid[unitid] || [];
+  if (matches.length === 0) {
+    out.skips.push({ unitid: unitid, categoryName: categoryName, label: 'row',
+      reason: 'UNITID not found in 50 States' });
+    return out;
+  }
+  if (matches.length > 1) {
+    out.skips.push({ unitid: unitid, categoryName: categoryName, label: 'row',
+      reason: 'UNITID matches ' + matches.length + ' rows in 50 States -- ' +
+              'ambiguous, not guessing' });
+    return out;
+  }
+  const target = matches[0];
+  out.targetId = target.id;
+  out.school   = String(target.fields[PR_S_INSTITUTION] || '').trim();
+
+  // ---- hotline ----------------------------------------------------------
+  if (wantsHotline) {
+    const useProposed = (hotlineDec === PR_HC_DEC_USE_HOTLINE);
+    const raw = String(f[useProposed ? PR_HC_C_PROP_HOTLINE
+                                     : PR_HC_C_AI_HOTLINE] || '').trim();
+    const source = useProposed ? 'Proposed hazing hotline' : 'TEST AI hotline';
+
+    if (!raw) {
+      out.skips.push({ unitid: unitid, categoryName: categoryName,
+        label: 'hotline',
+        reason: 'hotline decision is "' + hotlineDec + '" but ' + source +
+                ' is empty -- fill it or change the decision' });
+    } else if (prHcIsSentinel_(raw)) {
+      out.skips.push({ unitid: unitid, categoryName: categoryName,
+        label: 'hotline',
+        reason: 'hotline decision is "' + hotlineDec + '" but ' + source +
+                ' reads "' + raw + '", which is the AI saying it found ' +
+                'nothing, not a phone number' });
+    } else if (prHcDigits_(raw).length < 10) {
+      out.skips.push({ unitid: unitid, categoryName: categoryName,
+        label: 'hotline',
+        reason: 'hotline "' + raw + '" has only ' + prHcDigits_(raw).length +
+                ' digits, so it cannot be a usable number' });
+    } else if (prHcIsNotHaze_(raw)) {
+      out.skips.push({ unitid: unitid, categoryName: categoryName,
+        label: 'hotline',
+        reason: 'hotline "' + raw + '" is the national anti-hazing line, not ' +
+                'this school\'s own number. Accepted on the row, refused ' +
+                'here -- see the PR_HC_NOT_HAZE note in Promote.gs' });
+    } else {
+      out.writes.push({
+        fieldId: PR_HC_S_HOTLINE, label: 'hotline', value: raw,
+        source: source, same: prHcSameHotline_
+      });
+    }
+  }
+
+  // ---- contact ----------------------------------------------------------
+  if (wantsContact) {
+    const useProposed = (contactDec === PR_HC_DEC_USE_CONTACT);
+    const raw = String(f[useProposed ? PR_HC_C_PROP_CONTACT
+                                     : PR_HC_C_AI_CONTACT] || '').trim();
+    const source = useProposed ? 'Proposed university contact' : 'TEST AI contact';
+
+    if (!raw) {
+      out.skips.push({ unitid: unitid, categoryName: categoryName,
+        label: 'contact',
+        reason: 'contact decision is "' + contactDec + '" but ' + source +
+                ' is empty -- fill it or change the decision' });
+    } else if (prHcIsSentinel_(raw)) {
+      out.skips.push({ unitid: unitid, categoryName: categoryName,
+        label: 'contact',
+        reason: 'contact decision is "' + contactDec + '" but ' + source +
+                ' reads "' + raw + '", which is the AI saying it found ' +
+                'nothing, not an address' });
+    } else if (!prHcIsUsableEmail_(raw)) {
+      out.skips.push({ unitid: unitid, categoryName: categoryName,
+        label: 'contact',
+        reason: 'contact "' + raw + '" is not a single well-formed email ' +
+                'address. A redacted page often yields "[email protected]", ' +
+                'which has an "@" and is still not an address' });
+    } else {
+      out.writes.push({
+        fieldId: PR_HC_S_CONTACT, label: 'contact', value: raw,
+        source: source, same: prHcSameContact_
+      });
+    }
+  }
+
+  return out;
+}
+
+
+// =========================================================================
+// RECORDING WHAT HAPPENED TO EACH ROW
+// =========================================================================
+
+/** Record an outcome for whichever plan(s) proposed this field on this target. */
+function prHcMarkOutcome_(plans, targetId, fieldId, kind, value) {
+  plans.forEach(function (p) {
+    if (p.targetId !== targetId) return;
+    p.writes.forEach(function (w) {
+      if (w.fieldId !== fieldId) return;
+      p.outcomes.push({ label: w.label, kind: kind, value: value,
+                        source: w.source });
+    });
+  });
+}
+
+/** Record a conflict refusal against one specific Candidate row. */
+function prHcMarkConflict_(plans, candidateId, fieldId, text) {
+  plans.forEach(function (p) {
+    if (p.candidateId !== candidateId) return;
+    p.writes.forEach(function (w) {
+      if (w.fieldId !== fieldId) return;
+      p.outcomes.push({ label: w.label, kind: 'conflict', value: w.value,
+                        reason: text });
+    });
+  });
+}
+
+/** Turn every 'written' outcome on a failed target into 'failed'. */
+function prHcMarkFailed_(plans, targetId, error) {
+  plans.forEach(function (p) {
+    if (p.targetId !== targetId) return;
+    p.outcomes.forEach(function (o) {
+      if (o.kind === 'written') { o.kind = 'failed'; o.reason = error; }
+    });
+  });
+}
+
+/**
+ * Pull an item's existing note lines back out of the stored note, so a settled
+ * item keeps the date it was actually promoted instead of being silently
+ * dropped when the other item is rewritten.
+ *
+ * Matches on the "hotline: " / "contact: " prefix this pass writes. A note a
+ * human has rewritten by hand may not match, which is why the caller has a
+ * fallback line rather than assuming this returns something.
+ */
+function prHcCarryLines_(note, label) {
+  const out = [];
+  String(note || '').split('\n').forEach(function (line) {
+    if (line.indexOf(label + ': ') === 0) out.push(line);
+  });
+  return out;
+}
+
+/**
+ * The three field values for one row, or null for a row needing no stamp.
+ * Returns { hotStatus, conStatus, note } -- a status is null when that item
+ * has nothing to record, which clears it.
+ */
+function prHcStampFor_(p) {
+  const rowSkips = p.skips.filter(function (s) { return s.label === 'row'; });
+  const lines = [];
+
+  rowSkips.forEach(function (s) {
+    lines.push('row: REFUSED -- ' + s.reason);
+  });
+
+  const statusFor = function (label) {
+    const actionable = (label === 'hotline') ? p.hotActionable : p.conActionable;
+    const before     = (label === 'hotline') ? p.beforeHotStatus : p.beforeConStatus;
+
+    // THE DECISION WAS WITHDRAWN AFTER BEING ACTED ON. Clear the status --
+    // leaving "Promoted" under a decision that now reads Rejected is a claim
+    // the row no longer makes -- but KEEP the history in the note. The whole
+    // reason these fields exist is to answer "did this ever reach the public
+    // site", and that question does not stop mattering because the decision
+    // changed afterwards. The value itself stays in 50 States: this pass never
+    // clears one.
+    if (!actionable) {
+      if (before) {
+        const old = prHcCarryLines_(p.beforeNote, label);
+        old.forEach(function (l) { lines.push(l); });
+        lines.push(label + ': the decision above has since been changed or ' +
+          'removed, so this row no longer asserts it. What was written to 50 ' +
+          'States was LEFT IN PLACE -- nothing was cleared there.');
+      }
+      return null;
+    }
+    if (rowSkips.length) return PR_HC_ST_REFUSED;
+
+    const os = p.outcomes.filter(function (o) { return o.label === label; });
+    const ss = p.skips.filter(function (s) { return s.label === label; });
+    if (!os.length && !ss.length) return null;
+
+    let status = null;
+    os.forEach(function (o) {
+      if (o.kind === 'failed') {
+        status = PR_HC_ST_FAILED;
+        lines.push(label + ': WRITE FAILED -- ' + (o.reason || 'no error text') +
+          '. Nothing reached 50 States, and this item is not marked promoted, ' +
+          'so the next run will try again.');
+      } else if (o.kind === 'written') {
+        if (status !== PR_HC_ST_FAILED) status = PR_HC_ST_PROMOTED;
+        lines.push(label + ': WROTE "' + o.value + '" to 50 States ' +
+          prHcStamp_() + ', from ' + o.source + '.');
+      } else if (o.kind === 'noop') {
+        if (status !== PR_HC_ST_FAILED) status = PR_HC_ST_PROMOTED;
+        // PREFER AN EXISTING "WROTE" LINE over "already correct". A no-op means
+        // the value in 50 States matches; if a previous run recorded actually
+        // writing it, that line carries the DATE it went live, which is worth
+        // more than restating that it is there now. This is also what carries
+        // the first 16 rows across from the single combined status field this
+        // pass used before the two per-item fields existed.
+        const prior = prHcCarryLines_(p.beforeNote, label).filter(function (l) {
+          return l.indexOf(label + ': WROTE ') === 0;
+        });
+        if (prior.length) {
+          prior.forEach(function (l) { lines.push(l); });
+        } else {
+          lines.push(label + ': already correct in 50 States ("' + o.value +
+            '"), nothing rewritten.');
+        }
+      } else if (o.kind === 'settled') {
+        if (status !== PR_HC_ST_FAILED) status = PR_HC_ST_PROMOTED;
+        const carried = prHcCarryLines_(p.beforeNote, label);
+        if (carried.length) {
+          carried.forEach(function (l) { lines.push(l); });
+        } else {
+          lines.push(label + ': promoted in an earlier run. This run did not ' +
+            're-check it, and the original note line is no longer in this ' +
+            'field to quote.');
+        }
+      } else if (o.kind === 'conflict') {
+        if (status !== PR_HC_ST_FAILED && status !== PR_HC_ST_PROMOTED) {
+          status = PR_HC_ST_REFUSED;
+        }
+        lines.push(label + ': REFUSED -- ' + o.reason);
+      }
+    });
+    ss.forEach(function (s) {
+      if (status !== PR_HC_ST_FAILED && status !== PR_HC_ST_PROMOTED) {
+        status = PR_HC_ST_REFUSED;
+      }
+      lines.push(label + ': REFUSED -- ' + s.reason);
+    });
+    return status;
+  };
+
+  const hotStatus = statusFor('hotline');
+  const conStatus = statusFor('contact');
+
+  if (hotStatus === null && conStatus === null && !lines.length) {
+    // Nothing to say. Only worth a write if a stale stamp is sitting there.
+    if (p.beforeHotStatus || p.beforeConStatus || p.beforeNote) {
+      return { hotStatus: null, conStatus: null, note: '' };
+    }
+    return null;
+  }
+
+  lines.push('');
+  lines.push('Written by the hotline/contact pass in Promote.gs and rewritten ' +
+             'in full on every run, so nothing here describes a condition ' +
+             'that has since been fixed. An item reading "Promoted" in its ' +
+             'status field is settled and is not re-checked; clear that field ' +
+             'to force a re-promote. Nothing here refers to the page URL -- ' +
+             'that is Promote status and Promote note.');
+
+  return { hotStatus: hotStatus, conStatus: conStatus, note: lines.join('\n') };
+}
+
+function prHcStamp_() {
+  return 'on ' + Utilities.formatDate(new Date(),
+    Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm z');
+}
+
+
+// =========================================================================
+// HOTLINE / CONTACT SHAPE TESTS
+// =========================================================================
+
+/** Airtable returns a singleSelect as an object by name, or a bare string. */
+function prHcSelectName_(v) {
+  if (!v) return '';
+  if (typeof v === 'string') return v.trim();
+  if (typeof v === 'object' && v.name) return String(v.name).trim();
+  return '';
+}
+
+function prHcDigits_(s) {
+  return String(s || '').replace(/[^0-9]/g, '');
+}
+
+/** The AI's ways of saying "nothing here". Compared lowercased and trimmed. */
+function prHcIsSentinel_(s) {
+  const t = String(s || '').trim().toLowerCase();
+  if (!t) return true;
+  for (let i = 0; i < PR_HC_SENTINELS.length; i++) {
+    if (t === PR_HC_SENTINELS[i]) return true;
+  }
+  return false;
+}
+
+/**
+ * The ten digits that identify the line, ignoring a leading country code and
+ * anything after -- an extension, a vanity suffix, a note in brackets.
+ *
+ * THIS DELIBERATELY DIFFERS FROM THE Hotline check FORMULA, which compares
+ * the LAST ten digits. Last-ten is correct until a value carries an
+ * extension: "1-800-779-7366 ext. 1083" ends in the extension, so last-ten
+ * reads it as a different line from "800-779-7366" and the pass would
+ * rewrite an already-correct field. First-ten-after-the-country-code gives
+ * the same answer as last-ten on every plain number and the right answer on
+ * the ones with an extension. The formula is untouched: it drives a review
+ * queue, where a false "Differs - review" costs a glance, not a write.
+ */
+function prHcLineDigits_(s) {
+  let d = prHcDigits_(s);
+  if (d.length > 10 && d.charAt(0) === '1') d = d.slice(1);
+  return d.slice(0, 10);
+}
+
+function prHcIsNotHaze_(s) {
+  return prHcLineDigits_(s) === PR_HC_NOT_HAZE;
+}
+
+/**
+ * One address, no spaces, a dot in the domain. Deliberately strict: the
+ * values that reach here have already been accepted by a human, so the only
+ * job left is catching strings that are not addresses at all.
+ */
+function prHcIsUsableEmail_(s) {
+  const t = String(s || '').trim();
+  if (!t) return false;
+  if (/[\s<>,;\[\]()]/.test(t)) return false;
+  return /^[^@\s]+@[^@\s.]+(?:\.[^@\s.]+)*\.[A-Za-z]{2,}$/.test(t);
+}
+
+/** Phones compare on the ten digits that identify the line. */
+function prHcSameHotline_(a, b) {
+  const da = prHcDigits_(a);
+  const db = prHcDigits_(b);
+  if (da.length < 10 || db.length < 10) return da === db;
+  return prHcLineDigits_(a) === prHcLineDigits_(b);
+}
+
+/** Emails compare case-insensitively and trimmed, like Contact check. */
+function prHcSameContact_(a, b) {
+  return String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+}
+
+function prHcFindRecord_(records, recordId) {
+  for (let i = 0; i < records.length; i++) {
+    if (records[i].id === recordId) return records[i];
+  }
+  return null;
+}
+
+
+// =========================================================================
+// THE HOTLINE / CONTACT RUN SUMMARY EMAIL
+// =========================================================================
+
+/**
+ * Same reasoning as prEmail_: this exists for a triggered run, where the log
+ * is invisible. Refusals and conflicts come first, counts last.
+ */
+function prHcEmail_(r) {
+  const to = PR_EMAIL_TO || Session.getEffectiveUser().getEmail();
+  if (!to) { Logger.log('No address to send the run summary to; skipped.'); return; }
+
+  const needsAttention = r.skips.length + r.conflicts.length;
+  const subject = 'HazingInfo hotline/contact: ' + r.written +
+    ' school(s) written, ' + r.skips.length + ' refused' +
+    (r.conflicts.length ? ', ' + r.conflicts.length + ' conflicts' : '') +
+    (r.failedCount ? ', ' + r.failedCount + ' WRITE FAILURES' : '');
+
+  const b = [];
+  b.push('The hotline / contact pass ran at ' + r.started.toISOString() +
+         ' and wrote to the live site.');
+  b.push('');
+  b.push('This pass writes only Hazing Hotline and University Contact on 50');
+  b.push('States. It never touches a URL, a compliance field or a checkmark.');
+  b.push('Every item it acted on carries its outcome in "Hotline promote');
+  b.push('status" or "Contact promote status", with the detail in');
+  b.push('"Hotline/contact promote note" -- work from those fields, not this');
+  b.push('email. An item reading "Promoted" is settled and will not be');
+  b.push('re-checked or overwritten; clear its status to force a re-promote.');
+  b.push('');
+
+  if (r.failedCount) {
+    b.push('*** ' + r.failedCount + ' school(s) FAILED TO SAVE to 50 States.');
+    b.push('Those items are stamped "' + PR_HC_ST_FAILED + '" and are NOT');
+    b.push('settled, so the next run tries again.');
+    b.push('');
+    r.failures.forEach(function (e) { b.push('  ' + e); });
+    b.push('');
+  }
+
+  if (r.conflicts.length) {
+    b.push('CONFLICTS -- ' + r.conflicts.length + ', both sides refused');
+    b.push('Two Candidate rows for one school would have written different values');
+    b.push('into the same field. Neither was written, and both rows are stamped.');
+    b.push('Decide which is right and change the other row\'s decision.');
+    b.push('');
+    r.conflicts.forEach(function (s) { b.push('  ' + s); });
+    b.push('');
+  }
+
+  if (r.skips.length) {
+    b.push('REFUSED -- ' + r.skips.length + ' decision(s) did not publish');
+    b.push('A decision was made but the value underneath could not be used. Each');
+    b.push('is fixed on the Candidate row, by correcting the value or changing the');
+    b.push('decision. There is no queue to re-add anything to.');
+    b.push('');
+    r.skips.forEach(function (s) {
+      b.push('  ' + (s.unitid || '(no UNITID)') + ' / ' +
+        (s.categoryName || '(no category)') + ': ' + s.reason);
+    });
+    b.push('');
+  }
+
+  if (r.willWrite && r.willWrite.length) {
+    b.push('WRITTEN -- ' + r.willWrite.length + ' field(s)');
+    b.push('');
+    r.willWrite.forEach(function (s) { b.push('  ' + s); });
+    b.push('');
+  }
+
+  if (!needsAttention) {
+    b.push('Nothing needs attention: no refusals and no conflicts.');
+    b.push('');
+  }
+
+  b.push('---');
+  b.push('Rows needing attention:    ' + r.rows);
+  b.push('Schools written:           ' + r.written);
+  b.push('Field writes:              ' + r.writes);
+  b.push('Already correct, skipped:  ' + r.noops);
+  b.push('Settled, not re-checked:   ' + r.settledItems);
+  b.push('Refused:                   ' + r.skips.length);
+  b.push('Conflicts refused:         ' + r.conflicts.length);
+  b.push('Candidate rows stamped:    ' + r.stamped);
+
+  MailApp.sendEmail(to, subject, b.join('\n'));
+  Logger.log('Run summary emailed to ' + to + '.');
 }
