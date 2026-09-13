@@ -18,7 +18,7 @@
 // them separate is deliberate. Do not merge them.
 //
 // TWO PASSES LIVE IN THIS FILE. promoteDryRun / promoteApply* promote URLs
-// and checkmarks. promoteHotlineContactDryRun / promoteHotlineContactApply*
+// and checkmarks. promoteHotlineContactDryRun / ...ApplyForReal
 // promote the hotline and the university contact, and are a SEPARATE pass
 // because a hotline decision is not a verdict about the page -- the reasoning
 // is in the SECOND PASS section header at the bottom of this file. Neither
@@ -28,8 +28,8 @@
 // -------------------------------------------------------------------------
 // TWO DETERMINATIONS PROMOTE, AND THEY DIFFER ONLY IN WHICH URL IS WRITTEN
 // -------------------------------------------------------------------------
-//   Confirmed - promote               -> write Candidate URL
-//   Rejected - replacement proposed   -> write REVIEWER-PROPOSED URL
+//   Accept - meets standard           -> write record AND compliance
+//   Hold - correct page below standard-> write record ONLY, compliance blank
 //
 // The second one reads as a rejection and is not. The row is rejected as a
 // *candidate* -- the reviewer looked at the candidate, found it wrong, and
@@ -38,7 +38,7 @@
 // publish the exact page the reviewer threw out.
 //
 //   Duplicate of confirmed page  -> nothing
-//   Rejected - wrong page        -> nothing
+//   Reject - wrong page          -> nothing
 //   Needs second opinion         -> nothing
 //   (blank)                      -> nothing
 //
@@ -114,7 +114,7 @@
 // that has not earned it, or a missing checkmark on a school that has. Every
 // guard below exists for one of those three.
 //
-//   * Rejected - replacement proposed with an EMPTY Reviewer-proposed URL is
+//   * A row with an EMPTY Candidate URL and an empty Reviewer-proposed URL is
 //     never written. Falling back to Candidate URL would publish the
 //     rejected page; skipping quietly would lose the reviewer's answer.
 //     It is reported and stamped Skipped - needs attention.
@@ -226,7 +226,7 @@
 // other one breaks with no message.
 //
 // Everything this file declares is prefixed pr / PR_. Verified 2026-09-10
-// against all twelve .gs files in apps-script/ on main -- SitemapFinder,
+// against all ten .gs files in apps-script/ on main -- SitemapFinder,
 // LiveUrlChecks, CrossSeed, SearchProbe, SiteCensus, HazingDeathsLinks,
 // WriteBack, PreFilterResult, ContentHash, WebApp -- plus archive/ and
 // diagnostics/: no name beginning PR_, pr<Capital> or promote is declared in
@@ -272,6 +272,17 @@ const PR_C_REVIEW_DATE    = 'fldQYqGfwGTbrLDbZ';
 const PR_C_PROMOTE_NOTE    = 'flddwBb1T0nKBp3yz';   // Promote note (text)
 const PR_C_PROMOTE_FLAGGED = 'fld8DFkIZ8jN2Oymo';   // Promote flagged (checkbox)
 
+// THE REVIEWER'S OWNERSHIP WAIVER. Added 2026-09-13, target-state spec 7.4.
+// Ticked by a person who opened the URL and confirmed it really is this
+// school's page. It suppresses THE TWO OWNERSHIP FLAGS AND NOTHING ELSE --
+// not the contradictory-terms flag, not the vendor flags, and above all not
+// any REFUSAL. A checkbox that could clear a refusal would publish an
+// off-domain address with one click and no recorded reason; the Ownership
+// exceptions table exists for that, because it holds a reason in words,
+// matches on the URL so it covers future candidate rows for the school, and
+// leaves a trail. A waiver must name what it waives.
+const PR_C_OWNERSHIP_OK    = 'fld2tyoCKm5Wx9Q5b';   // Ownership checked - this is fine
+
 // DO NOT READ Review URL (fld91PUEMATcrMOWU). It is a formula built for the
 // reviewing interface, not a field of record: it resolves to Linked form URL
 // where one exists and Candidate URL otherwise, and it NEVER reflects
@@ -286,13 +297,33 @@ const PR_S_INSTITUTION = 'fldb8bn85BkJbu7YT';
 // Named as constants so an Airtable rename is a one-line fix here rather
 // than a silent no-op. WriteBack.gs lost 35 settled reviews that way on
 // 2026-08-28 when two option names changed and a match stopped matching.
-const PR_DET_CONFIRMED   = 'Confirmed - promote';
-const PR_DET_REPLACEMENT = 'Rejected - replacement proposed';
+const PR_DET_ACCEPT      = 'Accept - meets standard';
+const PR_DET_HOLD        = 'Hold - correct page below standard';
+
+// "Rejected - replacement proposed" IS GONE, 2026-09-13, and is not read
+// here any more. Target-state spec 1.2 retired it: promote reads
+// Reviewer-proposed URL directly, so a term whose only job was to say "use
+// the other URL" had nothing left to say -- and it lied, because it read as
+// a rejection and then promoted. Its last 13 rows were relabelled to Accept
+// before this constant was removed, and the choice was then deleted from
+// Airtable. Order matters: deleting a select option strips it from every row
+// still holding it, silently.
+//
+// If that term ever reappears on a row, it lands in the "not acted on" skip
+// below by name, which is visible in the run report. It does not fail quietly.
 
 // ---- Promote status values ----------------------------------------------
 const PR_STATUS_PROMOTED = 'Promoted';
 const PR_STATUS_FAILED   = 'Blocked - write failed';
 const PR_STATUS_SKIPPED  = 'Skipped - needs attention';
+
+// REFUSED IS NOT SKIPPED. A skip is this script declining to act on a row it
+// has no business acting on. A refusal is the row contradicting itself in a
+// way only a person can settle -- the determination and the below-standard
+// terms disagreeing, or terms sitting in a category field that is not this
+// row's category. Separate status so the queue of "somebody must decide
+// something" is one filter, not a hunt through skip reasons.
+const PR_STATUS_REFUSED  = 'Refused - determination conflict';
 
 // =========================================================================
 // THE OWNERSHIP CHECK -- added 2026-09-10
@@ -430,7 +461,8 @@ const PR_GOOGLE_FORM_BAD = [
  * standard, so the compliance field is cleared and the checkmark withheld
  * IDENTICALLY whether the terms agree or not. The write does not change. What
  * changes is only the public note built from the reason field, which would
- * read as nonsense -- "Undated" beside "Dated before 2024".
+ * read as nonsense -- "Policy date not stated or inferable" beside
+ * "Policy dated before 2024".
  *
  * Blocking would therefore leave a school with NO listed page over a wording
  * problem, which is a worse public record than a listed page with a muddled
@@ -441,12 +473,12 @@ const PR_GOOGLE_FORM_BAD = [
  */
 const PR_CONTRADICTIONS = {
   'Hazing Policy': [
-    ['Undated', 'Dated before 2024'],
+    ['Policy date not stated or inferable', 'Policy dated before 2024'],
     ['No investigation process stated', 'Investigation process asserted but not described']
   ],
   'CHTR': [
-    ['No update date stated or inferable', 'Update date outside the freshness window'],
-    ['Report announced but not published', 'Incidents listed without description']
+    ['CHTR update date not stated or inferable', 'CHTR older than 12 months'],
+    ['CHTR announced but not published', 'Incidents listed without description']
   ],
   'Report Form': []
 };
@@ -484,8 +516,9 @@ const PR_EMAIL_ON_APPLY = true;
  *   reason      50 States below-standard terms. Purely additive: nothing
  *               existing reads it. It is NOT a compliance signal.
  *   vocabulary  the terms the DESTINATION field will accept. Verified live
- *               against both bases on 2026-09-10, after the two prevention
- *               terms were deleted on Jolayne's decision. Names are
+ *               against both bases on 2026-09-13, after the login and date
+ *               terms were renamed per category so a truncated picker still
+ *               shows which one you are choosing. Names are
  *               identical across the bases; CHOICE IDS ARE NOT, which is why
  *               every write here is by name.
  */
@@ -507,10 +540,10 @@ const PR_CATEGORIES = {
       // term -- loudly, because typecast is false, which is the point.
       'Incidents listed without description',
       'Hazing not broken out from general conduct data',
-      'Login required',
-      'Report announced but not published',
-      'No update date stated or inferable',
-      'Update date outside the freshness window'
+      'CHTR requires login',
+      'CHTR announced but not published',
+      'CHTR update date not stated or inferable',
+      'CHTR older than 12 months'
     ]
   },
   'Hazing Policy': {
@@ -523,10 +556,10 @@ const PR_CATEGORIES = {
       'No policy against hazing stated',
       'No investigation process stated',
       'Investigation process asserted but not described',
-      'Undated',
-      'Dated before 2024',
+      'Policy date not stated or inferable',
+      'Policy dated before 2024',
       'Applies only to fraternity and sorority life',
-      'Login required'
+      'Policy requires login'
     ]
   },
   'Report Form': {
@@ -537,7 +570,7 @@ const PR_CATEGORIES = {
     reason:     'fldSepO8coDh0MSWq',
     vocabulary: [
       'Hazing not selectable',
-      'Login required',
+      'Form requires login',
       'Current students only'
     ]
   }
@@ -577,7 +610,7 @@ const PR_SLEEP_MS    = 210;   // Airtable's 5 req/sec
  *
  * NOTE the same limit WriteBack.gs learned on 2026-08-28: this stops the
  * addresses it can SEE. A vendor URL that 303s to Shibboleth one hop later
- * passes this guard. Login required is a reviewer judgement and a
+ * passes this guard. A "requires login" term is a reviewer judgement and a
  * below-standard term for exactly that reason.
  */
 const PR_LOGIN_URL_PATTERNS = [
@@ -610,14 +643,13 @@ function promoteDryRun() {
   return prRun_(true);
 }
 
-/**
- * Honours PR_DRY_RUN_DEFAULT, so this is a dry run while that stays true.
- * Kept so a trigger or a habit pointed at "the normal one" cannot write by
- * accident.
- */
-function promoteApply() {
-  return prRun_(PR_DRY_RUN_DEFAULT ? true : false);
-}
+// promoteApply() WAS HERE AND IS GONE, 2026-09-13. It read
+// PR_DRY_RUN_DEFAULT, which is true, so it was an exact duplicate of
+// promoteDryRun() wearing a name that says the opposite. A function called
+// "Apply" that quietly applies nothing is worse than no function: somebody
+// runs it, reads "nothing written", and concludes there was nothing to
+// write. Two names, two behaviours: promoteDryRun() reports,
+// promoteApplyForReal() writes.
 
 /**
  * Applies for real, ignoring PR_DRY_RUN_DEFAULT. A separate function rather
@@ -631,10 +663,9 @@ function promoteApplyForReal() {
   return prRun_(false);
 }
 
-// The hotline / contact pass has its own three entry points --
-// promoteHotlineContactDryRun(), promoteHotlineContactApply() and
-// promoteHotlineContactApplyForReal() -- declared at the bottom of this file,
-// next to the logic they run.
+// The hotline / contact pass has its own two entry points --
+// promoteHotlineContactDryRun() and promoteHotlineContactApplyForReal() --
+// declared at the bottom of this file, next to the logic they run.
 
 
 // =========================================================================
@@ -657,13 +688,16 @@ function prRun_(dryRun) {
     Logger.log('');
 
     // ---- 1. the promotable rows ---------------------------------------
-    const formula = 'OR({' + PR_C_DETERMINATION + '} = "' + PR_DET_CONFIRMED + '", ' +
-                    '{' + PR_C_DETERMINATION + '} = "' + PR_DET_REPLACEMENT + '")';
+    // TWO VALUES. Accept publishes record and compliance; Hold publishes the
+    // record field only. Everything else on the field -- Reject, Needs second
+    // opinion, Duplicate -- writes nothing and is not fetched at all.
+    const formula = 'OR({' + PR_C_DETERMINATION + '} = "' + PR_DET_ACCEPT + '", ' +
+                    '{' + PR_C_DETERMINATION + '} = "' + PR_DET_HOLD + '")';
 
     const rows = prListAll_(pat, PR_PAGES_BASE, PR_CAND_TABLE,
       [PR_C_UNITID, PR_C_CATEGORY, PR_C_CANDIDATE_URL, PR_C_PROPOSED_URL,
        PR_C_DETERMINATION, PR_C_PROMOTE_STATUS, PR_C_REVIEW_DATE,
-       PR_C_PROMOTE_NOTE, PR_C_PROMOTE_FLAGGED,
+       PR_C_PROMOTE_NOTE, PR_C_PROMOTE_FLAGGED, PR_C_OWNERSHIP_OK,
        PR_CATEGORIES['CHTR'].source,
        PR_CATEGORIES['Hazing Policy'].source,
        PR_CATEGORIES['Report Form'].source],
@@ -672,8 +706,8 @@ function prRun_(dryRun) {
     Logger.log('Promotable rows found: ' + rows.length);
     if (!rows.length) {
       Logger.log('Nothing to do. If this is a surprise, check that the two ' +
-        'determination names in PR_DET_CONFIRMED / PR_DET_REPLACEMENT still ' +
-        'match the Airtable single-select exactly.');
+        'determination names in PR_DET_ACCEPT / PR_DET_HOLD still match the ' +
+        'Airtable single-select exactly.');
       return { rows: 0, written: 0 };
     }
 
@@ -894,7 +928,18 @@ function prRun_(dryRun) {
     Logger.log('Schools to update: ' + targets.length + ' (from ' + ops.length + ' row(s))');
     Logger.log('Already applied, nothing to do: ' + noopOnly + ' school(s)');
     Logger.log('Checkmarks gained: ' + gained + ' | Checkmarks removed: ' + cleared);
-    Logger.log('Skipped: ' + skips.length + ' | Promoted but flagged: ' + flaggedList.length);
+    const refusals = skips.filter(function (s) { return s.refusal; }).length;
+    Logger.log('Skipped: ' + skips.length + ' (of which REFUSED for a determination ' +
+      'conflict: ' + refusals + ') | Promoted but flagged: ' + flaggedList.length);
+    if (refusals) {
+      Logger.log('');
+      Logger.log('*** ' + refusals + ' row(s) REFUSED. Each one is a reviewer ' +
+        'contradiction -- Accept carrying below-standard terms, Hold carrying none, ' +
+        'or terms sitting in another category\'s field. Filter Candidate URLs on ' +
+        'Promote status = "' + PR_STATUS_REFUSED + '" and read Promote note; each ' +
+        'names the one thing to change. A non-zero count right after the phase 1 ' +
+        'relabel means the relabel missed rows.');
+    }
 
     if (targets.length > PR_MAX_INSTITUTIONS) {
       throw new Error('Refusing to run: ' + targets.length + ' schools exceeds ' +
@@ -965,7 +1010,7 @@ function prRun_(dryRun) {
       const value = failure ? PR_STATUS_FAILED : PR_STATUS_PROMOTED;
       const note = failure
         ? ('The 50 States write was attempted and rejected: ' + String(failure).slice(0, 400))
-        : (op.flags && op.flags.length ? prNoteFromFlags_(op) : '');
+        : prNoteFor_(op);
       const flagged = !failure && !!(op.flags && op.flags.length);
       prPushStamp_(stamps, op.candRecordId, op.beforeStatus, op.beforeNote,
                    op.beforeFlagged, value, note, flagged);
@@ -973,8 +1018,12 @@ function prRun_(dryRun) {
 
     skips.forEach(function (s) {
       if (!s.recordId) return;
+      // A refusal and a skip are different answers and get different
+      // statuses, so "somebody must decide something" is one filter rather
+      // than a hunt through skip reasons.
       prPushStamp_(stamps, s.recordId, s.beforeStatus, s.beforeNote, s.beforeFlagged,
-                   PR_STATUS_SKIPPED, prNoteFromSkip_(s), false);
+                   (s.refusal ? PR_STATUS_REFUSED : PR_STATUS_SKIPPED),
+                   prNoteFromSkip_(s), false);
     });
 
     let stamped = 0;
@@ -1072,54 +1121,39 @@ function prPlan_(row, byUnitid, instByUnitid, exceptions, ownershipLive) {
   }
 
   // ---- which URL, and is there one -------------------------------------
+  //
+  // THE DETERMINATION SAYS WHAT THE REVIEWER DECIDED ABOUT THE PAGE. It does
+  // not say which address to publish -- Reviewer-proposed URL does that, by
+  // being filled. Target-state spec 1.2 and 1.5: a proposal is read wherever
+  // it appears, on Accept and on Hold alike, so a reviewer can answer a
+  // school in one pass instead of being sent back for a second.
+  //
+  // THIS REVERSES THE 2026-09-10 BLOCK, DELIBERATELY. That block refused an
+  // Accept row carrying a proposal, on the grounds that the two said opposite
+  // things. Under the old vocabulary they did: "Confirmed - promote" was a
+  // verdict on the CANDIDATE. "Accept - meets standard" is a verdict on THE
+  // PAGE THAT WILL PUBLISH, so a proposal beside it is not a contradiction --
+  // it is the reviewer saying "this one, and it is fine". Glenville State,
+  // the case that motivated the block, still comes out right: the 2025-26
+  // handbook in the proposal publishes, not the 2021 one in the candidate.
   const flags = [];
+  const waived = [];
+  const ownershipWaived = row.fields[PR_C_OWNERSHIP_OK] === true;
   let url, action;
 
-  if (determination === PR_DET_CONFIRMED) {
-    if (!candidateUrl) {
-      base.reason = '"' + PR_DET_CONFIRMED + '" with an empty Candidate URL';
+  if (determination === PR_DET_ACCEPT || determination === PR_DET_HOLD) {
+
+    // THE PROPOSAL WINS WHEREVER IT APPEARS. A reviewer who typed a better
+    // address has answered the row, whichever verdict they also gave it.
+    url = proposedUrl || candidateUrl;
+
+    if (!url) {
+      base.reason = '"' + determination + '" with no URL at all -- Candidate URL and ' +
+                    'Reviewer-proposed URL are both empty. Nothing to promote.';
       return base;
     }
 
-    // WAS A NOTE UNTIL 2026-09-10. NOW A BLOCK, AND THE EVIDENCE IS THE
-    // REASON. Four of the seven bad rows the first dry run produced were this
-    // exact shape, and because it was only a note ALL FOUR WOULD HAVE
-    // PUBLISHED. Glenville State is the one to remember: it would have
-    // promoted a 2021 handbook, already flagged "Dated before 2024", while
-    // the reviewer's proposed URL pointed at the 2025-26 handbook sitting
-    // right there in the next field.
-    //
-    // A confirmed row carrying a proposal is self-contradictory. "This
-    // candidate is right" and "here is the right one instead" cannot both be
-    // the reviewer's answer, and this script has no standing to guess which
-    // they meant -- guessing wrong publishes a page a reviewer rejected. It
-    // costs one person one minute to resolve in Airtable, and it is the
-    // cheapest guard in this file.
-    if (proposedUrl) {
-      base.reason = 'BLOCKED -- "' + PR_DET_CONFIRMED + '" but the row ALSO carries a ' +
-                    'Reviewer-proposed URL ("' + proposedUrl + '"). The two say ' +
-                    'opposite things and this script will not choose between them. ' +
-                    'Either clear the proposed URL, or change the determination to ' +
-                    '"' + PR_DET_REPLACEMENT + '" so the proposal is what publishes. ' +
-                    'Then re-run.';
-      return base;
-    }
-
-    url = candidateUrl;
-    action = 'promote Candidate URL';
-
-  } else if (determination === PR_DET_REPLACEMENT) {
-    // THE GUARD. Falling back to Candidate URL here would publish the page
-    // the reviewer explicitly rejected; skipping quietly would lose their
-    // answer. Neither happens without being named.
-    if (!proposedUrl) {
-      base.reason = '"' + PR_DET_REPLACEMENT + '" with an EMPTY Reviewer-proposed URL. ' +
-                    'The candidate was rejected and no replacement was recorded, so ' +
-                    'there is nothing to promote. Not falling back to Candidate URL.';
-      return base;
-    }
-    url = proposedUrl;
-    action = 'promote Reviewer-proposed URL (candidate was rejected)';
+    action = proposedUrl ? 'promote Reviewer-proposed URL' : 'promote Candidate URL';
 
   } else {
     base.reason = 'determination "' + determination + '" is not acted on';
@@ -1168,8 +1202,10 @@ function prPlan_(row, byUnitid, instByUnitid, exceptions, ownershipLive) {
       // nothing to compare against and no honest basis to refuse. Flagged so
       // the gap is visible, because a school missing its own URL is worth
       // fixing in Institutions regardless of what happens to this row.
-      flags.push('ownership NOT CHECKED -- no usable Institution URL on file for this ' +
-                 'school, so the address could not be compared against anything');
+      const whyNotChecked = 'ownership NOT CHECKED -- no usable Institution URL on ' +
+                 'file for this school, so the address could not be compared against ' +
+                 'anything';
+      (ownershipWaived ? waived : flags).push(whyNotChecked);
     } else {
       const verdict = prBelongsTo_(url, inst, exceptions[unitid] || []);
 
@@ -1187,9 +1223,10 @@ function prPlan_(row, byUnitid, instByUnitid, exceptions, ownershipLive) {
         : verdict.kind === 'cannot-test';
 
       if (!verdict.ok && softFail) {
-        flags.push('ownership NOT CONFIRMED -- ' + verdict.why + ' Promoted on the ' +
-                   'reviewer\'s judgement. Worth opening SIGNED OUT to confirm the ' +
-                   'public can actually reach it.');
+        const whyNotConfirmed = 'ownership NOT CONFIRMED -- ' + verdict.why +
+                   ' Promoted on the reviewer\'s judgement. Worth opening SIGNED OUT ' +
+                   'to confirm the public can actually reach it.';
+        (ownershipWaived ? waived : flags).push(whyNotConfirmed);
       } else if (!verdict.ok) {
         base.reason = 'BLOCKED -- ' + verdict.why + ' URL: "' + url + '". ' +
           'The school\'s own site is ' + prDomain_(inst.url) + '. ' +
@@ -1199,11 +1236,18 @@ function prPlan_(row, byUnitid, instByUnitid, exceptions, ownershipLive) {
           'future candidate rows for this school. Then re-run.';
         return base;
       }
-      if (verdict.viaException) {
-        flags.push('ownership allowed by exception -- off-domain address accepted ' +
-                   'because a row in Ownership exceptions says it is this school\'s ' +
-                   '("' + String(verdict.viaException).slice(0, 120) + '")');
-      }
+      // AN ACTIVE EXCEPTION PRODUCES NO FLAG. Target-state spec 7.3.
+      //
+      // It used to SWAP one flag for another -- "ownership NOT CONFIRMED"
+      // became "ownership allowed by exception" -- so a row with a perfectly
+      // good exception stayed ticked forever and there was no way to clear
+      // it. That is a flag system that only ever accumulates, and a queue
+      // full of permanently flagged rows is a queue nobody reads.
+      //
+      // The exception IS the human judgement the flag was asking for. Asking
+      // again after it has been given is not caution, it is noise. The
+      // exception row itself is the durable record, with the reason in words.
+      if (verdict.viaException) { /* deliberately silent -- see above */ }
     }
   }
 
@@ -1228,7 +1272,74 @@ function prPlan_(row, byUnitid, instByUnitid, exceptions, ownershipLive) {
     return base;
   }
 
-  const clean = terms.length === 0;
+  // ---- terms sitting in the WRONG category's field -----------------------
+  // THE 183071 CASE, FOUND 2026-09-13. A Report Form row carried a login term
+  // in the HAZING POLICY below-standard field. This script reads the row's own
+  // category only -- which is right -- so it saw no terms, judged the row
+  // clean, and published a reporting form somebody had already decided was
+  // behind a login. One wrong checkmark, live on the site, and nothing
+  // anywhere said so.
+  //
+  // The consistency rule below cannot catch it: Accept with an empty
+  // own-category field looks perfectly consistent. So it is checked
+  // separately, and it REFUSES rather than flags -- the reviewer's real
+  // judgement is sitting right there in the wrong field, and this script has
+  // no way to know which page they meant it about.
+  const strays = [];
+  for (const otherKey in PR_CATEGORIES) {
+    if (otherKey === categoryName) continue;
+    const other = PR_CATEGORIES[otherKey];
+    const otherRaw = row.fields[other.source] || [];
+    const otherTerms = (Array.isArray(otherRaw) ? otherRaw : [otherRaw])
+      .map(function (t) { return String(t || '').trim(); })
+      .filter(function (t) { return t; });
+    if (otherTerms.length) {
+      strays.push(other.label + ' -- "' + otherTerms.join('", "') + '"');
+    }
+  }
+  if (strays.length) {
+    base.refusal = true;
+    base.reason = 'REFUSED -- this row\'s Category is ' + category.label + ', but it ' +
+                  'carries below-standard terms in another category\'s field (' +
+                  strays.join('; ') + '). Either the terms belong on a different row, ' +
+                  'or this row has the wrong Category. A person has to say which: ' +
+                  'guessing either publishes a page somebody judged unfit, or withholds ' +
+                  'one that is fine.';
+    return base;
+  }
+
+  // ---- the determination and the terms must agree ------------------------
+  // Target-state spec 1.3. Without this the determination is decorative,
+  // because the terms field is what actually decides the compliance write.
+  //
+  // A REFUSAL, NOT A FLAG. A flag publishes and complains. Here there is one
+  // specific thing a person must do, it takes a few seconds, and until they
+  // do it nobody can tell what the reviewer meant -- so the row waits.
+  if (determination === PR_DET_HOLD && terms.length === 0) {
+    base.refusal = true;
+    base.reason = 'REFUSED -- "' + PR_DET_HOLD + '" with NO below-standard terms for ' +
+                  category.label + '. Hold means the page is the right one but falls ' +
+                  'short, and the terms are what say how it falls short. Either check ' +
+                  'a term, or change the determination to "' + PR_DET_ACCEPT + '".';
+    return base;
+  }
+  if (determination !== PR_DET_HOLD && terms.length) {
+    base.refusal = true;
+    base.reason = 'REFUSED -- "' + determination + '" with below-standard terms checked ' +
+                  '(' + terms.join(', ') + '). Accept means the page meets the standard, ' +
+                  'so it cannot also carry reasons that it does not. Either change the ' +
+                  'determination to "' + PR_DET_HOLD + '", or clear the terms.';
+    return base;
+  }
+
+  // THE DETERMINATION DECIDES THE CHECKMARK NOW -- not the terms.
+  //
+  // The two are equivalent, because the rule directly above guarantees they
+  // agree. Reading it off the determination anyway is the whole point of the
+  // vocabulary change: it makes the reviewer's stated verdict the thing that
+  // publishes, rather than a side effect of which boxes happen to be ticked.
+  // It also means anyone changing one of them has to change the other.
+  const clean = (determination !== PR_DET_HOLD);
 
   // ---- flags: publish anyway, but say something -------------------------
   // Neither of these stops a promotion. Both are ticked onto the row as
@@ -1317,7 +1428,8 @@ function prPlan_(row, byUnitid, instByUnitid, exceptions, ownershipLive) {
     beforeCompliance: beforeCompliance,
     beforeReason: beforeReason,
     action: action,
-    flags: flags
+    flags: flags,
+    waived: waived
   };
 }
 
@@ -1690,6 +1802,32 @@ function prContradictionsIn_(categoryName, terms) {
 // =========================================================================
 
 /** The note for a row that promoted but carries flags. */
+/**
+ * The note for a promoted row: what flagged it, and what a reviewer waived.
+ *
+ * A WAIVER IS NOT A DELETION. Ticking "Ownership checked - this is fine"
+ * stops an ownership flag ticking the row, but the fact that the check had
+ * something to say is still worth reading on the row afterwards -- otherwise
+ * the next person sees a clean row and cannot tell whether the check passed
+ * or was waived. Recorded in the note, NOT in Promote flagged, because the
+ * whole point of the tick is to take the row out of the flagged queue.
+ */
+function prNoteFor_(op) {
+  const parts = [];
+  if (op.flags && op.flags.length) parts.push(prNoteFromFlags_(op));
+  if (op.waived && op.waived.length) {
+    const lines = ['WAIVED BY A REVIEWER -- "Ownership checked - this is fine" is ' +
+                   'ticked on this row, so the following did NOT flag it:'];
+    op.waived.forEach(function (w, i) { lines.push('  ' + (i + 1) + '. ' + w); });
+    lines.push('');
+    lines.push('Untick that box to have them flag the row again. The waiver covers ' +
+               'ownership only -- it never suppresses contradictory below-standard ' +
+               'terms, the vendor flags, or any refusal.');
+    parts.push(lines.join('\n'));
+  }
+  return parts.join('\n\n');
+}
+
 function prNoteFromFlags_(op) {
   const lines = ['PROMOTED, but flagged ' + prStamp_() + ':'];
   op.flags.forEach(function (f, i) { lines.push('  ' + (i + 1) + '. ' + f); });
@@ -1997,7 +2135,7 @@ function prExceptionCount_(exceptions) {
 // or contact decision is about a phone number and an email address that
 // happen to appear on a page. It is NOT a verdict about the page. Measured
 // 2026-09-12: of the twenty decided rows that produced a write, SEVEN sat on
-// rows whose Reviewer determination is "Rejected - wrong page" or "Duplicate
+// rows whose Reviewer determination is "Reject - wrong page" or "Duplicate
 // of confirmed page" -- the page was thrown out and the phone number was
 // still correct. Every one of those rows hits an early return inside
 // prPlan_, and the no-op filter in prRun_ would drop a hotline-only write
@@ -2196,12 +2334,9 @@ function promoteHotlineContactDryRun() {
   return prHcRun_(true);
 }
 
-/**
- * Honours PR_DRY_RUN_DEFAULT, so this is a dry run while that stays true.
- */
-function promoteHotlineContactApply() {
-  return prHcRun_(PR_DRY_RUN_DEFAULT ? true : false);
-}
+// promoteHotlineContactApply() WAS HERE AND IS GONE, 2026-09-13, for the
+// same reason as promoteApply(): it honoured PR_DRY_RUN_DEFAULT and was
+// therefore a duplicate of the dry run under a name that claimed otherwise.
 
 /**
  * Applies for real, ignoring PR_DRY_RUN_DEFAULT. Same reasoning as
