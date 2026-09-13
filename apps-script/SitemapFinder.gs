@@ -2198,27 +2198,75 @@ function fetchRecordsByIds_(pat, recordIds) {
 const SITEMAP_SWEEP_ORDER = ['chtr', 'reportForm', 'hazingPolicy'];
 const SITEMAP_SWEEP_HANDLER = 'continueSitemapSweep';
 const SITEMAP_LEGACY_HANDLERS = ['runScheduledSitemapSweep'];
-const SITEMAP_SLICE_BUDGET_MS = 4 * 60 * 1000;
 const SITEMAP_SLICE_GAP_MINUTES = 1;
 const SITEMAP_SWEEP_MAX_SLICES = 150;
+
+// ---- Slice sizing, rewritten 2026-09-13 after a real timeout -------------
+//
+// WHAT WENT WRONG. SITEMAP_SLICE_BUDGET_MS was 4 minutes and was checked
+// BEFORE starting a batch that carries its own 4-minute budget. So a batch
+// could start at 3:59 elapsed and run to 7:59 against the platform's
+// 6-minute cap. Measured on 2026-09-12 17:42 Pacific: batches of 58s and
+// 128s, a third started at ~3:11 elapsed, execution killed at 360.7s with
+// "Exceeded maximum execution time".
+//
+// That alone would have been survivable. What made it fatal is that the
+// successor trigger was booked at the END of the function -- so the kill
+// landed before the booking and the chain stopped with no error, no log and
+// no trigger. SCHEDULING.md section 2 says to book the successor BEFORE the
+// work for exactly this reason, and section 5 names the worst case as
+// "budget + one whole unit". The pipeline scheduler in section 5 of this
+// file already does it correctly; the sweep did not.
+//
+// THE REPLACEMENT IS A CEILING PLUS A PROJECTION, not a budget. A batch is
+// only started if the LONGEST batch seen so far in this slice, grown by
+// SITEMAP_SLICE_GROWTH_FACTOR, still fits under the ceiling. The first batch
+// of a slice always runs -- it is bounded by SITEMAP_BATCH_BUDGET_MS and
+// cannot reach the cap on its own.
+//
+// PROJECTING FROM THE WORST BATCH IN THIS SLICE, NOT A MEAN, is deliberate.
+// Per-school cost climbed 7.2s -> 9.4s -> 12.8s -> 18s+ across one afternoon
+// because schools are ordered by UNITID and large sites arrive in runs. A
+// mean sized the batch at 20 and blew the cap; this file has already paid
+// for that lesson once.
+const SITEMAP_SLICE_CEILING_MS = 5 * 60 * 1000;   // hard stop under the 6-minute cap
+const SITEMAP_SLICE_GROWTH_FACTOR = 1.5;          // assume the next batch costs half again as much
+const SITEMAP_SLICE_MARGIN_MS = 15 * 1000;        // writes, logging and the exit path
+
+// TOMBSTONE. SITEMAP_SLICE_BUDGET_MS is gone; decisions-log entries and
+// several working-state docs name it. It was a budget checked before an
+// unbounded-in-practice unit of work, which is the bug above. Replaced by
+// the ceiling and projection.
 
 const PROP_SWEEP_CATEGORY_INDEX = 'sitemapSweepCategoryIndex';
 const PROP_SWEEP_SLICE_COUNT = 'sitemapSweepSliceCount';
 
-function removeScheduledSitemapTrigger() {
+/**
+ * Delete any sitemap sweep trigger.
+ *
+ * `quiet` suppresses the log line. Added 2026-09-13: this is called from
+ * inside scheduleNextSitemapSlice_, which then immediately books one, and
+ * the sentence "Nothing is scheduled now." printed a second before a
+ * trigger is created is precisely the kind of log that gets read later as
+ * evidence of something that did not happen. The Run dropdown passes no
+ * argument, so calling it by hand is unchanged and still logs.
+ */
+function removeScheduledSitemapTrigger(quiet) {
   const names = [SITEMAP_SWEEP_HANDLER].concat(SITEMAP_LEGACY_HANDLERS);
   const triggers = ScriptApp.getProjectTriggers().filter(function (t) {
     return names.indexOf(t.getHandlerFunction()) !== -1;
   });
   triggers.forEach(function (t) { ScriptApp.deleteTrigger(t); });
-  Logger.log('Removed ' + triggers.length + ' sitemap trigger(s). Nothing is scheduled now.');
+  if (!quiet) {
+    Logger.log('Removed ' + triggers.length + ' sitemap trigger(s). Nothing is scheduled now.');
+  }
   return { removed: triggers.length };
 }
 
 function scheduleNextSitemapSlice_() {
   // Always clear first. Without this, a slice that somehow runs twice would
   // leave two chains going, each consuming the same daily budget.
-  removeScheduledSitemapTrigger();
+  removeScheduledSitemapTrigger(true);
   ScriptApp.newTrigger(SITEMAP_SWEEP_HANDLER)
     .timeBased().after(SITEMAP_SLICE_GAP_MINUTES * 60 * 1000).create();
 }
@@ -2332,29 +2380,72 @@ function continueSitemapSweep() {
   // Delete the trigger that just fired before doing any work. One-shot
   // triggers are not self-cleaning, and an accumulating pile of them is
   // exactly how a "bounded" sweep quietly becomes unbounded.
-  removeScheduledSitemapTrigger();
+  removeScheduledSitemapTrigger(true);
 
   const sliceCount = parseInt(props.getProperty(PROP_SWEEP_SLICE_COUNT) || '0', 10) + 1;
   props.setProperty(PROP_SWEEP_SLICE_COUNT, String(sliceCount));
   if (sliceCount > SITEMAP_SWEEP_MAX_SLICES) {
     Logger.log('Stopping: hit the ' + SITEMAP_SWEEP_MAX_SLICES + '-slice guard without ' +
       'finishing. Something is looping rather than progressing -- check ' +
-      'sitemapSweepStatus() before restarting.');
-    return;
+      'sitemapSweepStatus() before restarting. NOTHING is scheduled.');
+    return;   // deliberately before the booking below
   }
+
+  // ---------------------------------------------------------------------
+  // BOOK THE SUCCESSOR BEFORE DOING ANY WORK. Changed 2026-09-13.
+  //
+  // The six-minute cap does not throw: no catch runs, no finally runs, and
+  // nothing after the killed statement executes. Booking at the end of this
+  // function meant that every slice which overran died with the chain
+  // unscheduled -- silently, because a killed execution logs nothing beyond
+  // the platform's own timeout line. That is what stopped this sweep twice
+  // on 2026-09-12.
+  //
+  // Booking first inverts the failure: a slice that dies has already left a
+  // successor behind, so the sweep self-heals and the worst case is one
+  // wasted slice rather than a dead chain. The three paths that mean "stop
+  // for a real reason" -- the runaway guard above, sweep complete, and the
+  // daily urlfetch quota -- each remove the trigger explicitly. Every one of
+  // them is a deliberate stop, so the removal has to be deliberate too.
+  // ---------------------------------------------------------------------
+  scheduleNextSitemapSlice_();
 
   const startedAt = Date.now();
   let categoryIndex = parseInt(props.getProperty(PROP_SWEEP_CATEGORY_INDEX) || '0', 10);
+  let worstBatchMs = 0;
+  let batchesRun = 0;
 
-  while (Date.now() - startedAt < SITEMAP_SLICE_BUDGET_MS) {
+  while (true) {
     if (categoryIndex >= SITEMAP_SWEEP_ORDER.length) {
+      removeScheduledSitemapTrigger(true);
       Logger.log('Sweep complete in ' + sliceCount + ' slice(s). Nothing further is scheduled.');
       props.deleteProperty(PROP_SWEEP_CATEGORY_INDEX);
       props.deleteProperty(PROP_SWEEP_SLICE_COUNT);
       return;
     }
 
+    // Can another batch finish inside the ceiling? The first batch of a
+    // slice always runs -- it is bounded by SITEMAP_BATCH_BUDGET_MS and
+    // cannot reach the cap alone. After that, project from the WORST batch
+    // seen in this slice, not the mean: per-school cost rises through a run
+    // because schools arrive in UNITID order and large sites cluster.
+    if (batchesRun > 0) {
+      const elapsed = Date.now() - startedAt;
+      const projected = elapsed + (worstBatchMs * SITEMAP_SLICE_GROWTH_FACTOR) +
+                        SITEMAP_SLICE_MARGIN_MS;
+      if (projected > SITEMAP_SLICE_CEILING_MS) {
+        Logger.log('Slice ' + sliceCount + ' stopping after ' + batchesRun + ' batch(es): ' +
+          Math.round(elapsed / 1000) + 's elapsed, worst batch ' +
+          Math.round(worstBatchMs / 1000) + 's, projected ' +
+          Math.round(projected / 1000) + 's against a ' +
+          Math.round(SITEMAP_SLICE_CEILING_MS / 1000) + 's ceiling. ' +
+          'Next slice is already scheduled.');
+        return;
+      }
+    }
+
     const categoryKey = SITEMAP_SWEEP_ORDER[categoryIndex];
+    const batchStartedAt = Date.now();
     let result;
     try {
       result = runOrResumeSitemapBatch(categoryKey);
@@ -2362,28 +2453,34 @@ function continueSitemapSweep() {
       if (String(err.message).indexOf('Service invoked too many times for one day') !== -1) {
         // Quota is account-wide and resets on its own. Stop rather than
         // reschedule: another slice would fail identically and each attempt
-        // still costs trigger runtime.
+        // still costs trigger runtime. The successor booked above is removed
+        // here, which is the whole reason this branch is explicit.
+        removeScheduledSitemapTrigger(true);
         Logger.log('Daily urlfetch quota reached while processing ' + categoryKey +
           '. Sweep stopped and NOTHING is scheduled. Run resumeSitemapSweep() ' +
           'once the quota resets.');
         return;
       }
+      // Any other error propagates, but the successor stays booked: one bad
+      // school should cost a slice, not the sweep.
       throw err;
     }
+
+    const batchMs = Date.now() - batchStartedAt;
+    if (batchMs > worstBatchMs) worstBatchMs = batchMs;
+    batchesRun++;
 
     Logger.log('Slice ' + sliceCount + ' -- ' + categoryKey + ': ' +
       result.recordsProcessedThisBatch + ' school(s), ' +
       result.rowsCreatedThisBatch + ' row(s) created, ' +
-      result.rowsAlreadyPresent + ' already present, done=' + result.done);
+      result.rowsAlreadyPresent + ' already present, done=' + result.done +
+      ', batch took ' + Math.round(batchMs / 1000) + 's');
 
     if (result.done) {
       categoryIndex++;
       props.setProperty(PROP_SWEEP_CATEGORY_INDEX, String(categoryIndex));
     }
   }
-
-  scheduleNextSitemapSlice_();
-  Logger.log('Slice ' + sliceCount + ' finished its time budget. Next slice shortly.');
 }
 
 // -------------------------------------------------------------------------
