@@ -2,8 +2,19 @@
 // SEARCH PROBE  (2026-09-06)  -- NEW FILE. STAGE 3 OF DISCOVERY.
 //
 // PASTE AS A NEW FILE (File > New > Script, name it SearchProbe).
-// Requires SitemapCensus.gs to be in the project -- it reads that file's
-// field ids and its census results. Nothing else changes.
+//
+// SELF-CONTAINED OF SiteCensus.gs AS OF 2026-09-13. The field ids and the
+// three helper functions this pass used to borrow from that file are now
+// declared here, in the section headed "MOVED FROM SiteCensus.gs" below.
+// It still depends on SitemapFinder.gs, CrossSeed.gs and PreFilterResult.gs
+// -- see "DECLARED ELSEWHERE" at the end of this header.
+//
+// PASTE THIS FILE ONLY AFTER SiteCensus.gs HAS BEEN DELETED. Apps Script
+// shares one global scope across every .gs file and a duplicate `const`
+// fails the ENTIRE project, not just the file. Deleting first is safe in
+// the other direction: nothing in this file reads an SC_* value at load
+// time, so between the two steps the project still loads and every other
+// pass -- including a running sitemap sweep -- keeps working.
 //
 // BEFORE THE FIRST RUN: put your Apify API token in Script Properties as
 // APIFY_TOKEN (Project Settings > Script Properties), the same way
@@ -19,6 +30,9 @@
 //   spRunBurst(700)   ignore the daily budget and work up to 700 queries.
 //                     For a one-off catch-up like 2026-09-06's.
 //   spReset()         start over from the top.
+//   spRequeueErrors() clear Search probe status on the schools whose last
+//                     probe ERRORED, putting them back in the queue.
+//                     Nothing else clears that field -- see spEligible_.
 //
 // -------------------------------------------------------------------------
 // WHY A THIRD DISCOVERY METHOD
@@ -122,32 +136,35 @@
 //                           pipelineUrlKey_, INTAKE_CREATE_BATCH
 //   from CrossSeed.gs       XS_F_UNITID, XS_F_INST_LINK, XS_F_SOURCE
 //   from PreFilterResult.gs PF_F_RESULT
-//   from SitemapCensus.gs   SC_INST_TABLE, SC_I_UNITID, SC_I_NAME,
-//                           SC_I_URL, SC_I_CHTR, SC_I_POLICY, SC_I_FORM,
-//                           SC_I_CNT_CHTR, SC_I_CNT_POLICY, SC_I_CNT_FORM,
-//                           SC_W_STATUS, SC_W_URLS, SC_W_OUT_CHTR,
-//                           SC_W_OUT_POLICY, SC_W_OUT_FORM,
-//                           SC_ST_REACHABLE, SC_OUT_NOTHING,
-//                           SC_OUT_NO_SITEMAP,
-//                           scUnitidCmp_, scResumeIndex_, scFirstUrl_
 //
-// Everything this file declares is prefixed sp / SP_. Verified 2026-09-06
-// against SitemapFinder.gs, CrossSeed.gs, ContentHash.gs, LiveUrlChecks.gs,
-// PreFilterResult.gs and SitemapCensus.gs: no name beginning sp<Capital> or
-// SP_ is declared in any of them.
+// SiteCensus.gs IS NO LONGER IN THAT LIST. Its recording job was folded into
+// discovery on 2026-09-12 and the file was retired on 2026-09-13; the
+// fifteen constants and three helpers this pass read from it now live in
+// this file. Nothing else in the project referenced them in code -- the four
+// SC_ / sc mentions left in SitemapFinder.gs are all inside comments.
+//
+// NAMING. Everything this file declares is prefixed sp / SP_, EXCEPT the
+// moved block, which deliberately keeps its SC_ / sc names. Renaming would
+// have touched about twenty-five call sites for no functional gain, and a
+// paste is the riskiest operation in this project. The prefix now records
+// where a name came from rather than which file declares it. Verified
+// 2026-09-13 against the other ten .gs files: no name beginning sp<Capital>,
+// SP_, SC_ or sc<Capital> is declared in any of them.
 // =========================================================================
 
-// ---- The gate fields, declared HERE and not reused from SitemapCensus ----
+// ---- The gate fields -----------------------------------------------------
 //
 // THE GATE IS THE COMPLIANCE FIELD, changed 2026-09-09. It used to be
-// SC_I_CHTR / SC_I_POLICY / SC_I_FORM, borrowed from SitemapCensus.gs --
-// and those three constants are named for compliance fields but HOLD THE
-// RECORD FIELD IDS (chtr_index_url, located_hazing_policy_url,
+// SC_I_CHTR / SC_I_POLICY / SC_I_FORM, borrowed from what was then
+// SiteCensus.gs -- and those three constants read as compliance fields but
+// HELD THE RECORD FIELD IDS (chtr_index_url, located_hazing_policy_url,
 // located_report_form_url). That misnaming is the whole reason nobody
 // noticed this pass was gating on the record fields; three separate
-// readings of the code got it wrong. They are left alone in SitemapCensus
-// and NOT repointed, because that file's own logic reads them too and this
-// change is not about that file.
+// readings of the code got it wrong.
+//
+// They went with SiteCensus.gs when it was deleted on 2026-09-13 and were
+// deliberately NOT carried into the moved block below. The names are the
+// hazard: do not recreate them.
 //
 // WHY COMPLIANCE. A school whose page was judged BELOW STANDARD has the
 // record field filled and compliance blank. It still has no page meeting
@@ -156,11 +173,95 @@
 // page. Full reasoning is in the note above CATEGORIES in SitemapFinder.gs
 // -- read that one, not this summary, before changing any of the three.
 //
-// Prefixed SP_ per this file's naming rule; no collision with the SC_I_*
-// names they replace at the point of use.
+// Prefixed SP_ per this file's naming rule.
 const SP_I_C_TRANSPARENCY = 'fldGJPC0iyuPcWtlK'; // Transparency Report -- pairs with chtr_index_url
 const SP_I_C_POLICY       = 'fldD9gEpDcw2l35II'; // Hazing Policy       -- pairs with located_hazing_policy_url
 const SP_I_C_FORM         = 'fldIrTzWzi87nD7EU'; // Report Form         -- pairs with located_report_form_url
+
+// =========================================================================
+// MOVED FROM SiteCensus.gs  (2026-09-13)
+//
+// Verbatim from that file, which was deleted the same day. Only these
+// fifteen constants and three functions were ever read by this pass in
+// code; the rest of SiteCensus.gs went with the file.
+//
+// DELIBERATELY NOT MOVED: SC_I_CHTR / SC_I_POLICY / SC_I_FORM, the three
+// RECORD url fields. This pass stopped reading them on 2026-09-09 when the
+// gate moved to the compliance fields (SP_I_C_* above) and nothing here has
+// read one since. They are named in comments only. If a record field is
+// ever needed again, declare it with its own SP_ name and its own object
+// key -- do not reintroduce the SC_I_* names, whose "located" naming is
+// exactly what hid the wrong gate for two weeks.
+//
+// ALSO NOT MOVED: SC_W_SUMMARY. It pointed at fldyDPxEty7PGIcjj, the
+// Census match summary field that was deleted and recreated on 2026-09-12
+// with a NEW id. A read naming a deleted field returns 422 and breaks every
+// function in the file that issues it, so the dead id does not come across.
+// Discovery writes the live field as DSC_W_SUMMARY.
+// =========================================================================
+
+// ---- Institutions in PAGES (synced from 50 States) ----------------------
+const SC_INST_TABLE = 'tblpgBmu7r8kQA6b5';
+
+// Inherited (read-only) fields this pass READS.
+const SC_I_UNITID   = 'fldGREvzCIme6HXfl';
+const SC_I_NAME     = 'fldHvefXrrPxibBsZ';
+const SC_I_URL      = 'fld5s03AW9U65Z34W';   // Institution URL
+
+// Locally-added count fields, all statuses, no determination condition.
+// THESE REQUIRE A CATEGORY CONDITION SET BY HAND IN THE AIRTABLE UI --
+// Airtable's API cannot write count conditions. Left unconditioned they
+// count every linked candidate in every category, every school reads
+// non-zero, and this pass concludes nothing needs searching at all.
+const SC_I_CNT_CHTR   = 'fldcoif6S0rIZiMq9';
+const SC_I_CNT_POLICY = 'fldoO5Zgqfj9L434H';
+const SC_I_CNT_FORM   = 'fldDznPxkiUwGjbUQ';
+
+// ---- Fields DISCOVERY writes and this pass reads back --------------------
+// These were the census's write fields. Discovery took the job over on
+// 2026-09-12 and writes the SAME field ids under DSC_ names -- Sitemap
+// status fldScBd3Uxsle4wWZ, Sitemap URLs seen fldUNCXMweHU5V7Wd, and the
+// three per-category discovery outcomes. Verified identical 2026-09-13.
+// If discovery's ids ever move, these have to move with them or this pass
+// silently reads blanks and concludes no school is eligible.
+const SC_W_STATUS     = 'fldScBd3Uxsle4wWZ';   // Sitemap status
+const SC_W_URLS       = 'fldUNCXMweHU5V7Wd';   // Sitemap URLs seen
+const SC_W_OUT_CHTR   = 'fld3rCEo6bUNlKFyS';   // CHTR discovery outcome
+const SC_W_OUT_POLICY = 'fldaXEvpvDu2Tyuz3';   // Hazing Policy discovery outcome
+const SC_W_OUT_FORM   = 'fldmiSNRwue9uv8d1';   // Report Form discovery outcome
+
+// ---- Outcome and status vocabulary ---------------------------------------
+// STRING-EQUAL TO DISCOVERY'S DSC_OUT_* / DSC_ST_* VALUES, and that parity
+// is load-bearing rather than cosmetic: spEligible_ decides whether to
+// spend money by comparing what discovery WROTE against what is listed
+// here, so a one-character drift makes every school ineligible and the
+// whole pass reports a confident, silent zero. Checked 2026-09-13 against
+// SitemapFinder.gs lines 289-291 and 280-283.
+const SC_OUT_NOTHING    = 'Searched, nothing matched';
+const SC_OUT_NO_SITEMAP = 'Not searched - no sitemap';
+
+const SC_ST_REACHABLE = 'Reachable';
+
+// ONE definition of UNITID order, shared by the sort and the resume test,
+// so the two cannot drift apart and land the watermark mid-list.
+function scUnitidCmp_(a, b) { return a < b ? -1 : (a > b ? 1 : 0); }
+
+function scResumeIndex_(list, after) {
+  if (!after) return 0;
+  let i = 0;
+  while (i < list.length && scUnitidCmp_(list[i].unitid, after) <= 0) i++;
+  return i;
+}
+
+// Institution URL is multilineText and occasionally holds more than one
+// value, and often has no scheme. Take the first token that looks like a
+// host or a URL; normalizeBaseUrl_ adds the scheme.
+function scFirstUrl_(v) {
+  const first = String(v || '').trim().split(/\s+/)[0];
+  if (!first) return '';
+  if (/^https?:\/\//i.test(first)) return first;
+  return /^[a-z0-9.-]+\.[a-z]{2,}/i.test(first) ? first : '';
+}
 
 // ---- Apify ---------------------------------------------------------------
 const SP_ACTOR = 'apify~google-search-scraper';
@@ -208,6 +309,7 @@ const SP_SOURCE_VALUE = 'Search API';
 const SP_BUDGET_MS = 4.5 * 60 * 1000;
 const SP_MAX_PER_CATEGORY = 2;      // candidates kept per school+category
 const SP_MAX_RESULTS_READ = 10;     // organic results considered per query
+const SP_WRITE_BATCH = 10;          // Airtable's cap per PATCH call
 
 const SP_PROP_AFTER = 'sp_after';
 const SP_PROP_STATS = 'sp_stats';
@@ -224,14 +326,21 @@ const SP_PROP_QUOTA = 'sp_quota';   // {day:'YYYY-MM-DD', used:n}
 //        MAX_SITEMAP_URLS and re-crawling, not paying for a search that
 //        would rediscover a URL already sitting in the sitemap.
 //
-// A FUNCTION, NOT A CONSTANT, AND THE SAME GOES FOR spCats_ BELOW. Apps
-// Script evaluates every .gs file's top level in the editor's file order,
-// and this file sorts before SitemapCensus. A top-level constant here that
-// read SC_OUT_NO_SITEMAP would hit the temporal dead zone and throw
-// "Cannot access 'SC_OUT_NO_SITEMAP' before initialization" -- at LOAD
-// time, which breaks every function in the whole project, not just this
-// file. Reading those constants inside a function defers it to call time,
-// by which point every file has loaded.
+// STILL A FUNCTION, BUT THE REASON HAS CHANGED, AND THE OLD ONE IS WORTH
+// RECORDING BECAUSE IT WAS MISREAD. This was a function because
+// SC_OUT_NO_SITEMAP lived in SiteCensus.gs, which the editor loads AFTER
+// this file: a top-level constant reading it would have hit the temporal
+// dead zone and thrown at LOAD time, breaking every function in the
+// project. Deferring the read to call time is what avoided that -- which
+// is also why retiring SiteCensus.gs never risked a load failure, only a
+// call-time throw inside spStatus() and spRun(). Several working-state
+// docs said the opposite.
+//
+// As of 2026-09-13 those constants are declared above, so the hazard is
+// gone. This and spCats_ are LEFT as functions anyway: the file is written
+// against that shape and converting them buys nothing. If either is ever
+// made a constant it must sit BELOW the moved block -- order within one
+// file is still top to bottom.
 function spEligibleOutcomes_() {
   const m = {};
   m[SC_OUT_NO_SITEMAP] = 'never searched';
@@ -250,9 +359,10 @@ function spEligibleOutcomes_() {
 // and is probed at ANY sitemap size -- see spEligible_.
 const SP_THIN_SITEMAP = 300;
 
-// A FUNCTION for the same load-order reason as spEligibleOutcomes_ above:
-// these entries read SC_I_* and SC_W_OUT_* constants declared in
-// SitemapCensus.gs, which loads after this file.
+// A FUNCTION for the same reason as spEligibleOutcomes_ above -- read the
+// note there. The SC_I_* and SC_W_OUT_* constants these entries reference
+// are declared in this file as of 2026-09-13, so the load-order hazard no
+// longer applies; the shape is kept because the file is written against it.
 //
 // `gate` WAS CALLED `located` UNTIL 2026-09-09 and held the record field
 // id. Renamed along with the switch to the compliance fields, because the
@@ -289,6 +399,19 @@ function spStatus() {
   const stats = spReadStats_();
   const quota = spQuota_();
 
+  // Schools this pass has already searched and been billed for. Before
+  // 2026-09-13 they stayed eligible forever and were reported below as
+  // outstanding backlog, which is how this function came to quote $2.33 of
+  // pure re-work as money still to spend. They are counted separately now
+  // so the estimate above means what it says.
+  const probedByStatus = {};
+  let probedTotal = 0;
+  all.forEach(function (i) {
+    if (!i.probeStatus) return;
+    probedTotal++;
+    probedByStatus[i.probeStatus] = (probedByStatus[i.probeStatus] || 0) + 1;
+  });
+
   const byCat = {};
   const byReason = {};
   probes.forEach(function (p) {
@@ -311,6 +434,15 @@ function spStatus() {
   Object.keys(byCat).forEach(function (k) { out += '     ' + k + ': ' + byCat[k] + '\n'; });
   out += '  why they are eligible:\n';
   Object.keys(byReason).forEach(function (k) { out += '     ' + k + ': ' + byReason[k] + '\n'; });
+  out += '  already searched, EXCLUDED from the count and cost above: ' +
+         probedTotal + ' school(s)\n';
+  Object.keys(probedByStatus).forEach(function (k) {
+    out += '     ' + k + ': ' + probedByStatus[k] + '\n';
+  });
+  if (probedByStatus[SP_ST_ERROR]) {
+    out += '     spRequeueErrors() clears the status on those ' +
+           probedByStatus[SP_ST_ERROR] + ' error row(s) to try them again.\n';
+  }
   out +=
     '  resume after UNITID: ' + (after || '(not started)') + '\n' +
     '  position: ' + idx + ' of ' + all.length + (idx >= all.length ? '   (finished)' : '') + '\n' +
@@ -334,6 +466,72 @@ function spReset() {
     'The DAILY QUOTA IS NOT CLEARED -- that tracks money already spent today\n' +
     'and resetting a cursor does not un-spend it. Nothing on Institutions is\n' +
     'cleared either; Search probe date says which values are from this pass.');
+}
+
+/**
+ * Put the schools whose last probe ERRORED back in the queue, by clearing
+ * Search probe status on exactly those rows.
+ *
+ * WHY THIS EXISTS. As of 2026-09-13 spEligible_ retires any school with a
+ * Search probe status, errors included, so that a school cannot be searched
+ * and billed twice by accident. That is the right default -- the queries
+ * were sent and charged whether or not Apify returned anything, so an
+ * automatic retry spends real money on a school that may fail every time.
+ * But a status with no way back is a flag that can never be cleared, and
+ * this project already has one of those open. This is the way back, and it
+ * is deliberate rather than automatic.
+ *
+ * ONLY THE STATUS IS CLEARED. Search probe date and Search probe summary
+ * are left alone, so the row still says when it was tried and what the
+ * error was; the next successful probe overwrites both. A row with a date
+ * and no status reads, correctly, as "tried, requeued".
+ *
+ * Writes WITHOUT typecast. The field already carries every value this file
+ * writes, and typecast:true on a non-matching value mints a new choice
+ * silently.
+ */
+function spRequeueErrors() { return spRequeue_(SP_ST_ERROR); }
+
+function spRequeue_(statusValue) {
+  const pat = capPat_();
+  const all = spInstitutions_(pat);
+  const hits = all.filter(function (i) { return i.probeStatus === statusValue; });
+
+  if (!hits.length) {
+    Logger.log('No institutions carry Search probe status "' + statusValue +
+      '". Nothing was written.');
+    return { cleared: 0 };
+  }
+
+  let cleared = 0;
+  for (let i = 0; i < hits.length; i += SP_WRITE_BATCH) {
+    const slice = hits.slice(i, i + SP_WRITE_BATCH);
+    const records = slice.map(function (h) {
+      const f = {};
+      f[SP_W_STATUS] = null;
+      return { id: h.id, fields: f };
+    });
+    const resp = UrlFetchApp.fetch(
+      'https://api.airtable.com/v0/' + PAGES_BASE_ID + '/' + SC_INST_TABLE,
+      { method: 'patch',
+        headers: { Authorization: 'Bearer ' + pat, 'Content-Type': 'application/json' },
+        payload: JSON.stringify({ records: records }),
+        muteHttpExceptions: true });
+    // Partial progress is kept and reported. The rows already cleared are
+    // cleared; re-running after a fix simply finds fewer of them.
+    if (resp.getResponseCode() !== 200) {
+      Logger.log('Requeue FAILED after ' + cleared + ' row(s) (' +
+        resp.getResponseCode() + '): ' + resp.getContentText().slice(0, 300));
+      throw new Error('Requeue write failed after ' + cleared + ' row(s).');
+    }
+    cleared += slice.length;
+    Utilities.sleep(210);
+  }
+
+  Logger.log('Requeued ' + cleared + ' school(s) that had status "' + statusValue +
+    '".\nThey are eligible again from the next spStatus() / spRun().\n' +
+    'Search probe date and summary were left in place.');
+  return { cleared: cleared };
 }
 
 /** Work within today's remaining daily budget. */
@@ -610,6 +808,27 @@ function spProbesFor_(inst) {
  * school publishes.
  */
 function spEligible_(inst, c) {
+  // ALREADY SEARCHED IS ALREADY PAID FOR. Added 2026-09-13, and it is the
+  // condition that was missing rather than a new rule.
+  //
+  // Search probe status is stamped on the SCHOOL, not the category, because
+  // one Apify run covers every category that was eligible for that school
+  // at the time. So any value here retires the school from all three. Until
+  // this was added, a searched school stayed permanently eligible: spRun()
+  // would re-query and re-charge for it, and spStatus() counted the re-work
+  // as outstanding backlog -- $2.33 of it, which was never money still to
+  // spend but money already spent.
+  //
+  // AN ERROR ROW IS RETIRED TOO, DELIBERATELY. The queries were sent and
+  // billed whether or not the results came back, so treating an error as
+  // "not yet done" would let one permanently failing school be re-bought on
+  // every run -- the unit of work that never completes and blocks the queue
+  // forever. Retries are made explicit instead: spRequeueErrors() clears
+  // the status on exactly those rows. This mirrors the standing rule that a
+  // status field is the record of work done, and clearing it is what forces
+  // a redo.
+  if (inst.probeStatus) return '';
+
   if (inst.gate[c.catKey]) return '';
   if (inst.counts[c.catKey] > 0) return '';
   if (inst.pending[c.catKey] > 0) return '';
@@ -659,7 +878,10 @@ function spInstitutions_(pat) {
     CATEGORIES.hazingPolicy.pendingCountField,
     CATEGORIES.reportForm.pendingCountField,
     SC_W_OUT_CHTR, SC_W_OUT_POLICY, SC_W_OUT_FORM,
-    SC_W_STATUS, SC_W_URLS
+    SC_W_STATUS, SC_W_URLS,
+    // Added 2026-09-13: this pass's OWN status field, read back so
+    // spEligible_ can retire a school it has already paid to search.
+    SP_W_STATUS
   ];
 
   do {
@@ -710,7 +932,11 @@ function spInstitutions_(pat) {
           reportForm:   String(f[SC_W_OUT_FORM]   || '')
         },
         censusStatus: String(f[SC_W_STATUS] || ''),
-        censusUrls:   Number(f[SC_W_URLS] || 0)
+        censusUrls:   Number(f[SC_W_URLS] || 0),
+        // Blank means never probed. ANY value means this school has already
+        // been searched and billed for -- see spEligible_. Trimmed because
+        // the test is truthiness and a stray space would read as probed.
+        probeStatus:  String(f[SP_W_STATUS] || '').trim()
       });
     }
     offset = j.offset || null;
