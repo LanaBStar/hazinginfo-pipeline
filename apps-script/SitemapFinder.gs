@@ -394,6 +394,38 @@ const BOUNDARY_SENSITIVE_TERMS = ['chtr', 'conduct'];
 // as an actual extension.
 const IMAGE_EXTENSION_PATTERN = /\.(png|jpe?g|gif|svg|webp|bmp|ico|tiff?)(\?|$)/i;
 
+// A SERVER-SIDE INCLUDE FRAGMENT IS NOT A PAGE. Added 2026-09-14.
+//
+// Grambling (159009) proposed /hazing/_nav.inc at RANK 1 and
+// /hazing/_props.html at rank 3, pushing the school's real /hazing/index.php
+// down to rank 2 -- so two of its five slots, including the top one, went to
+// files no reviewer can open. Oral Roberts (207582) carries the identical
+// _nav / _props pair under Report Form, so this is a CMS convention and not
+// one odd site. A file whose NAME begins with an underscore is a partial the
+// server stitches into a page, and .inc is the same thing by extension.
+// Neither can ever be a valid candidate.
+//
+// THE FILENAME ONLY, NEVER A DIRECTORY, AND THAT DISTINCTION IS LOAD
+// BEARING. Underscore-prefixed DIRECTORIES are ordinary and legitimate. 23
+// stored candidate URLs sit under one, including a confirmed Hold at
+// nnmc.edu/_document_repository/.../NNMC%20Anti-Hazing%20Policy.pdf and
+// Minot State's /hazing/_documents/Minot-State-Anti-Hazing-Policy.pdf, which
+// oblMeasure scores High. A filter on "any path segment starting with _"
+// would have destroyed both. Only the LAST segment is tested.
+//
+// MEASURED BEFORE IT WAS WRITTEN, against all 1,182 stored candidate URLs on
+// 2026-09-14: it catches 4 rows, every one of them a fragment, and NONE of
+// them had been reviewed as a correct page. Zero correct pages given up --
+// which is the test any discovery filter should have to pass before it goes
+// in, per the spBelongsTo_ precedent.
+function isIncludeFragment_(url) {
+  const path = String(url || '').split('#')[0].split('?')[0]
+    .replace(/^https?:\/\/[^\/]*/i, '')
+    .replace(/\/+$/, '');
+  const last = path.split('/').pop() || '';
+  return last.charAt(0) === '_' || /\.inc$/i.test(last);
+}
+
 function matchesKeyword_(slug, term) {
   if (BOUNDARY_SENSITIVE_TERMS.indexOf(term) === -1) {
     return slug.indexOf(term) !== -1;
@@ -1161,6 +1193,7 @@ function rankCandidates_(urls, category) {
     const slug = url.toLowerCase();
 
     if (IMAGE_EXTENSION_PATTERN.test(url)) continue;
+    if (isIncludeFragment_(url)) continue;
 
     let excluded = false;
     for (let e = 0; e < exclusions.length; e++) {
@@ -1423,6 +1456,7 @@ function rankCandidatesByBlob_(items, category) {
     const slug = item.url.toLowerCase();
 
     if (IMAGE_EXTENSION_PATTERN.test(item.url)) continue;
+    if (isIncludeFragment_(item.url)) continue;
 
     let excluded = false;
     for (let e = 0; e < exclusions.length; e++) {
