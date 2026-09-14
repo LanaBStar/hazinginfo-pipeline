@@ -2043,9 +2043,48 @@ function pipelineRegisterKeys_(seen, fields) {
 }
 
 // Same normalisation the ranker uses to dedupe, so the two agree on what
-// counts as the same URL: scheme and trailing slashes are noise.
+// counts as the same URL: scheme, a leading www., and trailing slashes are
+// noise.
+//
+// THE www. STRIP WAS ADDED 2026-09-14, AND IT IS A BLOCKLIST FIX RATHER THAN
+// TIDYING. Every dedupe set in this project is built from this key, and a
+// rejected row IS the blocklist -- so a spelling this function cannot
+// collapse is a spelling a reviewer's rejection does not block. Measured
+// live that day: USC Aiken (218645) carried two pairs differing only by
+// www., rejected in August as 'usca.edu/...' and proposed again on 09-12 as
+// 'www.usca.edu/...' because the sitemap served the other spelling. The key
+// could not tell they were the same page, so a reviewer rejected the same
+// page twice.
+//
+// TWO ROWS IN 1,184, AND EVERY OTHER AXIS COLLAPSED NOTHING. Scheme,
+// trailing slash, doubled slashes in the path and fragments were each
+// measured across the whole table on 2026-09-14 and each found zero. www.
+// was the only leak. Small, and it is the shape of the failure that earns
+// the fix, not the count.
+//
+// ORDER IS LOAD BEARING, AND THE OLD ORDER WOULD HAVE BROKEN THIS SILENTLY.
+// .toLowerCase() used to run LAST, so at the moment a www. strip fires the
+// string may still read 'WWW.'. Lowercasing moved to the FRONT, where every
+// later pattern is written against known-lowercase text. A www. strip bolted
+// onto the end of the old chain would have matched nothing on an uppercase
+// URL and looked exactly like a working fix. Nothing else about the output
+// changed: the old chain lowercased the whole string too, just later.
+//
+// www. ONLY -- never www2., m., or any other prefix. Those are genuinely
+// different hosts on some sites, and this key must never merge two pages
+// that differ.
+//
+// SHARED, SO THIS MOVES FOUR WRITE PATHS AT ONCE: sitemap discovery
+// (writeSitemapCandidates_), cross-seed, the search probe, and the Report
+// Form link pass via rflDupKey_. oblUrlKey_ is built on top of it and
+// inherits the strip. That is the intent -- there is one notion of "the same
+// URL" in this project, and this function is it.
 function pipelineUrlKey_(url) {
-  return String(url).replace(/^https?:\/\//i, '').replace(/\/+$/, '').toLowerCase();
+  return String(url)
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/\/+$/, '');
 }
 
 function pipelineIntakeFlush_(pat, rows) {
