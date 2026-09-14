@@ -2201,6 +2201,14 @@ const SITEMAP_LEGACY_HANDLERS = ['runScheduledSitemapSweep'];
 const SITEMAP_SLICE_GAP_MINUTES = 1;
 const SITEMAP_SWEEP_MAX_SLICES = 150;
 
+// How long a slice that finds another slice already running waits before
+// trying again. LONGER THAN THE NORMAL GAP ON PURPOSE. Every one of these
+// firings is wasted work against the ~90-minute daily allowance for
+// triggered runs, so retrying every minute against a 4-minute slice burns
+// four firings where two will do. Two minutes keeps the chain responsive
+// without paying for the privilege.
+const SITEMAP_BUSY_RETRY_MINUTES = 2;
+
 // ---- Slice sizing, rewritten 2026-09-13 after a real timeout -------------
 //
 // WHAT WENT WRONG. SITEMAP_SLICE_BUDGET_MS was 4 minutes and was checked
@@ -2263,12 +2271,13 @@ function removeScheduledSitemapTrigger(quiet) {
   return { removed: triggers.length };
 }
 
-function scheduleNextSitemapSlice_() {
+function scheduleNextSitemapSlice_(delayMinutes) {
   // Always clear first. Without this, a slice that somehow runs twice would
   // leave two chains going, each consuming the same daily budget.
   removeScheduledSitemapTrigger(true);
+  const mins = delayMinutes || SITEMAP_SLICE_GAP_MINUTES;
   ScriptApp.newTrigger(SITEMAP_SWEEP_HANDLER)
-    .timeBased().after(SITEMAP_SLICE_GAP_MINUTES * 60 * 1000).create();
+    .timeBased().after(mins * 60 * 1000).create();
 }
 
 function startSitemapSweep() {
@@ -2377,10 +2386,52 @@ function sitemapSweepStatus() {
 function continueSitemapSweep() {
   const props = PropertiesService.getScriptProperties();
 
+  // ---------------------------------------------------------------------
+  // ONE SLICE AT A TIME. Added 2026-09-13, and it is the other half of the
+  // book-the-successor-first change below.
+  //
+  // WHAT WENT WRONG. The successor is booked ONE MINUTE after a slice
+  // starts, and slices measured 95s to 360s. So the successor fired while
+  // its predecessor was still crawling -- on every slice longer than a
+  // minute, which was nearly all of them. Nothing stopped it: this function
+  // held no lock. Both executions read the same resume offset from Script
+  // Properties, fetched the same page of schools, crawled them, and both
+  // wrote. UNITID 220701 ended up with four CHTR candidate rows -- two URLs,
+  // each written twice, identical ranks, all stamped the same second. The
+  // cumulative counter read 1151 against an eligible pool of 611, which is
+  // very nearly double, and the daily urlfetch quota was being spent twice
+  // over for the same schools.
+  //
+  // A LOCK, NOT A LONGER GAP. Widening the gap past the ceiling would work
+  // and would also idle the sweep for minutes per slice. The lock costs one
+  // second of a wasted firing instead, and it is correct even if a slice
+  // one day runs longer than any gap anybody picked.
+  //
+  // THE BUSY PATH MUST STILL BOOK A SUCCESSOR. The trigger that fired is
+  // deleted below whether or not we got the lock, so exiting without
+  // booking would end the chain -- trading a duplication bug for the exact
+  // silent death the change below was written to stop. Book, log, leave.
+  //
+  // Apps Script releases a script lock when the execution ends, including
+  // when the six-minute cap kills it, so no finally is needed here -- which
+  // matters, because a finally would not run at the cap anyway.
+  // ---------------------------------------------------------------------
+  const lock = LockService.getScriptLock();
+  const gotLock = lock.tryLock(1000);
+
   // Delete the trigger that just fired before doing any work. One-shot
   // triggers are not self-cleaning, and an accumulating pile of them is
   // exactly how a "bounded" sweep quietly becomes unbounded.
   removeScheduledSitemapTrigger(true);
+
+  if (!gotLock) {
+    scheduleNextSitemapSlice_(SITEMAP_BUSY_RETRY_MINUTES);
+    Logger.log('Another sweep slice is still running, so this one did nothing. ' +
+      'Re-booked for ' + SITEMAP_BUSY_RETRY_MINUTES + ' minute(s) from now. ' +
+      'This is normal and costs about a second: the successor is booked a ' +
+      'minute into a slice that usually runs longer than that.');
+    return;
+  }
 
   const sliceCount = parseInt(props.getProperty(PROP_SWEEP_SLICE_COUNT) || '0', 10) + 1;
   props.setProperty(PROP_SWEEP_SLICE_COUNT, String(sliceCount));
