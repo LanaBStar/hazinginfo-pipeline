@@ -291,7 +291,48 @@ const DSC_OUT_NOTHING    = 'Searched, nothing matched';
 const DSC_OUT_NO_SITEMAP = 'Not searched - no sitemap';
 
 const DSC_WRITE_BATCH = 10;   // Airtable's cap per PATCH
-const MAX_CANDIDATES_KEPT = 5;        // ranked candidates kept per school
+// Ranked candidates kept per school. WAS 5 UNTIL 2026-09-14.
+//
+// MEASURED, NOT GUESSED. Hit rate by rank across every reviewed sitemap row
+// (a "hit" is Accept or Hold -- both mean the reviewer confirmed the page is
+// the right one):
+//
+//     rank 1   258 judged   102 right   40%
+//     rank 2   101 judged    15 right   15%
+//     rank 3    43 judged     6 right   14%
+//     rank 4    30 judged     3 right   10%
+//     rank 5    15 judged     3 right   20%
+//
+// Rank 1 alone carried 102 of sitemap's 129 lifetime finds -- 79%. Below
+// rank 1 the ranking is close to guessing, and ranks 3-5 cost 88 reviewed
+// rows to produce 12 correct pages. Keeping 2 retains 117 of the 129 and
+// removes roughly 40% of future rows.
+//
+// A SCORE FLOOR WAS CONSIDERED INSTEAD AND REJECTED ON THE NUMBERS. Every
+// stored sitemap candidate URL was re-scored offline with rankCandidates_'s
+// own rules on 2026-09-14 -- the score comes only from the URL slug, so it
+// reproduces exactly. By confidence bucket:
+//
+//     High      22 judged   10 right   45%
+//     Medium   216 judged   69 right   32%
+//     Low      202 judged   49 right   24%
+//
+// The score barely separates. An OBL-style floor at Medium would have
+// removed 393 rows and cost 49 correct pages -- 38% of everything sitemap
+// has ever found -- saving about 4 reviewed rows per correct page given up.
+// The rank cap gives up a correct page only every 7 rows. RANK IS THE BETTER
+// CUT because it is RELATIVE: rank 1 means "the best match on this school's
+// own site," while the score is absolute and mostly measures how many
+// keywords happen to land in a URL, which does not travel between schools.
+// This is also why SM_CF_CONFIDENCE was right to be deleted -- see that
+// tombstone. Do not re-add it expecting a filter; it is not one.
+//
+// THE CAP IS FORWARD-ONLY. It changes what future sweeps create and touches
+// no existing row. Existing rank 3-5 rows must NOT be deleted to "apply" it:
+// they are dedupe blocklist entries, and deleting one re-opens that URL for
+// re-proposal. Hide them with a view condition instead, determination left
+// empty, per invariant 1.
+const MAX_CANDIDATES_KEPT = 2;        // ranked candidates kept per school
 const CRAWL_POLITENESS_DELAY_MS = 250;
 const INTAKE_CREATE_BATCH = 10;       // Airtable's cap per create call
 
