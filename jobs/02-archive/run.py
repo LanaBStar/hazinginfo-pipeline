@@ -4,12 +4,45 @@ write manifest.json (per document) + status.json (per institution-year) into the
 
 Crawl core is ported from reference/scrape.py + reference/helpers.py (frozen, read-only):
 keyword heuristics, breadth-first, depth <= 2, ~30-fetch budget per institution,
-same-domain links prioritized, all PDFs on hazing-signal pages followed. That logic is
-battle-tested — this file changes only the storage layer (R2 manifest/status.json via
-lib/r2.py instead of Postgres rows) and the status vocabulary (see status.schema.json).
+same-domain links prioritized. That logic is battle-tested — this file changes only the
+storage layer (R2 manifest/status.json via lib/r2.py instead of Postgres rows), the status
+vocabulary (see status.schema.json), and the off-domain link rule described below.
 
-No AI runs here. clean-up / relevance is decided later, at 04-extract's is_chtr field —
-every document that could plausibly be a CHTR gets archived.
+OFF-DOMAIN LINK RULE
+--------------------
+Previously any keyword-matching link was followed regardless of domain, and pages reached
+that way were crawled onward like any other. On a live archive of 1,483 institutions that
+produced 6,367 stored documents of which 3,331 (52%) sat on domains shared across many
+schools — i.e. nobody's own site. stophazing.org alone accounted for 1,539 documents across
+188 institutions; hazingpreventionnetwork.org for 825 across 100.
+
+The failure was not stepping off-domain once. It was *continuing to crawl after stepping
+off*: an institution's fetch budget was spent walking an advocacy site's own internal link
+tree. Alabama A&M (100654) hit the 30-fetch ceiling exactly, with 27 of its 30 stored
+documents coming from two advocacy sites and one from aamu.edu — so its actual report may
+never have been reached at all. 44 institutions hit that ceiling.
+
+The rule now:
+
+  - On the institution's own domain: unchanged. Breadth-first, depth <= 2, keyword links
+    first, all PDFs on a hazing-signal page followed.
+  - Off the institution's domain: a link is followed only when it appears on the source
+    page itself, only when it is a PDF, a link claiming to be a transparency report, or an
+    .edu page mentioning hazing; at most MAX_OFFDOMAIN_LEADS of them; and the page it leads
+    to is never crawled onward.
+
+One hop, no expansion. Off-domain has to stay reachable because chtr_index_url is an index
+page by design — 37 documents at 35 institutions are transparency reports on third-party
+platforms (cm.maxient.com/chtr.php alone appears for 102 schools), and Georgia State
+publishes its individual case results as Dropbox PDFs. What changes is that no off-domain
+page can ever consume more than one fetch, which makes the Alabama A&M failure structurally
+impossible while leaving real documents reachable.
+
+Same-domain candidates are enqueued ahead of off-domain leads, so the institution's own
+pages always get first claim on the budget.
+
+No AI runs here. Relevance is still decided later, at 04-extract's is_chtr field — this
+rule is about not following other people's websites, not about judging page content.
 
 Status vocabulary written by this job:
   - "no_url":     sources/schools.csv marks this institution's url_status as "no_url"
@@ -51,7 +84,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from lib import r2  # noqa: E402
-from lib.fetch import fetch_url, is_pdf_response  # noqa: E402
+from lib.fetch import fetch_url, is_pdf_response, normalize_url  # noqa: E402
 from lib.fingerprint import content_fingerprint, url_hash16  # noqa: E402
 from lib.hashing import sha256_bytes, short_hash  # noqa: E402
 from lib.text import html_to_text  # noqa: E402
@@ -61,8 +94,15 @@ DEFAULT_SCHOOLS_CSV = ROOT / "sources" / "schools.csv"
 ARCHIVE_PREFIX = "archive"
 
 HAZING_KEYWORDS = ["hazing", "chtr", "transparency report", "hazing incident"]
+
+# A link carrying one of these is claiming to BE a transparency report, not merely to
+# mention hazing. Off-domain that distinction is what separates a school's report hosted
+# on a third-party platform from an advocacy site's page about hazing in general.
+CHTR_SIGNALS = ["chtr", "transparency report", "transparency-report",
+                "transparency_report", "transparencyreport"]
 MAX_DEPTH = 2                     # source page = depth 0
 MAX_FETCHES_PER_INSTITUTION = 30  # budget for followed links beyond the source page
+MAX_OFFDOMAIN_LEADS = 15          # off-domain documents followed from the source page, never expanded
 
 _schema_cache: dict[str, dict] = {}
 
@@ -108,6 +148,12 @@ def _matches_keywords(blob: str) -> bool:
     return any(kw in blob for kw in HAZING_KEYWORDS)
 
 
+def _matches_chtr_signal(blob: str) -> bool:
+    """Does this link claim to be a transparency report, rather than merely mention hazing?"""
+    blob = blob.lower()
+    return any(sig in blob for sig in CHTR_SIGNALS)
+
+
 def _links_blob(links: list[dict]) -> str:
     return " ".join(l.get("text", "") + " " + l.get("url", "") for l in links)
 
@@ -123,27 +169,104 @@ def _domain(url: str) -> str:
     return ".".join(parts[-2:]) if len(parts) >= 2 else host
 
 
-def _candidate_links(links: list[dict], page_has_signal: bool, home_domain: str) -> list[str]:
-    """
-    Pick which links to follow: keyword-matching links first, then — if the page itself is
-    hazing-related — every linked PDF (individual incident PDFs on an index page often have
-    link text with no keyword). Within each group the institution's own domain comes first,
-    so an external hazing-prevention site can't starve the institution's real report links
-    of the fetch budget.
-    """
-    groups = {(kw, same): [] for kw in (True, False) for same in (True, False)}
+# An email address written into an href WITHOUT a mailto: scheme. Browsers and urljoin
+# both resolve it as a relative path, producing a URL that cannot exist. Observed:
+# McNeese's hazing-education page links studentservices@mcneese.edu bare, which resolved
+# to https://www.mcneese.edu/campus-life/hazinged/studentservices@mcneese.edu and was then
+# followed — because "hazing" is a substring of "hazinged" in that path, it passed the
+# keyword test on the URL alone. Three fetches and six seconds of retry backoff per
+# occurrence, for a page guaranteed to 404. Common enough in .edu templates (a contact
+# address sitting next to the report it is about) to be worth excluding by shape.
+_BARE_EMAIL_PATH = re.compile(r"/[^/@\s]+@[^/@\s]+\.[A-Za-z]{2,}/?$")
+
+
+def _usable_links(links: list[dict]) -> list[dict]:
+    """Deduplicated http(s) links, in page order, minus un-schemed email addresses."""
     seen: set[str] = set()
+    out = []
     for l in links:
         url = l["url"]
         if url in seen or not url.startswith(("http://", "https://")):
             continue
         seen.add(url)
-        same = _domain(url) == home_domain
+        if _BARE_EMAIL_PATH.search(urlparse(url).path):
+            continue
+        out.append({"url": normalize_url(url), "text": l.get("text", "")})
+    return out
+
+
+def _candidate_links(links: list[dict], page_has_signal: bool, home_domain: str) -> list[str]:
+    """
+    Which links ON THE INSTITUTION'S OWN DOMAIN to follow: keyword-matching links first,
+    then — if the page itself is hazing-related — every linked PDF (individual incident
+    PDFs on an index page often have link text with no keyword).
+
+    Off-domain links are deliberately not returned here; see _offdomain_leads. Splitting
+    the two is what stops an institution's fetch budget being spent on somebody else's
+    website, which is the failure this rule exists to prevent.
+    """
+    keyword_hits, pdf_hits = [], []
+    for l in _usable_links(links):
+        url = l["url"]
+        if _domain(url) != home_domain:
+            continue
         if _matches_keywords(l.get("text", "") + " " + url):
-            groups[(True, same)].append(url)
+            keyword_hits.append(url)
         elif page_has_signal and _is_pdf_url(url):
-            groups[(False, same)].append(url)
-    return groups[(True, True)] + groups[(True, False)] + groups[(False, True)] + groups[(False, False)]
+            pdf_hits.append(url)
+    return keyword_hits + pdf_hits
+
+
+def _offdomain_leads(links: list[dict], page_has_signal: bool, home_domain: str) -> list[str]:
+    """
+    Off-domain documents worth exactly one fetch each, from the source page only.
+
+    chtr_index_url is an index page by design: a school either lists its incidents on it or
+    links out to them, so the documents this job exists to collect are frequently NOT on the
+    school's own domain. Measured across the live archive, 37 documents at 35 institutions
+    are transparency reports hosted on third-party platforms, and cm.maxient.com/chtr.php
+    appears for 102 schools — Georgia State's own report is there, and its recorded index
+    page links to it rather than listing incidents. Refusing every off-domain link would
+    lose all of them.
+
+    Three kinds qualify, in priority order:
+
+      1. A PDF, on any domain. A PDF is a document wherever it is parked; svdcdn.com,
+         pcdn.co, amazonaws.com, sharepoint.com and dropbox.com were all observed holding
+         schools' documents.
+      2. A link claiming to BE a transparency report — 'chtr' or 'transparency report' in
+         its URL or link text. This is what reaches cm.maxient.com/chtr.php while still
+         excluding cm.maxient.com/reportingform.php: a reporting form is the data check
+         system's concern, not this job's.
+      3. An HTML page on another .edu whose link mentions hazing — university system
+         offices (ulsystem.edu was observed publishing for a member campus) and schools
+         mid-rebrand (uno.edu now redirects to lsuneworleans.edu).
+
+    Everything else off-domain is excluded, which removes every large source of junk
+    measured in the archive: stophazing.org (1,539 documents across 188 schools),
+    hazingpreventionnetwork.org (825 across 100), clerycenter.org, insidehazing.com,
+    antihazingcoalition.org, congress.gov, the state legislature sites and Google Docs.
+
+    Campus subdomains are unaffected — _domain() reduces hunter.cuny.edu to cuny.edu, so
+    they were never off-domain to begin with.
+
+    The ordering matters once the cap bites: actual documents should claim it ahead of .edu
+    pages that merely mention hazing.
+    """
+    pdf_hits, chtr_hits, edu_hits = [], [], []
+    for l in _usable_links(links):
+        url = l["url"]
+        blob = l.get("text", "") + " " + url
+        domain = _domain(url)
+        if domain == home_domain:
+            continue
+        if page_has_signal and _is_pdf_url(url):
+            pdf_hits.append(url)
+        elif _matches_chtr_signal(blob):
+            chtr_hits.append(url)
+        elif domain.endswith(".edu") and _matches_keywords(blob):
+            edu_hits.append(url)
+    return (pdf_hits + chtr_hits + edu_hits)[:MAX_OFFDOMAIN_LEADS]
 
 
 # ── Storage layer (R2 manifest.json / dedup) ───────────────────────────────────
@@ -309,17 +432,21 @@ def complete_pipeline_run(run_id: str, run_status: str, prompt_version: str = "n
 
 # ── Crawl ───────────────────────────────────────────────────────────────────────
 
-def _crawl(prefix: str, inst_dir: str, unitid: str, year: int, home_domain: str, initial_links: list[str],
-           seen_links: set[str], known_hashes: set[str]) -> list[str]:
-    """Breadth-first crawl from the source page's links, bounded by
-    MAX_FETCHES_PER_INSTITUTION and MAX_DEPTH. Breadth-first so every direct link is
-    fetched before any second-level page consumes budget."""
-    queue = deque((url, 1) for url in initial_links)
+def _crawl(prefix: str, inst_dir: str, unitid: str, year: int, home_domain: str,
+           queue: deque, seen_links: set[str], known_hashes: set[str]) -> list[str]:
+    """Breadth-first crawl, bounded by MAX_FETCHES_PER_INSTITUTION and MAX_DEPTH.
+    Breadth-first so every direct link is fetched before any second-level page consumes
+    budget.
+
+    Queue items are (url, depth, expand). expand=False marks an off-domain lead: it is
+    fetched and stored like anything else, but its own links are never followed. That is
+    the whole of the off-domain rule — one hop, no expansion — and it is what stops an
+    institution's budget being spent inside somebody else's website."""
     stored_hashes = []
     fetches = 0
 
     while queue and fetches < MAX_FETCHES_PER_INSTITUTION:
-        url, depth = queue.popleft()
+        url, depth, expand = queue.popleft()
         if url in seen_links:
             continue
         seen_links.add(url)
@@ -346,10 +473,15 @@ def _crawl(prefix: str, inst_dir: str, unitid: str, year: int, home_domain: str,
                                 fetched_text=page_text)
             )
 
+        if not expand:
+            logging.info(f"  [depth={depth}] {url}: off-domain lead, not expanded "
+                          f"({fetches}/{MAX_FETCHES_PER_INSTITUTION} fetches)")
+            continue
+
         if depth < MAX_DEPTH:
             for link in _candidate_links(links, any_signal, home_domain):
                 if link not in seen_links:
-                    queue.append((link, depth + 1))
+                    queue.append((link, depth + 1, True))
 
         logging.info(f"  [depth={depth}] {url}: done ({fetches}/{MAX_FETCHES_PER_INSTITUTION} fetches)")
 
@@ -360,7 +492,11 @@ def crawl_institution(prefix: str, inst_dir: str, unitid: str, year: int, source
                        known_hashes: set[str]) -> list[str]:
     """Fetch and store all CHTR documents reachable from one institution's source URL.
     Returns the list of content hashes stored or found already archived (empty = nothing
-    found: fetch failed, or no hazing signal anywhere)."""
+    found: fetch failed, or no hazing signal anywhere).
+
+    Off-domain leads are taken from the source page only, and are queued after every
+    same-domain candidate so the institution's own pages always get first claim on the
+    fetch budget."""
     resp = fetch_url(source_url)
     if resp is None:
         return []
@@ -384,8 +520,17 @@ def crawl_institution(prefix: str, inst_dir: str, unitid: str, year: int, source
 
     home_domain = _domain(source_url)
     seen_links: set[str] = {source_url}
-    stored += _crawl(prefix, inst_dir, unitid, year, home_domain,
-                      _candidate_links(links, any_signal, home_domain), seen_links, known_hashes)
+
+    same_domain = _candidate_links(links, any_signal, home_domain)
+    off_domain = _offdomain_leads(links, any_signal, home_domain)
+    if off_domain:
+        logging.info(f"  {len(off_domain)} off-domain lead(s) queued, one fetch each: "
+                      f"{', '.join(sorted({_domain(u) for u in off_domain}))}")
+
+    queue = deque([(url, 1, True) for url in same_domain] +
+                   [(url, 1, False) for url in off_domain])
+
+    stored += _crawl(prefix, inst_dir, unitid, year, home_domain, queue, seen_links, known_hashes)
     return stored
 
 
