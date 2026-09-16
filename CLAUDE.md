@@ -276,15 +276,19 @@ institution can match against them:
   already-*approved* organizations seen earlier in the same rebuild by a deterministic
   lowercase/trim/punctuation-stripped comparison key.
 - `staging_incident_review_flags` are recomputed fresh every rebuild (principle 6):
-  `Legally required field missing` / `Low extraction confidence` (<0.7) mechanically, from final
-  field values; the remaining flag types carry forward from the AI's own `flags[]` unless
-  the reviewer's correction touched that exact field.
+  `Low extraction confidence` (<0.7) and `Legally required field missing` (for the null
+  `_raw` fields `prompt.md` requires, plus `incident_dates.start_raw`) mechanically, from
+  final field values; every other flag -- including the AI's own missing-field flags on
+  `alcohol_involved`/`drugs_involved` -- carries forward from the AI's `flags[]` unless the
+  reviewer's correction touched that exact field.
 - For an `Approved` incident: looked up against already-*public* incidents for the same
   institution by `investigation_end_date` (primary) or `(organization key,
   incident_start_normalized)` (secondary, catches `Pending` incidents with no end date
   yet). A hit records a `staging_incident_possible_matches` row
   (`match_basis`: `Duplicate match` if `determination_status` is unchanged, else
-  `Status update to existing incident`). A status update **updates the existing
+  `Status update to existing incident`). A candidate whose content-derived `incident_id`
+  is already promoted (the same incident published on two pages) is not promoted again.
+  A status update **updates the existing
   `incidents` row in place** and inserts an `incident_status_history` row — the public
   row's `staging_incident_id` stays frozen at whichever extraction *first* promoted it;
   the resolving extraction is tracked only via
