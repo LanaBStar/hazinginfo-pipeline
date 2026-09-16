@@ -59,21 +59,35 @@ for the review/matching/promotion model.
        lowercase/trim/punctuation-stripped comparison key. An incident naming no
        organization gets no `staging_organizations`/`incident_organizations` row.
      - `staging_incident_review_flags` are recomputed fresh every rebuild, never
-       carried over as stored state: `Legally required field missing` and `Low
-       extraction confidence` (<0.7, provisional) are checked mechanically against
-       the *final* (post-correction) field values; the remaining flag types
-       (`Determination unclear`, `Alcohol/drugs review needed`, `Unrecognized date
-       term`, `Unable to determine organization type`) are carried forward from the
-       AI's own `incidents.json` `flags[]` unless the reviewer's correction touched
-       that exact field, in which case the condition is treated as resolved and
-       dropped.
+       carried over as stored state: `Low extraction confidence` (<0.7, provisional)
+       and `Legally required field missing` are checked mechanically against the
+       *final* (post-correction) field values. The mechanical missing-field checks
+       follow `04-extract/prompt.md`: a missing value is `null` (never the string
+       "Not specified"), and the fields checked are `organization_name_raw`,
+       `description_raw`, `findings_raw`, `sanctions_raw` (only when the determination
+       is "Determined hazing"), `incident_dates.start_raw`, and the three
+       `dates.*_raw` investigation/notice dates. An incident end date is never
+       flagged. Every other flag -- including the AI's own `Legally required field
+       missing` on `alcohol_involved`/`drugs_involved`, where only the extractor saw
+       how the source worded the question -- is carried forward from the AI's
+       `incidents.json` `flags[]` unless the reviewer's correction touched that exact
+       field, in which case the condition is treated as resolved and dropped. The
+       AI's `note` text is not stored in the catalog (the flags table has no column
+       for it); reviewers see it in `incidents.json`.
      - For an `Approved` incident: looks up already-*public* incidents for the same
        `unitid` by two keys -- `investigation_end_date` (primary) or
        `(organization comparison key, incident_start_normalized)` (secondary, catches
        `Pending` incidents with no end date yet). A hit writes a
        `staging_incident_possible_matches` row (`match_basis` = `Duplicate match` if
        `determination_status` is unchanged, else `Status update to existing
-       incident`). `Duplicate match` (or no hit) inserts a new `incidents` row.
+       incident`). `Duplicate match` (or no hit) inserts a new `incidents` row --
+       unless the candidate's `incident_id` (a hash of organization, first
+       `incident_dates` start, and description) is already promoted this rebuild. That
+       is the same incident published twice (Georgia Tech lists its whole history on
+       two pages): the public row is left exactly as first promoted, a `Duplicate
+       match` row records the link, and the copy's `incident_dates` /
+       `incident_organizations` rows keep `incident_id` null so the public incident
+       never shows the same date twice.
        `Status update to existing incident` instead updates the existing `incidents`
        row's `determination_status`/`updated_at` **in place** and inserts one
        `incident_status_history` row -- `incidents.staging_incident_id` stays frozen at
