@@ -96,17 +96,35 @@ CORRECTABLE_FIELDS = {
     # incident. See _INCIDENT_DATES_FIELD_RE / _apply_corrections below.
 }
 
-# field_name -> the raw text field whose "Not specified"/None value means "Required
-# field missing" (DATABASE_SCHEMA.md's per-field Missing value handling rules).
+# field_name -> test on the FINAL incident for "Legally required field missing".
+# Mirrors jobs/04-extract/prompt.md rules 1-3, 10 and 11 in the current (extract_v2)
+# schema: every _raw field is genuinely null when absent -- never the string
+# "Not specified" -- and the incident's own occurrence dates live in the top-level
+# incident_dates array, not in `dates`. The field_name keys are the same strings
+# prompt.md tells the extractor to write, so a recomputed flag and the AI's own flag
+# name the same field.
+#
+# Deliberately NOT here:
+#   - an incident END date: not an element the Act requires (prompt.md rule 10), so a
+#     missing one is never flagged;
+#   - sanctions_raw on anything but a "Determined hazing" incident (rule 3: the Act
+#     requires sanctions only "as applicable");
+#   - alcohol_involved / drugs_involved: whether "Not specified" is a gap depends on how
+#     the source phrased the question (rule 8 -- a combined "alcohol or drugs: Yes" that
+#     names only alcohol leaves drugs "Not specified" without a gap), which only the
+#     extractor saw. Those flags are carried forward from the AI instead; see
+#     _recompute_flags.
 REQUIRED_FIELD_CHECKS = {
     "organization_name_raw": lambda inc: inc.get("organization_name_raw") is None,
+    "description_raw": lambda inc: inc.get("description_raw") is None,
     "findings_raw": lambda inc: inc.get("findings_raw") is None,
-    "sanctions_raw": lambda inc: inc.get("sanctions_raw") is None,
-    "dates.incident_start_raw": lambda inc: inc["dates"]["incident_start_raw"] == "Not specified",
-    "dates.incident_end_raw": lambda inc: inc["dates"]["incident_end_raw"] == "Not specified",
-    "dates.investigation_start_date_raw": lambda inc: inc["dates"]["investigation_start_date_raw"] == "Not specified",
-    "dates.investigation_end_date_raw": lambda inc: inc["dates"]["investigation_end_date_raw"] == "Not specified",
-    "dates.notice_date_raw": lambda inc: inc["dates"]["notice_date_raw"] == "Not specified",
+    "sanctions_raw": lambda inc: (inc.get("sanctions_raw") is None
+                                  and inc.get("determination_status") == "Determined hazing"),
+    "incident_dates.start_raw": lambda inc: (not inc.get("incident_dates")
+                                             or any(d.get("start_raw") is None for d in inc["incident_dates"])),
+    "dates.investigation_start_date_raw": lambda inc: inc["dates"].get("investigation_start_date_raw") is None,
+    "dates.investigation_end_date_raw": lambda inc: inc["dates"].get("investigation_end_date_raw") is None,
+    "dates.notice_date_raw": lambda inc: inc["dates"].get("notice_date_raw") is None,
 }
 
 
@@ -243,12 +261,15 @@ def _recompute_flags(final_incident: dict, ai_flags: list[dict], corrected_field
     confidence' are mechanically recomputed from the FINAL (post-correction) incident
     data every time -- pipeline-applied thresholds, per DATABASE_SCHEMA.md's Pipeline
     Logic ("Review flag conditions: model reports the value, pipeline applies the
-    threshold"). The remaining three flag types (Determination unclear, Alcohol/drugs
-    review needed, Unrecognized date term, Unable to determine organization type) depend
-    on source-document structure the AI alone observed, not on any final scalar value --
-    these are carried forward from the AI's own flags[] array and simply dropped if the
-    correction that would resolve them was applied (Review & Correction pipeline logic:
-    "Flags auto-clear when their condition resolves")."""
+    threshold"). "Legally required field missing" is recomputed only for the fields in
+    REQUIRED_FIELD_CHECKS; the AI's own flag of that type on any OTHER field
+    (alcohol_involved, drugs_involved) is carried forward, because whether that value is a
+    gap depends on how the source was worded. Every other flag type (Determination
+    unclear, Alcohol/drugs review needed, Unrecognized date term, Unable to derive value,
+    Unable to determine organization type) likewise depends on source-document structure
+    the AI alone observed -- carried forward from the AI's own flags[] array and simply
+    dropped if the correction that would resolve it was applied (Review & Correction
+    pipeline logic: "Flags auto-clear when their condition resolves")."""
     flags: list[tuple] = []
 
     for field_name, is_missing in REQUIRED_FIELD_CHECKS.items():
@@ -260,7 +281,9 @@ def _recompute_flags(final_incident: dict, ai_flags: list[dict], corrected_field
 
     for ai_flag in ai_flags:
         flag_type = ai_flag["flag_type"]
-        if flag_type in ("Legally required field missing", "Low extraction confidence"):
+        if flag_type == "Low extraction confidence":
+            continue  # recomputed above, never carried forward stale
+        if flag_type == "Legally required field missing" and ai_flag["field_name"] in REQUIRED_FIELD_CHECKS:
             continue  # recomputed above, never carried forward stale
         if ai_flag["field_name"] in corrected_fields:
             continue  # the reviewer fixed exactly this field -- condition resolved
@@ -317,10 +340,19 @@ def _apply_corrections(raw_incident: dict, corrections: list[dict]) -> tuple[dic
 
 def _incident_row_key(unitid: str, incident: dict) -> str:
     """incident_id -- computed from the ORIGINAL, uncorrected extraction so a reviewer's
-    typo fix never changes an incident's public id."""
+    typo fix never changes an incident's public id.
+
+    The incident's own start date is the FIRST incident_dates entry's start_raw (the
+    extract_v2 schema moved occurrence dates out of `dates`). description_raw and
+    start_raw may both be null in the current schema; _hash() treats null as "".
+
+    Two entries with the same organization, first start date and description (first 200
+    characters) get the same id and publish as one incident -- see the duplicate handling
+    in _stage_one_incident."""
     org = incident.get("organization_name_normalized") or ""
-    start = incident["dates"]["incident_start_raw"]
-    desc = incident["description_raw"][:200]
+    incident_dates = incident.get("incident_dates") or []
+    start = incident_dates[0].get("start_raw") if incident_dates else None
+    desc = (incident.get("description_raw") or "")[:200]
     return _hash(unitid, org, start, desc)
 
 
@@ -582,6 +614,27 @@ def _stage_one_incident(state: _RebuildState, doc_dir: str, artifact_id: str, un
                 staging_incident_id, old_status, final["determination_status"], reviewed_date,
             ))
             incident_id = existing_incident_id
+        elif _incident_row_key(unitid, raw_incident) in state.incidents:
+            # Same organization, first start date and description as an incident already
+            # promoted this rebuild -- in practice the same incident published on two pages
+            # (observed: Georgia Tech lists its whole conduct history on two separate
+            # pages). The content-derived id is identical, so there is only one public row
+            # to have. Leave it exactly as first promoted: overwriting it would repoint its
+            # frozen staging_incident_id, and attaching this copy's incident_dates and
+            # organization link would give the public incident every date twice. The
+            # "Duplicate match" possible_matches row above is the record of the link; this
+            # staging row stays staging-only.
+            existing_incident_id = _incident_row_key(unitid, raw_incident)
+            if existing_incident_id not in hits:
+                # Neither lookup key caught it (e.g. no investigation end date and no
+                # day-precision start date) -- record the link anyway.
+                state.possible_matches.append((
+                    _hash(staging_incident_id, existing_incident_id), staging_incident_id,
+                    existing_incident_id, "Duplicate match", extracted_at,
+                ))
+            incident_id = None
+            logging.info(f"rebuild: {doc_dir} incident {index} duplicates an incident already promoted "
+                         f"({existing_incident_id}); not promoted again")
         else:
             incident_id = _incident_row_key(unitid, raw_incident)
             state.incidents[incident_id] = [
