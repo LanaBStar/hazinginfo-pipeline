@@ -98,6 +98,8 @@ steps, postconditions, and failure modes — read it before changing that job's 
 - `fingerprint.py` — `content_fingerprint` for the ledger: strips boilerplate/date tokens
   before hashing so an institution's annual re-post of an unchanged report (with only an
   embedded date differing) registers as unchanged.
+  `page_text_fingerprint` is the storage-dedup one: whitespace collapsed, nothing else
+  removed, so a report that changed only a date is still stored as new.
 
 ## Data flow
 
@@ -131,9 +133,11 @@ stored, writes `manifest.json`; for each institution-year, writes `status.json`
 since it requires reading document content). Also writes a `ledger/{url_hash16}.json`
 entry per distinct URL ever seen (updated in place across years, `first_seen_date`
 preserved) and a `data_check.json` per institution per cycle, and bookends each batch run
-with a `pipeline_runs/{run_id}.json` record at the archive root. Deduplicates unchanged
-documents across scrape years by content hash — an unchanged document is never
-re-fetched-and-stored twice.
+with a `pipeline_runs/{run_id}.json` record at the archive root. Deduplicates documents
+per institution across scrape years — PDFs by raw content hash, web pages by raw content
+hash OR readable-text fingerprint (sites that change their HTML on every request, such as
+Drupal's random view IDs and Maxient's signed logo links, would otherwise be re-stored on
+every fetch). A duplicate is never stored twice, only re-referenced in `status.json`.
 
 ### 03-normalize
 
