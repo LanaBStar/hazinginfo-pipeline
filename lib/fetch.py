@@ -90,9 +90,10 @@ def is_pdf_response(resp: requests.Response, url: str) -> bool:
 
     The URL test looks at the PATH only. Checking the whole URL meant that any file link
     carrying a query string — `…/2018_Kappa_Sigma_Results.pdf?rlkey=abc&dl=0` — failed the
-    test and was handled as HTML, which is how Georgia State's case-result PDFs were lost.
-    It also disagreed with 02-archive's own _is_pdf_url, which has always used the path,
-    so a link could be followed *as* a PDF and then stored as if it were a web page.
+    test and was handled as HTML, which is how Georgia State's case-result PDFs came to be
+    stored as web pages. It also disagreed with 02-archive's own _is_pdf_url, which has
+    always used the path, so a link could be followed *as* a PDF and then stored as if it
+    were a web page.
     """
     content_type = resp.headers.get("Content-Type", "")
     return "application/pdf" in content_type or urlparse(url).path.lower().endswith(".pdf")
