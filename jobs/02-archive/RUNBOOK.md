@@ -36,8 +36,21 @@ is data (see CLAUDE.md).
    - Any other `url_status` (e.g. `pending`, not yet confirmed by discover) → skip with no
      write; not yet actionable.
 3. Dedup: before storing a document, the run checks every year already archived for that
-   institution for a matching content-hash directory; an unchanged document is never
-   re-fetched-and-stored twice, only re-referenced in the new year's `status.json`.
+   institution. A PDF is a duplicate when its raw bytes match a stored document; a web
+   page is a duplicate when its raw bytes match OR its readable text matches
+   (`lib/fingerprint.page_text_fingerprint` — whitespace collapsed, nothing else removed).
+   A duplicate is not stored again; it is only re-referenced in `status.json`, by the
+   stored document's hash, and its URL still gets a Ledger entry.
+   - Why text: many sites change their HTML on every request without changing the page.
+     Georgia Tech (Drupal) writes a random `js-view-dom-id-…` attribute and serves the same
+     listing with and without `?page=0`; Maxient (102 schools) loads its logo through a
+     signed link that carries the request time. Before this rule both were stored again on
+     every fetch — Georgia Tech's two report pages twice each in one run.
+   - A report whose visible text changed in any way, including only a date, is stored as
+     a new document.
+   - Stored pages' text fingerprints are recomputed from `original/index.html` only when a
+     newly fetched page's bytes are unrecognised, so byte-stable institutions cost no
+     extra reads.
 
 ## Postconditions
 
@@ -53,7 +66,7 @@ is data (see CLAUDE.md).
   and treat as `not_found` for that institution so subsequent institutions still process
   (network flakiness against ~1,484 live university sites is expected).
 - A document that validates against `manifest.schema.json` but was already partially
-  written (crash mid-run) is safe to re-run: dedup keys off content hash, and `status.json`
+  written (crash mid-run) is safe to re-run: dedup keys off stored manifests, and `status.json`
   for that institution-year is only written once the whole crawl completes, so a crash
   before that point simply gets re-attempted on the next run (no partial `status.json` is
   ever visible).
