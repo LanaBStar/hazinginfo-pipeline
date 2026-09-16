@@ -50,6 +50,34 @@ def content_fingerprint(text: str) -> str:
     return sha256_bytes(strip_boilerplate_tokens(text).encode("utf-8"))
 
 
+def page_text_fingerprint(text: str) -> str:
+    """sha256 hex of a page's readable text with whitespace collapsed — and NOTHING else
+    removed. Used by 02-archive to decide whether a freshly fetched web page is a copy of
+    one already stored for the same institution.
+
+    Why not content_fingerprint: that one deletes every date and year before hashing, so
+    two versions of a report that differ only in a date — an investigation-concluded date
+    filled in, a new incident dated the same as an old one — would hash the same, and the
+    newer version would never be stored. That is acceptable for the Ledger's "has this
+    changed?" signal and unacceptable for deciding what to keep. Here, any change a reader
+    could see produces a different fingerprint.
+
+    Why not the raw sha256: many sites put something in the HTML that changes on every
+    request without changing the page. Observed in the 2026-09 four-school run:
+
+      - Georgia Tech (Drupal) writes a random `js-view-dom-id-…` attribute into every
+        response, and serves the same listing at both `/hazing-conduct-history` and
+        `/hazing-conduct-history?page=0`. Each of its two report pages was stored twice,
+        and extraction produced 36 incident rows for 13 incidents.
+      - Maxient (cm.maxient.com/chtr.php, 102 schools) loads the school logo through a
+        signed Amazon S3 link carrying the request time (`X-Amz-Date=…`). Georgia State's
+        page got a new storage folder on every fetch.
+
+    Neither change is in the text, so both collapse to one fingerprint here.
+    """
+    return sha256_bytes(_WHITESPACE_RE.sub(" ", text).strip().encode("utf-8"))
+
+
 def url_hash16(url: str) -> str:
     """Stable 16-char id for a URL, used as the ledger/{url_hash16}.json filename — a
     fingerprint of the URL string itself, not its content."""
