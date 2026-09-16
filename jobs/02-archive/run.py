@@ -33,10 +33,10 @@ The rule now:
 
 One hop, no expansion. Off-domain has to stay reachable because chtr_index_url is an index
 page by design — 37 documents at 35 institutions are transparency reports on third-party
-platforms (cm.maxient.com/chtr.php alone appears for 102 schools), and Georgia State
-publishes its individual case results as Dropbox PDFs. What changes is that no off-domain
-page can ever consume more than one fetch, which makes the Alabama A&M failure structurally
-impossible while leaving real documents reachable.
+platforms, and cm.maxient.com/chtr.php alone appears for 102 schools, Georgia State among
+them. What changes is that no off-domain page can ever consume more than one fetch, which
+makes the Alabama A&M failure structurally impossible while leaving real documents
+reachable.
 
 Same-domain candidates are enqueued ahead of off-domain leads, so the institution's own
 pages always get first claim on the budget.
