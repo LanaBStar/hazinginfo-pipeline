@@ -40,8 +40,11 @@ validating scripts write; human decisions are artifacts — see `CLAUDE.md`).
 5. **Airtable cross-check (v3.0):** `python jobs/01-discover/import_airtable.py` — for
    every institution with `url_status=confirmed`, looks it up by `unitid` in the
    existing schools-registry Airtable base (`AIRTABLE_TOKEN`/`AIRTABLE_BASE_ID`/
-   `AIRTABLE_TABLE_NAME`) and compares its `Transparency Report` field against the
-   confirmed `chtr_url`. Writes `tasks/discover/airtable_cross_check.json` (schema:
+   `AIRTABLE_TABLE_NAME`) and compares its `chtr_index_url` field against the
+   confirmed `chtr_url`. (`chtr_index_url` is the field that mirrors `chtr_url` —
+   it's populated whenever the institution has a CHTR page at all. `Transparency
+   Report` is *not* interchangeable with it: that field is only populated once the
+   page meets HazingInfo's own compliance standard, and is blank otherwise.) Writes `tasks/discover/airtable_cross_check.json` (schema:
    `jobs/01-discover/airtable_cross_check.schema.json`) — never edits `schools.csv`,
    never overwrites Airtable. A mismatch (or an institution Airtable has no opinion on
    yet) is just recorded for the operator to look at; `02-archive`'s `write_data_check`
