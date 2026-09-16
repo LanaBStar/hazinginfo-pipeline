@@ -44,6 +44,28 @@ pages always get first claim on the budget.
 No AI runs here. Relevance is still decided later, at 04-extract's is_chtr field — this
 rule is about not following other people's websites, not about judging page content.
 
+DUPLICATE CAPTURES
+------------------
+A document is stored once per institution. A PDF counts as already stored when its raw
+bytes match a stored document. A web page counts as already stored when its raw bytes
+match OR its readable text matches (lib/fingerprint.page_text_fingerprint).
+
+The text test exists because many sites change their HTML on every request without
+changing the page. In the 2026-09 four-school run, Georgia Tech's two report pages were
+each stored twice (a random Drupal attribute, plus the same listing served with and
+without ?page=0) — 36 extracted incident rows for 13 real incidents — and Maxient's page
+got a new folder on every fetch because its logo link carries a signed timestamp. That
+affects every one of the 102 Maxient schools on every re-scrape.
+
+What is kept is the FIRST capture's bytes; later captures with the same text are recorded
+in the Ledger (every URL still gets its entry) but not stored again, and status.json lists
+the stored document's hash. The text fingerprint removes nothing but whitespace, so a
+report that changed in any visible way — including only a date — is still stored as new.
+
+Stored documents' text fingerprints are not saved anywhere; they are recomputed from
+original/ the first time a new web page's bytes are unrecognised, and only then, so an
+institution whose pages are byte-stable costs no extra reads.
+
 Status vocabulary written by this job:
   - "no_url":     sources/schools.csv marks this institution's url_status as "no_url"
                   (no confirmed URL exists at all) - never fetched.
@@ -85,7 +107,7 @@ sys.path.insert(0, str(ROOT))
 
 from lib import r2  # noqa: E402
 from lib.fetch import fetch_url, is_pdf_response, normalize_url  # noqa: E402
-from lib.fingerprint import content_fingerprint, url_hash16  # noqa: E402
+from lib.fingerprint import content_fingerprint, page_text_fingerprint, url_hash16  # noqa: E402
 from lib.hashing import sha256_bytes, short_hash  # noqa: E402
 from lib.text import html_to_text  # noqa: E402
 
@@ -271,33 +293,110 @@ def _offdomain_leads(links: list[dict], page_has_signal: bool, home_domain: str)
 
 # ── Storage layer (R2 manifest.json / dedup) ───────────────────────────────────
 
-def _existing_hashes(prefix: str, inst_dir: str) -> set[str]:
-    """The 16-char doc-dir names already archived for this institution, across every prior
-    scrape year (dedup: an unchanged document is never re-stored)."""
-    keys = r2.list_keys(f"{prefix}/{inst_dir}/")
-    hashes = set()
-    for key in keys:
-        parts = key.split("/")
-        if len(parts) >= 5 and parts[3] == "docs" and parts[-1] == "manifest.json":
-            hashes.add(parts[4])
-    return hashes
+def _stored_page_text(content: bytes) -> str:
+    """A web page's readable text, derived from its raw bytes exactly as 03-normalize
+    derives extracted/text.txt. Used only for the duplicate test, so that a page fetched
+    today and a page read back out of the archive are compared the same way."""
+    return html_to_text(content.decode("utf-8", errors="replace"))
+
+
+class KnownDocuments:
+    """What is already archived for one institution, across every scrape year, keyed two
+    ways: by doc-dir name (raw-bytes hash) and — for web pages — by readable-text
+    fingerprint. Both map to the stored document's full sha256, which is what status.json
+    lists. See DUPLICATE CAPTURES in the module docstring.
+
+    Text fingerprints of documents stored in EARLIER runs are loaded lazily, on the first
+    lookup that needs them."""
+
+    def __init__(self, prefix: str, inst_dir: str, by_hash16: dict[str, str] | None = None,
+                 html_doc_dirs: list[str] | None = None):
+        self.prefix = prefix
+        self.inst_dir = inst_dir
+        self.by_hash16: dict[str, str] = dict(by_hash16 or {})
+        self.by_text: dict[str, str] = {}
+        self._pending_html = list(html_doc_dirs or [])
+
+    @classmethod
+    def load(cls, prefix: str, inst_dir: str) -> "KnownDocuments":
+        """Reads only the key listing plus each manifest's sha256. Which documents are web
+        pages is decided by the presence of original/index.html, not by manifest fields,
+        so this works whatever manifest schema version wrote the archive."""
+        keys = set(r2.list_keys(f"{prefix}/{inst_dir}/"))
+        by_hash16, html_doc_dirs = {}, []
+        for key in sorted(keys):
+            parts = key.split("/")
+            if len(parts) >= 5 and parts[3] == "docs" and parts[-1] == "manifest.json":
+                doc_dir = "/".join(parts[:5])
+                try:
+                    sha = json.loads(r2.get_bytes(key).decode("utf-8")).get("sha256")
+                except Exception as e:
+                    logging.warning(f"  unreadable manifest {key}: {e}")
+                    sha = None
+                by_hash16[parts[4]] = sha
+                if f"{doc_dir}/original/index.html" in keys:
+                    html_doc_dirs.append(doc_dir)
+        return cls(prefix, inst_dir, by_hash16, html_doc_dirs)
+
+    def _load_text_fingerprints(self) -> None:
+        while self._pending_html:
+            doc_dir = self._pending_html.pop(0)
+            try:
+                content = r2.get_bytes(f"{doc_dir}/original/index.html")
+            except Exception as e:
+                logging.warning(f"  could not read {doc_dir}/original/index.html for the duplicate test: {e}")
+                continue
+            text = _stored_page_text(content)
+            if text.strip():
+                # The stored bytes are right here, so the full hash is recomputable even
+                # when the manifest didn't give it.
+                self.by_text.setdefault(page_text_fingerprint(text), sha256_bytes(content))
+
+    def match(self, content_hash: str, text_fp: str | None) -> str | None:
+        """The stored document's sha256 if this capture is a copy of it, else None."""
+        hash16 = short_hash(content_hash)
+        if hash16 in self.by_hash16:
+            return self.by_hash16[hash16] or content_hash
+        if text_fp is None:
+            return None
+        self._load_text_fingerprints()
+        return self.by_text.get(text_fp)
+
+    def add(self, content_hash: str, text_fp: str | None) -> None:
+        self.by_hash16[short_hash(content_hash)] = content_hash
+        if text_fp is not None:
+            self.by_text.setdefault(text_fp, content_hash)
 
 
 def store_document(prefix: str, inst_dir: str, unitid: str, year: int, url: str, content: bytes,
-                    is_pdf: bool, known_hashes: set[str], fetched_text: str | None = None) -> str:
-    """Stores one document if its content hash isn't already archived for this institution
-    (in this year or any prior one). Returns the full sha256 hash either way. Also writes/
-    updates this URL's Ledger entry (v3.0), independent of the storage/dedup decision below
-    — the Ledger tracks every URL ever seen, kept alongside (not replacing) this content-hash
-    dedup. fetched_text is the page's plain text for boilerplate-stripped fingerprinting
-    (HTML only); None for PDFs, which fall back to the raw content_hash as their fingerprint."""
+                    is_pdf: bool, known: KnownDocuments, fetched_text: str | None = None) -> str:
+    """Stores one document unless it is already archived for this institution (in this
+    year or any prior one) — same raw bytes, or, for a web page, the same readable text.
+    Returns the sha256 of the document as stored: this capture's own hash if it was stored
+    or matched byte-for-byte, the earlier capture's hash if it matched on text only.
+
+    Also writes/updates this URL's Ledger entry (v3.0), independent of the storage/dedup
+    decision below — the Ledger tracks every URL ever seen. fetched_text is the page's
+    plain text for boilerplate-stripped fingerprinting (HTML only); None for PDFs, which
+    fall back to the raw content_hash as their fingerprint."""
     content_hash = sha256_bytes(content)
     hash16 = short_hash(content_hash)
     write_ledger_entry(prefix, inst_dir, unitid, url, fetched_text, content_hash)
 
-    if hash16 in known_hashes:
+    text_fp = None
+    if not is_pdf:
+        stored_text = _stored_page_text(content)
+        if stored_text.strip():
+            text_fp = page_text_fingerprint(stored_text)
+
+    existing = known.match(content_hash, text_fp)
+    if existing == content_hash:
         logging.info(f"  duplicate — {url} already archived as {hash16}")
         return content_hash
+    if existing:
+        logging.info(f"  duplicate — {url} has the same text as {short_hash(existing)} "
+                     f"(bytes differ only outside the readable page); not stored again")
+        return existing
 
     doc_dir = f"{prefix}/{inst_dir}/{year}/docs/{hash16}"
     filename = "report.pdf" if is_pdf else "index.html"
@@ -315,7 +414,7 @@ def store_document(prefix: str, inst_dir: str, unitid: str, year: int, url: str,
     }
     _validate(manifest, "manifest.schema.json")
     r2.put_bytes(f"{doc_dir}/manifest.json", json.dumps(manifest, indent=2).encode())
-    known_hashes.add(hash16)
+    known.add(content_hash, text_fp)
     logging.info(f"  stored {doc_dir}")
     return content_hash
 
@@ -433,7 +532,7 @@ def complete_pipeline_run(run_id: str, run_status: str, prompt_version: str = "n
 # ── Crawl ───────────────────────────────────────────────────────────────────────
 
 def _crawl(prefix: str, inst_dir: str, unitid: str, year: int, home_domain: str,
-           queue: deque, seen_links: set[str], known_hashes: set[str]) -> list[str]:
+           queue: deque, seen_links: set[str], known: KnownDocuments) -> list[str]:
     """Breadth-first crawl, bounded by MAX_FETCHES_PER_INSTITUTION and MAX_DEPTH.
     Breadth-first so every direct link is fetched before any second-level page consumes
     budget.
@@ -458,7 +557,7 @@ def _crawl(prefix: str, inst_dir: str, unitid: str, year: int, home_domain: str,
 
         if is_pdf_response(resp, url):
             stored_hashes.append(
-                store_document(prefix, inst_dir, unitid, year, url, resp.content, True, known_hashes)
+                store_document(prefix, inst_dir, unitid, year, url, resp.content, True, known)
             )
             continue
 
@@ -469,7 +568,7 @@ def _crawl(prefix: str, inst_dir: str, unitid: str, year: int, home_domain: str,
 
         if text_signal and page_text.strip():
             stored_hashes.append(
-                store_document(prefix, inst_dir, unitid, year, url, resp.content, False, known_hashes,
+                store_document(prefix, inst_dir, unitid, year, url, resp.content, False, known,
                                 fetched_text=page_text)
             )
 
@@ -489,7 +588,7 @@ def _crawl(prefix: str, inst_dir: str, unitid: str, year: int, home_domain: str,
 
 
 def crawl_institution(prefix: str, inst_dir: str, unitid: str, year: int, source_url: str,
-                       known_hashes: set[str]) -> list[str]:
+                       known: KnownDocuments) -> list[str]:
     """Fetch and store all CHTR documents reachable from one institution's source URL.
     Returns the list of content hashes stored or found already archived (empty = nothing
     found: fetch failed, or no hazing signal anywhere).
@@ -502,7 +601,7 @@ def crawl_institution(prefix: str, inst_dir: str, unitid: str, year: int, source
         return []
 
     if is_pdf_response(resp, source_url):
-        return [store_document(prefix, inst_dir, unitid, year, source_url, resp.content, True, known_hashes)]
+        return [store_document(prefix, inst_dir, unitid, year, source_url, resp.content, True, known)]
 
     page_text = html_to_text(resp.text)
     links = _extract_links(resp.text, source_url)
@@ -515,7 +614,7 @@ def crawl_institution(prefix: str, inst_dir: str, unitid: str, year: int, source
 
     stored = []
     if text_signal and page_text.strip():
-        stored.append(store_document(prefix, inst_dir, unitid, year, source_url, resp.content, False, known_hashes,
+        stored.append(store_document(prefix, inst_dir, unitid, year, source_url, resp.content, False, known,
                                       fetched_text=page_text))
 
     home_domain = _domain(source_url)
@@ -530,7 +629,7 @@ def crawl_institution(prefix: str, inst_dir: str, unitid: str, year: int, source
     queue = deque([(url, 1, True) for url in same_domain] +
                    [(url, 1, False) for url in off_domain])
 
-    stored += _crawl(prefix, inst_dir, unitid, year, home_domain, queue, seen_links, known_hashes)
+    stored += _crawl(prefix, inst_dir, unitid, year, home_domain, queue, seen_links, known)
     return stored
 
 
@@ -572,8 +671,8 @@ def process_institution(prefix: str, row: dict, year: int, pipeline_run_id: str,
         return None
 
     logging.info(f"{name}: crawling {chtr_url}")
-    known_hashes = _existing_hashes(prefix, inst_dir)
-    hashes = crawl_institution(prefix, inst_dir, unitid, year, chtr_url, known_hashes)
+    known = KnownDocuments.load(prefix, inst_dir)
+    hashes = crawl_institution(prefix, inst_dir, unitid, year, chtr_url, known)
     documents = list(dict.fromkeys(hashes))  # de-dupe, preserve order
 
     if documents:
