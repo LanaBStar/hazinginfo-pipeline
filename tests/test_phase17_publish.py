@@ -546,7 +546,8 @@ def main() -> int:
         try:
             ingest.ingest_review(nr_dir, _review(
                 nr_hash, 0, "approved", "jane-reviewer", "2026-02-10T18:00:00Z",
-                organization_review={"decision": "approved", "corrected_organization_type": None},
+                organization_review={"decision": "approved", "corrected_organization_type": None,
+                                     "corrected_membership_gender_composition": None},
             ))
             ingest.ingest_review(nr_dir, _review(
                 nr_hash, 1, "rejected", "jane-reviewer", "2026-02-10T18:01:00Z",
@@ -565,15 +566,18 @@ def main() -> int:
             ))
             ingest.ingest_review(rv_dir_2026, _review(
                 rv26_hash, 0, "approved", "jane-reviewer", "2026-02-15T09:00:00Z",
-                organization_review={"decision": "approved", "corrected_organization_type": None},
+                organization_review={"decision": "approved", "corrected_organization_type": None,
+                                     "corrected_membership_gender_composition": None},
             ))
             ingest.ingest_review(rv_dir_2027, _review(
                 rv27_hash, 0, "approved", "jane-reviewer", "2027-02-15T09:00:00Z",
-                organization_review={"decision": "approved", "corrected_organization_type": None},
+                organization_review={"decision": "approved", "corrected_organization_type": None,
+                                     "corrected_membership_gender_composition": None},
             ))
             ingest.ingest_review(fv_dir, _review(
                 fv_hash, 0, "approved", "jane-reviewer", "2026-02-20T09:00:00Z",
-                organization_review={"decision": "approved", "corrected_organization_type": None},
+                organization_review={"decision": "approved", "corrected_organization_type": None,
+                                     "corrected_membership_gender_composition": None},
             ))
         except ingest.IngestError as e:
             failures.append(f"setup: a review was unexpectedly rejected by ingest_review -- {e}")
