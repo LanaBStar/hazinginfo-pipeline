@@ -11,7 +11,9 @@
     {
       "organization_name_raw": "Zeta Psi Fraternity, Beta Chapter",
       "organization_name_normalized": "Zeta Psi",
-      "organization_type": "Fraternity",
+      "organization_type": "Social fraternity or sorority",
+      "membership_gender_composition": "All-male",
+      "institutional_recognition_status": "Recognized",
       "description_raw": "Members required new pledges to consume alcohol during an initiation ceremony.",
       "findings_raw": "The investigation substantiated violations of the anti-hazing policy.",
       "sanctions_raw": "The chapter's recognition was suspended for two years.",
@@ -19,12 +21,6 @@
       "drugs_involved": "Not specified",
       "determination_status": "Determined hazing",
       "dates": {
-        "incident_start_raw": "Fall 2025",
-        "incident_start_normalized": "2025-09-01",
-        "incident_start_precision": "Academic term",
-        "incident_end_raw": "December 15, 2025",
-        "incident_end_normalized": "2025-12-15",
-        "incident_end_precision": "Day",
         "investigation_start_date_raw": "November 2, 2025",
         "investigation_start_date": "2025-11-02",
         "investigation_end_date_raw": "January 10, 2026",
@@ -32,6 +28,22 @@
         "notice_date_raw": "January 10, 2026",
         "notice_date": "2026-01-10"
       },
+      "incident_dates": [
+        {
+          "start_raw": "Fall 2025",
+          "start_normalized": null,
+          "start_precision": "Academic term",
+          "start_year": 2025,
+          "start_month": null,
+          "start_academic_term": "Fall",
+          "end_raw": "December 15, 2025",
+          "end_normalized": "2025-12-15",
+          "end_precision": "Day",
+          "end_year": 2025,
+          "end_month": 12,
+          "end_academic_term": null
+        }
+      ],
       "extraction_confidence": 0.92,
       "flags": []
     }

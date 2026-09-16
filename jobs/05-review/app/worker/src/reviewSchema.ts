@@ -72,7 +72,7 @@ function checkCorrections(value: unknown, where: string): void {
   });
 }
 
-const ORG_REVIEW_REQUIRED = ["decision", "corrected_organization_type"] as const;
+const ORG_REVIEW_REQUIRED = ["decision", "corrected_organization_type", "corrected_membership_gender_composition"] as const;
 
 function checkOrganizationReview(value: unknown, where: string): void {
   if (value === null) return;
@@ -84,6 +84,9 @@ function checkOrganizationReview(value: unknown, where: string): void {
   }
   if (value.corrected_organization_type !== null && typeof value.corrected_organization_type !== "string") {
     fail("organization_review.corrected_organization_type must be a string or null");
+  }
+  if (value.corrected_membership_gender_composition !== null && typeof value.corrected_membership_gender_composition !== "string") {
+    fail("organization_review.corrected_membership_gender_composition must be a string or null");
   }
 }
 

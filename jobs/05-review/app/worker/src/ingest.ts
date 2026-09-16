@@ -27,12 +27,9 @@ const CORRECTABLE_FIELDS = new Set([
   "alcohol_involved",
   "drugs_involved",
   "determination_status",
-  "dates.incident_start_raw",
-  "dates.incident_start_normalized",
-  "dates.incident_start_precision",
-  "dates.incident_end_raw",
-  "dates.incident_end_normalized",
-  "dates.incident_end_precision",
+  "institutional_recognition_status",
+  // NOTE: incident_dates[] entries are corrected via the separate
+  // "incident_dates[N].subfield" pattern -- see INCIDENT_DATES_FIELD_RE below.
   "dates.investigation_start_date_raw",
   "dates.investigation_start_date",
   "dates.investigation_end_date_raw",
@@ -75,10 +72,31 @@ async function findIncidentsJson(store: ArchiveStore, docDir: string, fileHash: 
   );
 }
 
-function validateCorrections(corrections: ReviewJson["corrections"]): void {
+const INCIDENT_DATES_SUBFIELDS = new Set([
+  "start_raw", "start_normalized", "start_precision", "start_year", "start_month",
+  "start_academic_term", "end_raw", "end_normalized", "end_precision", "end_year",
+  "end_month", "end_academic_term",
+]);
+const INCIDENT_DATES_FIELD_RE = /^incident_dates\[(\d+)\]\.([a-z_]+)$/;
+
+function validateCorrections(corrections: ReviewJson["corrections"], incident: Record<string, unknown>): void {
+  const incidentDatesLen = Array.isArray(incident.incident_dates) ? incident.incident_dates.length : 0;
   for (const correction of corrections) {
-    if (!CORRECTABLE_FIELDS.has(correction.field_name)) {
+    if (CORRECTABLE_FIELDS.has(correction.field_name)) continue;
+    const m = INCIDENT_DATES_FIELD_RE.exec(correction.field_name);
+    if (m === null) {
       throw new IngestError(`correction targets unknown/uncorrectable field_name ${correction.field_name}`);
+    }
+    const index = Number(m[1]);
+    const subfield = m[2];
+    if (!INCIDENT_DATES_SUBFIELDS.has(subfield)) {
+      throw new IngestError(`correction targets unknown incident_dates subfield ${subfield} in ${correction.field_name}`);
+    }
+    if (index >= incidentDatesLen) {
+      throw new IngestError(
+        `correction field_name ${correction.field_name} indexes incident_dates[${index}], but this ` +
+          `incident's incident_dates array has only ${incidentDatesLen} entries`
+      );
     }
   }
 }
@@ -119,7 +137,7 @@ export async function ingestReview(store: ArchiveStore, docDir: string, reviewJs
           "vocabulary for the document object; reject it instead to send the document back for re-extraction"
       );
     }
-    validateCorrections(review.corrections);
+    validateCorrections(review.corrections, incidents[incidentIndex]);
   }
 
   if (review.organization_review !== null && incidentIndex === null) {
