@@ -286,7 +286,6 @@ CREATE TABLE staging.staging_incident_review_flags (
         'Low extraction confidence', 'Unrecognized date term', 'Unable to determine organization type'
     )),
     field_name  text NOT NULL,
-    resolved_at timestamptz,
     created_at  timestamptz NOT NULL,
     CHECK (
         (staging_incident_id IS NOT NULL AND staging_organization_id IS NULL)

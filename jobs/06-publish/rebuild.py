@@ -432,7 +432,7 @@ def _process_organization(state: _RebuildState, staging_incident_id: str, final:
         state.review_flags.append((
             _hash(staging_organization_id, "Unable to determine organization type", "organization_type"),
             None, staging_organization_id, "Unable to determine organization type", "organization_type",
-            None, extracted_at,
+            extracted_at,
         ))
 
     organization_id = None
@@ -525,7 +525,7 @@ def _stage_one_incident(state: _RebuildState, doc_dir: str, artifact_id: str, un
     for flag_type, field_name in flags:
         state.review_flags.append((
             _hash(staging_incident_id, flag_type, field_name), staging_incident_id, None,
-            flag_type, field_name, None, extracted_at,
+            flag_type, field_name, extracted_at,
         ))
 
     for correction in corrections:
@@ -752,8 +752,8 @@ def _populate(cur, prefix: str, schools_csv: Path) -> dict:
     )
     cur.executemany(
         "INSERT INTO staging.staging_incident_review_flags "
-        "(flag_id, staging_incident_id, staging_organization_id, flag_type, field_name, resolved_at, created_at) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+        "(flag_id, staging_incident_id, staging_organization_id, flag_type, field_name, created_at) "
+        "VALUES (%s,%s,%s,%s,%s,%s)",
         state.review_flags,
     )
     cur.executemany(
