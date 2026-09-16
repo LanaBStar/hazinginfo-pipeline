@@ -49,3 +49,4 @@ def docx_to_text(content: bytes) -> str:
         runs = [node.text or "" for node in paragraph.iter(f"{_DOCX_BODY_NS}t")]
         paragraphs.append("".join(runs))
     return "\n".join(paragraphs).strip()
+
