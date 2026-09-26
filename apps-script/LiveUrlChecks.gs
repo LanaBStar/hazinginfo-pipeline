@@ -1991,14 +1991,17 @@ function lucRunSlice_(budgetMs) {
 // THE REVIEW-QUEUE EMAIL  (added 2026-09-26)
 // =========================================================================
 // Sent once, when a sweep finishes, and only when there is work. Counts,
-// not a list: the table is the list. Two kinds of work:
-//   - a link that is not Live and has no settled review (blank, or
-//     "Needs second opinion"), counted by Link status;
-//   - a link someone already reviewed whose page content has changed since
-//     ("⚠ page changed"), which may no longer be what was approved.
-// Only the three tracked fields the sweep checks are counted (see
+// not a list: the table is the list. Work = a link that is not Live and has
+// no settled review (blank, or "Needs second opinion"), counted by Link
+// status. Only the three tracked fields the sweep checks are counted (see
 // lucCheckedClause_); the retired located_* rows are not.
-const LUC_F_PAGE_CHANGED = 'flddLFe9aWRWW0Uz3';   // formula: "⚠ page changed"
+//
+// DELIBERATELY LEFT OUT: "Page changed since review". Acting on a content
+// change belongs to the content-change phase (target-state spec phase 3),
+// which is not built. Until it is, there is no clean way for a reviewer to
+// re-confirm an unchanged verdict -- the snapshot automation only fires
+// when the determination value changes -- so counting those rows here would
+// ask people for work they cannot properly record.
 const LUC_REVIEW_VIEW_URL =
   'https://airtable.com/appEvOdPi94MzZ6Db/tblgX19rRaysxSlNu/viwnFpM7grpz26dpi';
 const LUC_STATUS_ORDER = ['Dead link', 'Site error', 'Unconfirmed', 'Login required',
@@ -2014,55 +2017,36 @@ const LUC_STATUS_MEANING = {
 
 function lucEmailReviewQueue_(pat, state) {
   try {
-    const unsettled = 'OR({' + LUC_F_DETERMINATION + '} = "", {' + LUC_F_DETERMINATION +
-      '} = "Needs second opinion")';
-    const formula = 'AND(' + lucCheckedClause_() + ', OR(' +
-      'AND({' + LUC_F_STATUS + '} != "Live", {' + LUC_F_STATUS + '} != "", ' + unsettled + '), ' +
-      'AND({' + LUC_F_PAGE_CHANGED + '} != "", NOT(' + unsettled + '))))';
-    const rows = lucListAll_(pat, LUC_CHECKS_TABLE,
-      [LUC_F_STATUS, LUC_F_DETERMINATION, LUC_F_PAGE_CHANGED], formula);
+    const formula = 'AND(' + lucCheckedClause_() + ', ' +
+      '{' + LUC_F_STATUS + '} != "Live", {' + LUC_F_STATUS + '} != "", ' +
+      'OR({' + LUC_F_DETERMINATION + '} = "", {' + LUC_F_DETERMINATION +
+      '} = "Needs second opinion"))';
+    const rows = lucListAll_(pat, LUC_CHECKS_TABLE, [LUC_F_STATUS], formula);
 
     const byStatus = {};
-    let toReview = 0, changed = 0;
     rows.forEach(function (r) {
-      const f = r.fields || {};
-      const st = f[LUC_F_STATUS] || '';
-      const det = f[LUC_F_DETERMINATION] || '';
-      const settled = det && det !== 'Needs second opinion';
-      if (st && st !== 'Live' && !settled) {
-        byStatus[st] = (byStatus[st] || 0) + 1;
-        toReview++;
-      } else if (settled && f[LUC_F_PAGE_CHANGED]) {
-        changed++;
-      }
+      const st = (r.fields || {})[LUC_F_STATUS] || '';
+      if (st) byStatus[st] = (byStatus[st] || 0) + 1;
     });
+    const toReview = rows.length;
 
-    Logger.log('Review queue after the sweep: ' + toReview + ' link(s) to check, ' +
-      changed + ' reviewed page(s) changed since review.');
-    if (!toReview && !changed) {
+    Logger.log('Review queue after the sweep: ' + toReview + ' link(s) to check.');
+    if (!toReview) {
       Logger.log('Nothing needs a person -- no email sent.');
       return;
     }
 
     let body = '<p>The Live URL Checks sweep finished' +
       (state && state.finishedAt ? ' (' + state.finishedAt.slice(0, 10) + ')' : '') +
-      '. These need a person:</p>';
-    if (toReview) {
-      body += '<p><b>' + toReview + ' link(s) to check</b></p><ul>';
-      const seen = {};
-      LUC_STATUS_ORDER.concat(Object.keys(byStatus)).forEach(function (st) {
-        if (!byStatus[st] || seen[st]) return;
-        seen[st] = true;
-        body += '<li><b>' + st + ': ' + byStatus[st] + '</b>' +
-          (LUC_STATUS_MEANING[st] ? ' &mdash; ' + LUC_STATUS_MEANING[st] : '') + '</li>';
-      });
-      body += '</ul>';
-    }
-    if (changed) {
-      body += '<p><b>' + changed + ' reviewed page(s) changed since review</b> &mdash; ' +
-        'the content is different from what was approved. Filter on the ' +
-        '<b>&#9888; page changed</b> column.</p>';
-    }
+      '. <b>' + toReview + ' link(s) need checking:</b></p><ul>';
+    const seen = {};
+    LUC_STATUS_ORDER.concat(Object.keys(byStatus)).forEach(function (st) {
+      if (!byStatus[st] || seen[st]) return;
+      seen[st] = true;
+      body += '<li><b>' + st + ': ' + byStatus[st] + '</b>' +
+        (LUC_STATUS_MEANING[st] ? ' &mdash; ' + LUC_STATUS_MEANING[st] : '') + '</li>';
+    });
+    body += '</ul>';
     body += '<p><b>Where to check:</b> PAGES base &rarr; <b>Live URL Checks</b> table &rarr; ' +
       '<a href="' + LUC_REVIEW_VIEW_URL + '">Needs review</a> view. Open each link in a ' +
       'browser, then set <b>Reviewer determination</b>: <i>Working as-is</i>, ' +
@@ -2070,9 +2054,7 @@ function lucEmailReviewQueue_(pat, state) {
       'replacement found</i>. Write-back publishes Fixed and Confirmed broken to 50 States ' +
       'the next night.</p>';
 
-    lucNotify_('Live URL Checks: ' + (toReview ? toReview + ' link(s) to check' : '') +
-      (toReview && changed ? ', ' : '') +
-      (changed ? changed + ' changed since review' : ''), body);
+    lucNotify_('Live URL Checks: ' + toReview + ' link(s) to check', body);
   } catch (e) {
     // Never let the email take down the slice that finished the sweep.
     Logger.log('Review-queue email skipped: ' + e);
