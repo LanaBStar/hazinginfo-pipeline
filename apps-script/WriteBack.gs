@@ -179,6 +179,12 @@ const WB_C_URL           = 'fldJQVVn8G9xw004a';  // formula: the reviewed addres
 const WB_C_DETERMINATION = 'fld2QJ1NPuP2hvHzx';
 const WB_C_PROPOSED_URL  = 'fld4T5J23Tqm2rj9m';
 const WB_C_NOTES         = 'fldUWo0jlZFkRw2Yl';
+// The URL AS THE REVIEWER SAW IT, frozen by the Live URL Checks snapshot
+// automation when the determination was set. WB_C_URL above is a formula
+// over the CURRENT 50 States value, so it can never show that the page
+// changed after the review; this field can. Added 2026-09-26 -- see the
+// staleness guard in wbPlan_.
+const WB_C_SNAP_URL      = 'fldVmX5yeRqTZuqDX';
 
 // ---- 50 States fields ----------------------------------------------------
 const WB_S_UNITID      = 'fldSOdX8KWnxZ3wFv';
@@ -331,7 +337,7 @@ function wbRun_(dryRun) {
 
     const rows = wbListAll_(pat, WB_PAGES_BASE, WB_CHECKS_TABLE,
       [WB_C_UNITID, WB_C_TRACKED, WB_C_URL, WB_C_DETERMINATION,
-       WB_C_PROPOSED_URL, WB_C_NOTES], formula);
+       WB_C_PROPOSED_URL, WB_C_NOTES, WB_C_SNAP_URL], formula);
 
     Logger.log('Settled reviews found: ' + rows.length);
     if (!rows.length) {
@@ -567,6 +573,41 @@ function wbPlan_(row, byUnitid) {
     base.reason = 'the published URL has changed since the review (reviewed "' +
       reviewedUrl + '", now "' + currentSibling + '") -- needs re-review, not write-back';
     return base;
+  }
+
+  // THE REVIEW-TIME GUARD (added 2026-09-26). The guard above cannot fire in
+  // practice: WB_C_URL is a formula over the CURRENT published value, so
+  // "reviewed" and "current" are the same value read twice. A settled review
+  // therefore kept acting on whatever address later replaced the one the
+  // reviewer judged -- including a newer, working one put there by Promote
+  // or by hand. Found on 2026-09-26 in a dry run: Concordia Irvine (Hazing
+  // Policy) and George Fox (CHTR) were both marked "Confirmed broken" against
+  // an older address, and write-back planned to clear the NEWER, different
+  // page and remove both checkmarks.
+  //
+  // The fix compares against the snapshot of the address taken when the
+  // review was made. Three cases:
+  //   already applied   the field already holds what this review would
+  //                     write -- fall through to the no-op test below.
+  //   unchanged         the field still holds the address the reviewer saw
+  //                     -- act on the review.
+  //   anything else     the page changed after the review, or there is no
+  //                     snapshot to tell -- skip and ask for a re-review.
+  //                     The next Live URL Checks sweep clears the stale
+  //                     review on its own; nothing here is lost.
+  const snapUrl = String(row.fields[WB_C_SNAP_URL] || '').trim();
+  if (reviewedUrl !== value) {
+    if (!snapUrl) {
+      base.reason = 'no snapshot of the address the reviewer saw, so it cannot tell whether ' +
+        'the published URL (now "' + reviewedUrl + '") changed after the review -- ' +
+        'needs re-review, not write-back';
+      return base;
+    }
+    if (reviewedUrl !== snapUrl) {
+      base.reason = 'the published URL changed after the review (reviewed "' + snapUrl +
+        '", now "' + reviewedUrl + '") -- needs re-review, not write-back';
+      return base;
+    }
   }
 
   // Build exactly what will be sent, then test THAT for a no-op. Testing the
