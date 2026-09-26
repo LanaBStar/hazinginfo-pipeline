@@ -367,10 +367,20 @@ function wbRun_(dryRun) {
     const ops = [];
     const skips = [];
 
+    // APPLY ONCE (added 2026-09-26). A review already applied is not read
+    // again, so a later correction in 50 States is never overwritten by an old
+    // decision. See WB_APPLIED_PREFIX.
+    const applied = wbLoadApplied_();
+    let alreadyOnce = 0;
     rows.forEach(function (row) {
+      if (applied[row.id] && applied[row.id] === wbFingerprint_(row)) {
+        alreadyOnce++;
+        return;
+      }
       const op = wbPlan_(row, byUnitid);
       if (op.skip) skips.push(op); else ops.push(op);
     });
+    Logger.log('Reviews already applied once, not re-read: ' + alreadyOnce);
 
     // ---- 4. merge per institution -------------------------------------
     // See the header: Airtable rejects a payload naming one record twice,
@@ -450,7 +460,8 @@ function wbRun_(dryRun) {
 
     if (dryRun) {
       Logger.log('');
-      Logger.log('DRY RUN -- nothing written. Run wbApplyForReal() to apply.');
+      Logger.log('DRY RUN -- nothing written, and the applied-reviews record was not ' +
+        'changed. Run wbApplyForReal() to apply.');
       return { dryRun: true, rows: rows.length, institutions: targets.length,
                skipped: skips.length, newCheckmarks: newCheckmarks,
                clearedCheckmarks: lostCheckmarks };
@@ -482,6 +493,32 @@ function wbRun_(dryRun) {
     Logger.log('');
     Logger.log('WROTE ' + written + ' institution(s).' +
       (failed.length ? ' ' + failed.length + ' failed.' : ''));
+
+    // ---- 7. record what is now applied ---------------------------------
+    // A review counts as applied when its write landed, or when 50 States
+    // already held its outcome. Skips for any other reason (changed since
+    // the review, a field held a different page, a refusal) are NOT recorded:
+    // they stay live until a person re-reviews or Live URL Checks clears them.
+    // Entries for reviews that no longer exist are dropped, so the record
+    // never holds more than today's settled reviews.
+    const failedUnitids = {};
+    failed.forEach(function (f) { failedUnitids[f.unitid] = true; });
+    const byRowId = {};
+    rows.forEach(function (r) { byRowId[r.id] = r; });
+    const next = {};
+    Object.keys(applied).forEach(function (id) {
+      if (byRowId[id] && applied[id] === wbFingerprint_(byRowId[id])) next[id] = applied[id];
+    });
+    ops.forEach(function (op) {
+      if (!failedUnitids[op.unitid]) next[op.rowId] = wbFingerprint_(byRowId[op.rowId]);
+    });
+    skips.forEach(function (sk) {
+      if (sk.rowId && sk.reason === 'already applied, nothing to change') {
+        next[sk.rowId] = wbFingerprint_(byRowId[sk.rowId]);
+      }
+    });
+    wbSaveApplied_(next);
+    Logger.log('Applied-reviews record: ' + Object.keys(next).length + ' review(s).');
     Logger.log('The next liveness sweep will see the changed URLs, clear these ' +
       'determinations against the new pages, and return them for re-review. ' +
       'That is intended -- see the header.');
@@ -508,7 +545,7 @@ function wbPlan_(row, byUnitid) {
   const proposed    = String(row.fields[WB_C_PROPOSED_URL] || '').trim();
   const reviewedUrl = String(row.fields[WB_C_URL] || '').trim();
 
-  const base = { unitid: unitid, trackedName: trackedName, skip: true };
+  const base = { unitid: unitid, trackedName: trackedName, skip: true, rowId: row.id };
 
   const category = WB_CATEGORIES[trackedName];
   if (!category) {
@@ -617,18 +654,40 @@ function wbPlan_(row, byUnitid) {
   fields[category.sibling] = value;
   if (writesLocated) fields[category.located] = value;
 
+  // THE FIELD-LEVEL GUARD (added 2026-09-26). A review is about ONE page: the
+  // address the reviewer saw (the snapshot). Each field is changed only if it
+  // holds that exact page now, or already holds the target value. Anything
+  // else is left alone. Found on 2026-09-26: Richmond's review judged
+  // org-conduct.html, but the published field was already blank, so the run
+  // went on to clear the record field (located_*) -- which held a DIFFERENT,
+  // live page (hazing-prevention.html). The guard above only ever looked at
+  // the published field.
+  const heldBack = [];
+  for (const f in fields) {
+    const current = String(target.fields[f] || '').trim();
+    if (current === fields[f]) continue;                 // already there
+    if (snapUrl && current === snapUrl) continue;        // the reviewed page
+    heldBack.push(f === category.sibling ? 'published' : 'located_*');
+    delete fields[f];
+  }
+  if (!(category.located in fields)) writesLocated = false;
+
   let changes = false;
   for (const f in fields) {
     const current = String(target.fields[f] || '').trim();
     if (current !== fields[f]) { changes = true; break; }
   }
   if (!changes) {
-    base.reason = 'already applied, nothing to change';
+    base.reason = heldBack.length
+      ? 'left alone: the ' + heldBack.join(' and ') + ' field holds a different page from ' +
+        'the one reviewed ("' + (snapUrl || '(no snapshot)') + '") -- needs re-review, not write-back'
+      : 'already applied, nothing to change';
     return base;
   }
 
   return {
     skip: false,
+    rowId: row.id,
     unitid: unitid,
     institution: String(target.fields[WB_S_INSTITUTION] || '(unnamed)'),
     recordId: target.id,
@@ -641,6 +700,93 @@ function wbPlan_(row, byUnitid) {
     value: value,
     action: action
   };
+}
+
+
+// =========================================================================
+// APPLY ONCE: THE APPLIED-REVIEWS RECORD  (added 2026-09-26)
+// =========================================================================
+// Write-back used to re-read every settled review each night and re-apply
+// any whose page was still there. So a later correction in 50 States -- by
+// hand, or by Promote -- was undone by a months-old decision (Richmond,
+// 2026-09-26). Now each review is applied once and remembered here.
+//
+// WHAT IS REMEMBERED: row id -> a short fingerprint of the review (the
+// determination, the page the reviewer saw, the proposed URL). A changed
+// decision or a re-review against a different page has a different
+// fingerprint and applies again. When Live URL Checks clears a stale review,
+// the row drops out of the settled set and its entry is pruned on the next
+// real run -- so this never outgrows today's settled reviews (15 on
+// 2026-09-26). Stored in Script Properties, split across keys of under 8 KB.
+//
+// IF THE PROJECT IS EVER COPIED, copy the wb_applied_* properties too, or run
+// wbMarkAllApplied() once in the new copy before the first real run.
+const WB_APPLIED_PREFIX = 'wb_applied_';
+const WB_APPLIED_CHUNK  = 8000;   // characters per property; the limit is 9 KB
+
+function wbFingerprint_(row) {
+  const f = (row && row.fields) || {};
+  const raw = [f[WB_C_DETERMINATION] || '', String(f[WB_C_SNAP_URL] || '').trim(),
+               String(f[WB_C_PROPOSED_URL] || '').trim()].join('|');
+  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, raw,
+                                        Utilities.Charset.UTF_8);
+  return Utilities.base64EncodeWebSafe(bytes).slice(0, 12);
+}
+
+function wbLoadApplied_() {
+  const all = PropertiesService.getScriptProperties().getProperties();
+  const keys = Object.keys(all).filter(function (k) { return k.indexOf(WB_APPLIED_PREFIX) === 0; })
+    .sort(function (a, b) {
+      return Number(a.slice(WB_APPLIED_PREFIX.length)) - Number(b.slice(WB_APPLIED_PREFIX.length));
+    });
+  if (!keys.length) return {};
+  try {
+    return JSON.parse(keys.map(function (k) { return all[k]; }).join('')) || {};
+  } catch (e) {
+    // A damaged record must not be read as "nothing applied" silently: that
+    // would re-apply every old review. Stop and say so.
+    throw new Error('The applied-reviews record (' + WB_APPLIED_PREFIX + '*) could not be read: ' +
+      e + '. Run wbMarkAllApplied() to rebuild it, then re-run.');
+  }
+}
+
+function wbSaveApplied_(map) {
+  const props = PropertiesService.getScriptProperties();
+  const text = JSON.stringify(map);
+  const chunks = [];
+  for (let i = 0; i < text.length; i += WB_APPLIED_CHUNK) {
+    chunks.push(text.slice(i, i + WB_APPLIED_CHUNK));
+  }
+  const values = {};
+  chunks.forEach(function (c, n) { values[WB_APPLIED_PREFIX + n] = c; });
+  props.setProperties(values, false);
+  // Remove leftover chunks from a longer, older record.
+  Object.keys(props.getProperties()).forEach(function (k) {
+    if (k.indexOf(WB_APPLIED_PREFIX) === 0 &&
+        Number(k.slice(WB_APPLIED_PREFIX.length)) >= chunks.length) {
+      props.deleteProperty(k);
+    }
+  });
+}
+
+/**
+ * ONE-TIME BASELINE. Marks every review that is settled today as already
+ * applied, WITHOUT writing anything to 50 States. Run once in a new project,
+ * or if the record is ever lost, before the first real run -- so no old
+ * decision fires again. Safe to re-run.
+ */
+function wbMarkAllApplied() {
+  const pat = wbRequirePat_();
+  const formula = 'OR({' + WB_C_DETERMINATION + '} = "' + WB_DET_FIXED + '", ' +
+                  '{' + WB_C_DETERMINATION + '} = "' + WB_DET_BROKEN + '")';
+  const rows = wbListAll_(pat, WB_PAGES_BASE, WB_CHECKS_TABLE,
+    [WB_C_DETERMINATION, WB_C_PROPOSED_URL, WB_C_SNAP_URL], formula);
+  const map = {};
+  rows.forEach(function (r) { map[r.id] = wbFingerprint_(r); });
+  wbSaveApplied_(map);
+  Logger.log('Baseline recorded: ' + rows.length + ' settled review(s) marked as already ' +
+    'applied. Nothing was written to 50 States.');
+  return { marked: rows.length };
 }
 
 
