@@ -198,10 +198,15 @@
 //                                 the run report says which
 //   (blank)                    -> never in scope for promotion
 //
-// The status is a record of OUTCOME, not a gate. This script does not skip a
-// row because it is already Promoted -- it recomputes what the row should
-// produce and compares that against what 50 States holds. That is what makes
-// a re-run safe, and what makes a later reviewer edit take effect.
+// SINCE 2026-09-26 THE STATUS IS ALSO A GATE: once a row is Promoted it is
+// left alone (PR_SKIP_PROMOTED). Before that, every run recomputed every
+// Accept/Hold row and rewrote 50 States to match, which reverted any later
+// correction made in 50 States -- by hand, or by WriteBack.gs clearing a
+// dead link (found in a dry run: Concordia Irvine's dead policy link would
+// have been cleared at 1am by write-back and republished at 2am by this).
+// Rows that are new, skipped, refused or failed are still re-checked every
+// run. TO RE-PUBLISH A ROW AFTER CHANGING ITS DECISION, CLEAR ITS Promote
+// status; the next run treats it as new.
 //
 // -------------------------------------------------------------------------
 // BUILT TO RUN UNATTENDED, BUT NOT YET SCHEDULED
@@ -499,6 +504,15 @@ const PR_CONTRADICTIONS = {
  */
 const PR_EMAIL_TO       = '';
 const PR_EMAIL_ON_APPLY = true;
+// Mail only when a run changed something: a school written, a write that
+// failed, or a Candidate row whose status/note/flag changed (a new refusal or
+// flag included). A night with nothing new sends nothing. Added 2026-09-26
+// for the nightly trigger. Applies to both passes.
+
+// Once Promoted, a row is not read again. See the header ("SINCE 2026-09-26
+// THE STATUS IS ALSO A GATE"). Set false only to force one full re-apply of
+// every Accept/Hold row -- which will revert corrections made in 50 States.
+const PR_SKIP_PROMOTED = true;
 
 /**
  * THE CATEGORY MAP.
@@ -691,8 +705,11 @@ function prRun_(dryRun) {
     // TWO VALUES. Accept publishes record and compliance; Hold publishes the
     // record field only. Everything else on the field -- Reject, Needs second
     // opinion, Duplicate -- writes nothing and is not fetched at all.
-    const formula = 'OR({' + PR_C_DETERMINATION + '} = "' + PR_DET_ACCEPT + '", ' +
+    const decided = 'OR({' + PR_C_DETERMINATION + '} = "' + PR_DET_ACCEPT + '", ' +
                     '{' + PR_C_DETERMINATION + '} = "' + PR_DET_HOLD + '")';
+    const formula = PR_SKIP_PROMOTED
+      ? 'AND(' + decided + ', {' + PR_C_PROMOTE_STATUS + '} != "' + PR_STATUS_PROMOTED + '")'
+      : decided;
 
     const rows = prListAll_(pat, PR_PAGES_BASE, PR_CAND_TABLE,
       [PR_C_UNITID, PR_C_CATEGORY, PR_C_CANDIDATE_URL, PR_C_PROPOSED_URL,
@@ -703,11 +720,12 @@ function prRun_(dryRun) {
        PR_CATEGORIES['Report Form'].source],
       formula);
 
-    Logger.log('Promotable rows found: ' + rows.length);
+    Logger.log('Promotable rows found: ' + rows.length +
+      (PR_SKIP_PROMOTED ? ' (rows already Promoted are not read)' : ''));
     if (!rows.length) {
-      Logger.log('Nothing to do. If this is a surprise, check that the two ' +
-        'determination names in PR_DET_ACCEPT / PR_DET_HOLD still match the ' +
-        'Airtable single-select exactly.');
+      Logger.log('Nothing new to promote.' + (PR_SKIP_PROMOTED ? '' :
+        ' If this is a surprise, check that the two determination names in ' +
+        'PR_DET_ACCEPT / PR_DET_HOLD still match the Airtable single-select exactly.'));
       return { rows: 0, written: 0 };
     }
 
@@ -1060,7 +1078,7 @@ function prRun_(dryRun) {
     //
     // Wrapped, because a mail quota or a bad address must not turn a
     // successful promotion into a run that looks like it failed.
-    if (PR_EMAIL_ON_APPLY) {
+    if (PR_EMAIL_ON_APPLY && (written || failedCount || stamped)) {
       try {
         prEmail_({
           started: started, written: written, failedCount: failedCount,
@@ -2593,7 +2611,7 @@ function prHcRun_(dryRun) {
       willWrite: willWrite, stamped: stamped, started: started
     };
 
-    if (PR_EMAIL_ON_APPLY) prHcEmail_(result);
+    if (PR_EMAIL_ON_APPLY && (written || failedCount || stamped)) prHcEmail_(result);
     return result;
 
   } finally {
