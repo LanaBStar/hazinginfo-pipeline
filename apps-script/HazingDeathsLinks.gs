@@ -581,7 +581,8 @@ function hdlWorkLocked_(opts) {
   const names = hdlVictimNames_(pat);
 
   const pending = [];      // Airtable updates waiting to be flushed
-  const newlyBroken = [];  // sources that changed INTO a broken state
+  const newlyNeeds = [];   // sources that newly need a person (see the email section)
+  const finalState = {};   // id -> { status, muted } after this run, for the outstanding count
   const lines = [];        // dry-run detail
   let examined = 0, written = 0, remaining = 0;
   let setAside = 0, titlesAdded = 0, unmuted = 0, promoted = 0;
@@ -624,6 +625,10 @@ function hdlWorkLocked_(opts) {
         f[HDL_F_CHECKED] = today;
         pending.push({ id: row.id, fields: f });
         setAside++;
+        finalState[row.id] = { status: HDL_ST_UNVERIF, muted: row.muted };
+        if (!row.muted && row.status !== HDL_ST_UNVERIF) {
+          newlyNeeds.push({ type: 'Set aside (host never replies)', first: !row.status });
+        }
         delete attempts[row.id];
         hdlSaveAttempts_(attempts);
         while (pending.length) { hdlFlush_(pat, pending.splice(0, HDL_WRITE_BATCH)); }
@@ -662,13 +667,22 @@ function hdlWorkLocked_(opts) {
       titlesAdded++;
     }
 
-    // THE MUTE IS NOT A BLINDFOLD. A muted source that starts answering 404
-    // or 410 is a different finding from the refusal it was muted for, so the
-    // mute is cleared and it reappears in the review view.
-    if (row.muted && res.hardDead) {
+    // THE MUTE COVERS ONE PROBLEM, NOT THE SOURCE (widened 2026-09-26).
+    // Ticking Muted says "a person checked this result and it is fine". It
+    // stays ticked only while the check keeps finding the SAME problem: the
+    // same Link status and the same kind of error (the part of Status detail
+    // before " - ", so "Blocked - 403" and "Blocked - 401" are one kind, but
+    // "Blocked" then "Dead link" are two). Anything else -- a different
+    // error, the page coming back, or a new address in URL -- clears the mute
+    // so the source is judged afresh. This replaces the narrower 404/410-only
+    // rule, which it includes.
+    const sameProblem = status === row.status &&
+      hdlErrorType_(res.ok ? '' : res.label) === hdlErrorType_(row.detail);
+    if (row.muted && !sameProblem) {
       f[HDL_F_MUTED] = false;
       unmuted++;
     }
+    const mutedAfter = row.muted && sameProblem;
 
     // OPTIONAL, OFF BY DEFAULT. See HDL_AUTO_ARCHIVE_SWAP.
     if (HDL_AUTO_ARCHIVE_SWAP && res.hardDead && row.archive && !row.original) {
@@ -687,21 +701,17 @@ function hdlWorkLocked_(opts) {
     pending.push({ id: row.id, fields: f });
     written++;
 
-    // NOTIFY ON A CHANGE INTO A BROKEN STATE, not on every sweep. A link dead
-    // last month and dead this month is not news, and a checker that mails
-    // the same list every run stops being read. A source checked for the
-    // first time counts as a change, because its previous state was "nobody
-    // had looked".
-    if (status === HDL_ST_BROKEN && row.status !== HDL_ST_BROKEN) {
-      newlyBroken.push({
-        name: hdlNameFor_(row, names),
-        title: row.title || res.title || '',
-        url: row.url,
-        first: !row.status,
-        muted: !!row.muted,
-        label: res.label
-      });
+    // NEEDS A PERSON, NEWLY (2026-09-26). A source needs a person when it is
+    // Broken or Unverifiable and not muted. It is reported once, on the run
+    // where that starts -- not again every month while it waits. "Starts"
+    // includes a mute being cleared because the problem changed.
+    const needsCheck = (status === HDL_ST_BROKEN || status === HDL_ST_UNVERIF) && !mutedAfter;
+    const wasWaiting = (row.status === HDL_ST_BROKEN || row.status === HDL_ST_UNVERIF) &&
+      !row.muted && sameProblem;
+    if (needsCheck && !wasWaiting) {
+      newlyNeeds.push({ type: hdlErrorType_(res.label) || status, first: !row.status });
     }
+    finalState[row.id] = { status: status, muted: mutedAfter };
 
     // WRITE NOW. A result is only durable once it reaches Airtable, and the
     // six-minute cap kills the execution outright -- no catch block, no
@@ -742,7 +752,7 @@ function hdlWorkLocked_(opts) {
     (done ? 'FINISHED -- nothing left due. ' : 'Time budget reached. ') +
     'This run: ' + written + ' source(s) checked.\n' +
     '  titles filled in: ' + titlesAdded + '\n' +
-    (unmuted ? '  mutes cleared (source now returns a hard dead link): ' + unmuted + '\n' : '') +
+    (unmuted ? '  mutes cleared (the result changed since it was muted): ' + unmuted + '\n' : '') +
     (promoted ? '  archived copies promoted into URL: ' + promoted + '\n' : '') +
     // NEVER SILENT. Setting a source aside is the script giving up on it, and
     // that has to be visible beside the ordinary counts -- an invisible
@@ -752,15 +762,24 @@ function hdlWorkLocked_(opts) {
         'runs. Filter Link status = Unverifiable and read Status detail.\n'
       : '') +
     (remaining ? remaining + ' source(s) still due. Run hdlRun() again to continue.\n' : '') +
-    'Newly broken this run: ' + newlyBroken.length + '\n' +
+    'Newly needing a person this run: ' + newlyNeeds.length + '\n' +
     'Sources are re-checked when Last checked is more than ' +
     HDL_RECHECK_DAYS + ' days old.\n'
   );
 
-  if (newlyBroken.length) hdlEmail_(newlyBroken);
+  // Everything waiting for a person after this run, whether new or not.
+  let outstanding = 0;
+  all.forEach(function (r) {
+    if (!r.url) return;
+    const st = finalState[r.id] || { status: r.status, muted: r.muted };
+    if ((st.status === HDL_ST_BROKEN || st.status === HDL_ST_UNVERIF) && !st.muted) outstanding++;
+  });
+  Logger.log('Waiting for a person in total: ' + outstanding);
+
+  if (newlyNeeds.length) hdlEmail_(newlyNeeds, outstanding);
 
   return { done: done, checked: written, titles: titlesAdded,
-           newlyBroken: newlyBroken.length, remaining: remaining };
+           newlyNeeds: newlyNeeds.length, outstanding: outstanding, remaining: remaining };
 }
 
 /** One result to one Link status value. */
@@ -779,8 +798,9 @@ function hdlDescribe_(row, names, res, status) {
     s += '           title: ' + res.title.slice(0, 110) +
          (row.title ? '   (NOT written -- Title already filled)' : '') + '\n';
   }
-  if (row.muted && res.hardDead) {
-    s += '           WOULD CLEAR THE MUTE -- this source now returns a hard dead link\n';
+  if (row.muted && !(status === row.status &&
+      hdlErrorType_(res.ok ? '' : res.label) === hdlErrorType_(row.detail))) {
+    s += '           WOULD CLEAR THE MUTE -- the result is not the problem it was muted for\n';
   }
   if (HDL_AUTO_ARCHIVE_SWAP && res.hardDead && row.archive && !row.original) {
     s += '           WOULD PROMOTE the archived copy into URL\n';
@@ -1699,52 +1719,34 @@ function hdlFlush_(pat, rows) {
 // =========================================================================
 
 /**
- * One digest per run, listing only sources that CHANGED into a broken state.
- *
- * Never a full inventory of everything broken: that list barely moves between
- * runs, and a mail that says the same thing every month is a mail nobody
- * opens. The table itself is the inventory.
+ * One short email per run, and only when a source NEWLY needs a person
+ * (rewritten 2026-09-26). Counts by kind of error, the total still waiting,
+ * and where to go -- not a list of links: the table is the list.
  */
-function hdlEmail_(rows) {
-  const shown = rows.slice(0, HDL_EMAIL_MAX_ROWS);
+function hdlEmail_(rows, outstanding) {
+  const byType = {};
+  rows.forEach(function (r) { byType[r.type] = (byType[r.type] || 0) + 1; });
   const firstEver = rows.filter(function (r) { return r.first; }).length;
-  const wasMuted  = rows.filter(function (r) { return r.muted; }).length;
 
-  let body = '<p>' + rows.length + ' source(s) in <b>Hazing Death Sources</b> ' +
-    'stopped resolving.</p>';
-
-  if (firstEver) {
-    body += '<p style="background:#fef3c7;border:1px solid #fcd34d;padding:10px;' +
-      'border-radius:6px">' + firstEver + ' of these were being checked for the ' +
-      '<b>first time</b>, so this is an initial finding rather than a change.</p>';
-  }
-  if (wasMuted) {
-    body += '<p style="background:#fee2e2;border:1px solid #fca5a5;padding:10px;' +
-      'border-radius:6px">' + wasMuted + ' of these were <b>muted</b> and have had the ' +
-      'mute cleared, because the page now returns a hard dead link rather than the ' +
-      'refusal it was muted for.</p>';
-  }
-
-  body += '<p>Open <b>Status detail</b> on each row for what happened. A ' +
-    '<i>Blocked</i> result usually means the site refuses automated requests and the ' +
-    'page opens fine in a browser &mdash; check by hand, and tick <b>Muted</b> rather ' +
-    'than hunting for a replacement.</p><hr>';
-
-  shown.forEach(function (r) {
-    body += '<p><b>' + hdlEsc_(r.name) + '</b>' +
-      (r.title ? ' &mdash; ' + hdlEsc_(r.title) : '') +
-      (r.first ? ' <i>(first check)</i>' : '') +
-      (r.muted ? ' <i>(mute cleared)</i>' : '') +
-      '</p><pre style="font-size:12px;white-space:pre-wrap">' +
-      hdlEsc_(r.url) + '\n' + hdlEsc_(r.label) + '</pre>';
+  let body = '<p><b>' + rows.length + ' hazing-death news source(s) newly need checking.</b></p><ul>';
+  Object.keys(byType).sort().forEach(function (t) {
+    body += '<li>' + hdlEsc_(t) + ': ' + byType[t] + '</li>';
   });
-
-  if (rows.length > shown.length) {
-    body += '<p><i>and ' + (rows.length - shown.length) + ' more. Filter Hazing Death ' +
-      'Sources on Link status to see them all.</i></p>';
+  body += '</ul>';
+  if (firstEver) {
+    body += '<p>' + firstEver + ' of these were checked for the first time.</p>';
   }
+  body += '<p>Waiting for a person in total (including earlier ones): <b>' +
+    outstanding + '</b>.</p>';
+  body += '<p><b>Where to check:</b> 50 States base &rarr; <b>U.S. Hazing Death Sources</b> ' +
+    'table (<a href="https://airtable.com/' + HDL_BASE_ID + '/' + HDL_TABLE_ID + '">open it</a>). ' +
+    'Filter <b>Link status</b> is Broken or Unverifiable and <b>Muted</b> is unticked. ' +
+    'Open each link in a browser and read <b>Status detail</b>:</p><ul>' +
+    '<li>Opens fine (common for <i>Blocked</i>: the site refuses robots) &rarr; tick ' +
+    '<b>Muted</b>. It stays quiet while the check keeps finding the same problem.</li>' +
+    '<li>Really gone &rarr; replace the URL (or use the archived copy).</li></ul>';
 
-  hdlNotify_('Hazing death sources: ' + rows.length + ' newly broken', body);
+  hdlNotify_('Hazing death sources: ' + rows.length + ' need checking', body);
 }
 
 function hdlNotify_(subject, htmlBody) {
@@ -1764,6 +1766,17 @@ function hdlNotify_(subject, htmlBody) {
     // convenience.
     Logger.log('Could not send notification email: ' + e);
   }
+}
+
+/**
+ * The kind of error, for deciding whether a muted source still has the SAME
+ * problem: the part of a result label before " - " ("Blocked", "Dead link",
+ * "Site error", "No response" ...). Empty for a working page.
+ */
+function hdlErrorType_(label) {
+  const s = String(label || '').trim();
+  if (!s || s.indexOf('Working') === 0) return '';
+  return s.split(' - ')[0].trim().slice(0, 60);
 }
 
 function hdlEsc_(s) {
