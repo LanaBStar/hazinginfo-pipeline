@@ -270,16 +270,18 @@ const HDL_TITLE_SANITY_MAX = 8000000;
  * the snapshot INTO the checked field -- today an archived copy is never
  * checked at all, and Wayback snapshots do occasionally fail.
  *
- * WHY IT IS OFF. It changes what the public page links to, without anyone
- * looking. Turn it on deliberately, after watching a sweep or two, and
- * re-read the counts in hdlStatus() afterwards.
+ * TURNED ON 2026-09-26 (Lana). It changes what the public page links to
+ * without anyone looking, but only on the clearest evidence (below), and
+ * Original URL keeps the dead address, so every swap stays visible: a row
+ * with Original URL filled in has been switched. Each run's email reports
+ * how many were swapped.
  *
  * IT NEVER TOUCHES A SOURCE THAT IS MERELY BLOCKED. A 403 from a site that
  * refuses robots is a page that opens perfectly well for a human -- sending
  * a reader to an archived copy of a live article is a downgrade. Only 404
  * and 410 qualify.
  */
-const HDL_AUTO_ARCHIVE_SWAP = false;
+const HDL_AUTO_ARCHIVE_SWAP = true;
 
 // ---- Notification --------------------------------------------------------
 // Set NOTIFY_EMAIL in Script Properties to send elsewhere; otherwise the
@@ -583,6 +585,7 @@ function hdlWorkLocked_(opts) {
   const pending = [];      // Airtable updates waiting to be flushed
   const newlyNeeds = [];   // sources that newly need a person (see the email section)
   const finalState = {};   // id -> { status, muted } after this run, for the outstanding count
+  let swappedCount = 0;    // dead addresses replaced by their archived copy this run
   const lines = [];        // dry-run detail
   let examined = 0, written = 0, remaining = 0;
   let setAside = 0, titlesAdded = 0, unmuted = 0, promoted = 0;
@@ -684,8 +687,11 @@ function hdlWorkLocked_(opts) {
     }
     const mutedAfter = row.muted && sameProblem;
 
-    // OPTIONAL, OFF BY DEFAULT. See HDL_AUTO_ARCHIVE_SWAP.
+    // See HDL_AUTO_ARCHIVE_SWAP (on since 2026-09-26).
+    let swapped = false;
     if (HDL_AUTO_ARCHIVE_SWAP && res.hardDead && row.archive && !row.original) {
+      swapped = true;
+      swappedCount++;
       f[HDL_F_ORIGINAL] = row.url;
       f[HDL_F_URL]      = row.archive;
       // The swapped-in address has not been checked yet, and saying it is
@@ -705,13 +711,16 @@ function hdlWorkLocked_(opts) {
     // Broken or Unverifiable and not muted. It is reported once, on the run
     // where that starts -- not again every month while it waits. "Starts"
     // includes a mute being cleared because the problem changed.
-    const needsCheck = (status === HDL_ST_BROKEN || status === HDL_ST_UNVERIF) && !mutedAfter;
+    // A swapped source is not waiting for a person: the archived copy is now
+    // in URL and is checked on the next run like anything else.
+    const needsCheck = !swapped &&
+      (status === HDL_ST_BROKEN || status === HDL_ST_UNVERIF) && !mutedAfter;
     const wasWaiting = (row.status === HDL_ST_BROKEN || row.status === HDL_ST_UNVERIF) &&
       !row.muted && sameProblem;
     if (needsCheck && !wasWaiting) {
       newlyNeeds.push({ type: hdlErrorType_(res.label) || status, first: !row.status });
     }
-    finalState[row.id] = { status: status, muted: mutedAfter };
+    finalState[row.id] = { status: swapped ? HDL_ST_NONE : status, muted: mutedAfter };
 
     // WRITE NOW. A result is only durable once it reaches Airtable, and the
     // six-minute cap kills the execution outright -- no catch block, no
@@ -774,9 +783,24 @@ function hdlWorkLocked_(opts) {
     const st = finalState[r.id] || { status: r.status, muted: r.muted };
     if ((st.status === HDL_ST_BROKEN || st.status === HDL_ST_UNVERIF) && !st.muted) outstanding++;
   });
-  Logger.log('Waiting for a person in total: ' + outstanding);
+  // Working sources with no archived copy yet. Apps Script cannot create a
+  // Wayback snapshot (Save Page Now does not answer it), so a person makes
+  // one at web.archive.org/save while the page still works, and the archive
+  // lookup pass (hdlFindArchives) records it. Some sites cannot be archived
+  // at all, so this is a count to act on where possible, never a queue.
+  let liveNoArchive = 0;
+  all.forEach(function (r) {
+    if (!r.url || r.archive) return;
+    const st = finalState[r.id] || { status: r.status };
+    if (st.status === HDL_ST_LIVE) liveNoArchive++;
+  });
+  Logger.log('Waiting for a person in total: ' + outstanding +
+    ' | swapped to archived copy this run: ' + swappedCount +
+    ' | working sources with no archived copy: ' + liveNoArchive);
 
-  if (newlyNeeds.length) hdlEmail_(newlyNeeds, outstanding);
+  if (newlyNeeds.length || swappedCount) {
+    hdlEmail_(newlyNeeds, outstanding, swappedCount, liveNoArchive);
+  }
 
   return { done: done, checked: written, titles: titlesAdded,
            newlyNeeds: newlyNeeds.length, outstanding: outstanding, remaining: remaining };
@@ -1719,34 +1743,61 @@ function hdlFlush_(pat, rows) {
 // =========================================================================
 
 /**
- * One short email per run, and only when a source NEWLY needs a person
- * (rewritten 2026-09-26). Counts by kind of error, the total still waiting,
- * and where to go -- not a list of links: the table is the list.
+ * One short email per run, only when a source NEWLY needs a person or a dead
+ * address was swapped for its archived copy (2026-09-26). Counts, the total
+ * still waiting, and where to go -- not a list of links: the table is the
+ * list. A source is reported once, on the run it starts waiting, not again.
  */
-function hdlEmail_(rows, outstanding) {
-  const byType = {};
-  rows.forEach(function (r) { byType[r.type] = (byType[r.type] || 0) + 1; });
-  const firstEver = rows.filter(function (r) { return r.first; }).length;
+function hdlEmail_(rows, outstanding, swappedCount, liveNoArchive) {
+  const table = 'https://airtable.com/' + HDL_BASE_ID + '/' + HDL_TABLE_ID;
+  let body = '';
 
-  let body = '<p><b>' + rows.length + ' hazing-death news source(s) newly need checking.</b></p><ul>';
-  Object.keys(byType).sort().forEach(function (t) {
-    body += '<li>' + hdlEsc_(t) + ': ' + byType[t] + '</li>';
-  });
-  body += '</ul>';
-  if (firstEver) {
-    body += '<p>' + firstEver + ' of these were checked for the first time.</p>';
+  if (rows.length) {
+    const byType = {};
+    rows.forEach(function (r) { byType[r.type] = (byType[r.type] || 0) + 1; });
+    const firstEver = rows.filter(function (r) { return r.first; }).length;
+    body += '<p><b>' + rows.length + ' hazing-death news source(s) newly need checking.</b></p><ul>';
+    Object.keys(byType).sort().forEach(function (t) {
+      body += '<li>' + hdlEsc_(t) + ': ' + byType[t] + '</li>';
+    });
+    body += '</ul>';
+    if (firstEver) body += '<p>' + firstEver + ' of these were checked for the first time.</p>';
+  }
+  if (swappedCount) {
+    body += '<p><b>' + swappedCount + ' dead link(s) were switched to their archived copy ' +
+      'automatically.</b> The dead address is kept in <b>Original URL</b>; the archived copy ' +
+      'is now in <b>URL</b> and is checked on the next run. Nothing to do.</p>';
   }
   body += '<p>Waiting for a person in total (including earlier ones): <b>' +
     outstanding + '</b>.</p>';
-  body += '<p><b>Where to check:</b> 50 States base &rarr; <b>U.S. Hazing Death Sources</b> ' +
-    'table (<a href="https://airtable.com/' + HDL_BASE_ID + '/' + HDL_TABLE_ID + '">open it</a>). ' +
-    'Filter <b>Link status</b> is Broken or Unverifiable and <b>Muted</b> is unticked. ' +
-    'Open each link in a browser and read <b>Status detail</b>:</p><ul>' +
-    '<li>Opens fine (common for <i>Blocked</i>: the site refuses robots) &rarr; tick ' +
-    '<b>Muted</b>. It stays quiet while the check keeps finding the same problem.</li>' +
-    '<li>Really gone &rarr; replace the URL (or use the archived copy).</li></ul>';
 
-  hdlNotify_('Hazing death sources: ' + rows.length + ' need checking', body);
+  body += '<p><b>Where to check:</b> 50 States base &rarr; <b>U.S. Hazing Death Sources</b> ' +
+    '(<a href="' + table + '">open the table</a>). Filter <b>Link status</b> is Broken or ' +
+    'Unverifiable and <b>Muted</b> is unticked. Open each link in a browser and read ' +
+    '<b>Status detail</b>:</p><ul>' +
+    '<li><b>Opens fine</b> (common for <i>Blocked</i>: the site refuses robots) &rarr; tick ' +
+    '<b>Muted</b>. It stays quiet while the check keeps finding the same problem.</li>' +
+    '<li><b>Really gone, and the row has an Archive URL</b> &rarr; copy URL into ' +
+    '<b>Original URL</b>, then paste the Archive URL into <b>URL</b>. (Pages that answer ' +
+    '"not found" are switched automatically; this is for the rest.)</li>' +
+    '<li><b>Really gone, no Archive URL</b> &rarr; look for an old copy at ' +
+    'web.archive.org/web/*/ followed by the address. If there is one, paste it into ' +
+    '<b>Archive URL</b> and switch as above. If not, find a replacement source, or tick ' +
+    '<b>Muted</b> to record that it was checked.</li></ul>';
+
+  if (liveNoArchive) {
+    body += '<p style="color:#555">Also: <b>' + liveNoArchive + '</b> working source(s) have ' +
+      'no archived copy yet. Where a site allows it, make one at ' +
+      '<a href="https://web.archive.org/save">web.archive.org/save</a> while the page still ' +
+      'works; the next archive lookup records it in Archive URL. Some sites (Ancestry, for ' +
+      'one) cannot be archived, so this number will not reach zero.</p>';
+  }
+
+  const subject = 'Hazing death sources: ' +
+    (rows.length ? rows.length + ' need checking' : '') +
+    (rows.length && swappedCount ? ', ' : '') +
+    (swappedCount ? swappedCount + ' switched to archive' : '');
+  hdlNotify_(subject, body);
 }
 
 function hdlNotify_(subject, htmlBody) {
