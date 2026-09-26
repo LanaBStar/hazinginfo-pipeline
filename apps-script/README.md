@@ -164,7 +164,7 @@ It acts only on **Fixed - new URL** and **Confirmed broken**, with three guards:
 
 ### 5.6 Who gets email
 
-Everything goes to the `NOTIFY_EMAIL` Script Property if it's set, otherwise the HazingInfo Gmail. Promote uses its own `PR_EMAIL_TO` setting in `Promote.gs`; it's blank, so Promote also goes to the HazingInfo Gmail.
+Every email goes to the `NOTIFY_EMAIL` Script Property if it's set, otherwise the HazingInfo Gmail. Promote reads the same property (since 2026-09-26), unless `PR_EMAIL_TO` inside `Promote.gs` is filled in; normally it's blank.
 
 ---
 
