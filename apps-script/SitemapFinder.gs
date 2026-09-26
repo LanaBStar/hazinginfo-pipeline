@@ -5167,10 +5167,33 @@ function pipelineEmail_(state) {
       'That is the expected steady state between real changes to school websites.</p>');
   }
 
-  if (typeof notify_ === 'function') {
-    notify_(subject, parts.join(''));
-  } else {
-    Logger.log(subject + '\n' + parts.join('\n').replace(/<[^>]+>/g, ' '));
+  parts.push('<p><b>Where to review:</b> PAGES base &rarr; <b>Candidate URLs</b> table. ' +
+    '<a href="https://airtable.com/appEvOdPi94MzZ6Db/tblIL5opnHj0lhvvg">Open Candidate URLs</a>, ' +
+    'or use the <b>Candidate Review by School</b> interface.</p>');
+  smNotify_(subject, parts.join(''));
+}
+
+/**
+ * Discovery's own mailer. Until 2026-09-26 this file borrowed notify_() from
+ * archive/Scheduler.gs, a retired file kept only for reference, so deleting
+ * that file silently turned the run summary into a log line. It now lives
+ * here, next to the one function that uses it. Recipient: the NOTIFY_EMAIL
+ * script property, else the account that owns the triggers. A mail failure
+ * never fails the run -- the table is the record, the email a convenience.
+ */
+function smNotify_(subject, htmlBody) {
+  const override = PropertiesService.getScriptProperties().getProperty('NOTIFY_EMAIL');
+  const to = (override && override.trim()) || Session.getEffectiveUser().getEmail();
+  try {
+    MailApp.sendEmail({
+      to: to,
+      subject: '[HazingInfo] ' + subject,
+      htmlBody: htmlBody +
+        '<hr><p style="color:#666;font-size:12px">Sent by SitemapFinder.gs (candidate discovery). ' +
+        'Change the recipient with the NOTIFY_EMAIL script property.</p>'
+    });
+  } catch (e) {
+    Logger.log('Could not send notification email: ' + e + '\n' + subject);
   }
 }
 
