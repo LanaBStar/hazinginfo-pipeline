@@ -4700,11 +4700,13 @@ function repickWrite_(pat, writes) {
 // quota, so running at once would just have them competing.
 // -------------------------------------------------------------------------
 
-// MONTHLY SINCE 2026-09-26 (was Jan/Apr/Jul/Oct). With the daily cap below,
-// a full run spreads over about 3-4 days, so each month's new candidates
-// reach review within the week. A run never starts on top of one still going.
-const PIPELINE_MONTHS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];   // every month (JS months 0-based)
-const PIPELINE_START_DAY = 15;
+// CONTINUOUS SINCE 2026-09-26 (was the 15th of Jan/Apr/Jul/Oct). The daily
+// tick starts a new run once the last one finished PIPELINE_REST_DAYS ago --
+// or at once if no run has ever been recorded. With the daily cap below a run
+// spreads over about 3-4 days, so every school is searched again roughly
+// every 10-11 days. A run never starts on top of one still going. Most runs
+// will find nothing new (nothing is ever proposed twice), which is expected.
+const PIPELINE_REST_DAYS = 7;
 const PIPELINE_TICK_HOUR = 3;           // 3am, after the link checker's 2am
 
 const PIPELINE_SLICE_BUDGET_MS = 4 * 60 * 1000;
@@ -4741,9 +4743,8 @@ function installPipelineSchedule() {
   ScriptApp.newTrigger(HANDLER_PIPELINE_TICK)
     .timeBased().everyDays(1).atHour(PIPELINE_TICK_HOUR).create();
   Logger.log('Pipeline schedule installed. Daily check at ~' + PIPELINE_TICK_HOUR +
-    ':00; starts a full run on day ' + PIPELINE_START_DAY + ' of ' +
-    PIPELINE_MONTHS.map(function (m) { return SM_MONTH_NAMES[m]; }).join(', ') +
-    '; resumes a stalled run on any other day.');
+    ':00; starts a new run ' + PIPELINE_REST_DAYS + ' days after the last one ' +
+    'finished (at once if none is recorded); resumes a stalled run on any day.');
   return pipelineStatus();
 }
 
@@ -4770,9 +4771,9 @@ function pipelineStatus() {
   Logger.log(
     'Daily tick installed : ' + tick + '\n' +
     'Next slice queued    : ' + chain + '\n' +
-    'Runs on              : day ' + PIPELINE_START_DAY + ' of ' +
-      PIPELINE_MONTHS.map(function (m) { return SM_MONTH_NAMES[m]; }).join(', ') +
-      ' (' + Session.getScriptTimeZone() + ')\n' +
+    'Runs                 : a new run ' + PIPELINE_REST_DAYS + ' days after the last one ' +
+      'finished (daily check at ~' + PIPELINE_TICK_HOUR + ':00 ' + Session.getScriptTimeZone() + ')\n' +
+    (s && s.finishedAt ? 'Last finished        : ' + s.finishedAt + '\n' : '') +
     (s ? ('Current run          : ' + s.status + ', stage ' +
       (s.stageIndex >= PIPELINE_STAGES.length
         ? 'finished'
@@ -4831,11 +4832,17 @@ function pipelineDailyTick() {
     return;
   }
 
-  const isStartDay = now.getDate() === PIPELINE_START_DAY &&
-                     PIPELINE_MONTHS.indexOf(now.getMonth()) !== -1;
-  if (!isStartDay) {
-    Logger.log('Not a start day and no run in progress -- nothing to do.');
-    return;
+  // REST, THEN RUN AGAIN (2026-09-26). Counted from when the last run
+  // finished, whether it completed or aborted, so an aborting run cannot
+  // restart every night and burn the daily allowance.
+  if (state && state.finishedAt) {
+    const restedDays = (now.getTime() - new Date(state.finishedAt).getTime()) / 86400000;
+    if (!isNaN(restedDays) && restedDays < PIPELINE_REST_DAYS) {
+      Logger.log('Last run finished ' + state.finishedAt + '; resting until ' +
+        PIPELINE_REST_DAYS + ' days have passed (' +
+        Math.ceil(PIPELINE_REST_DAYS - restedDays) + ' more day(s)). Nothing to do.');
+      return;
+    }
   }
   pipelineStart_('schedule');
 }
@@ -4990,7 +4997,14 @@ function pipelineFinish_(state, status, note) {
   state.endNote = note || '';
   pipelineWrite_(state);
   pipelineDeleteChain_();
-  pipelineEmail_(state);
+  // Mail only when there is something to act on: new candidates to review,
+  // or a run that aborted. A completed run that found nothing sends nothing
+  // (changed 2026-09-26, when runs became continuous).
+  if (status !== 'complete' || (state.stats && state.stats.created > 0)) {
+    pipelineEmail_(state);
+  } else {
+    Logger.log('Completed with no new candidates -- no email sent.');
+  }
   Logger.log('Pipeline run ' + status + ' after ' + state.slices + ' slice(s).');
 }
 
