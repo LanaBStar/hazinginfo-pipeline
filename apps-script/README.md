@@ -1,124 +1,219 @@
-# HazingInfo — Apps Script pipeline
+# HazingInfo data check system (Apps Script)
 
-Google Apps Script project **PROD - HazingInfo Candidate URL Pipeline**, owned by Lana's
-personal Google account. This repo is a copy of its files for review and history; **the Apps
-Script project is the running system**, and a change here does not reach it until someone
-pastes it in.
+**What this is:** the reference for the Google Apps Script project that keeps HazingInfo.org's school links current. It's written for two readers: a person maintaining the system, and an AI assistant being handed the work. Read it top to bottom once. After that, the tables are the quick reference.
 
-**Read [SCHEDULING.md](SCHEDULING.md) before adding any trigger.** Everything painful about
-this environment is documented there.
+**Last updated 2026-09-26** (Pacific), when the project moved to the HazingInfo Google account and went onto a schedule.
+
+**The running code is in the Apps Script editor, not here.** This folder is a copy for history and review. A change here does nothing until someone pastes it into the editor. After any paste, check that file's line count in the editor, by name.
 
 ---
 
-## What this system does
+## 1. Where it lives
 
-Finds and evaluates three kinds of page for ~1,477 US institutions — a **Campus Hazing
-Transparency Report**, a **hazing policy**, and a **hazing reporting form** — and keeps the
-URLs of record current.
+| What | Where |
+|---|---|
+| The Apps Script project (**this is what runs**) | **"PROD - HazingInfo Candidate URLs/Live Link Checks"**, owned by the HazingInfo Gmail account (hazingtracking@gmail.com). All triggers belong to this account and run as it. |
+| The old copy | Lana's personal account, renamed "OLD - do not run …". **Never add triggers to it.** Two copies writing to Airtable at once would fight. |
+| Working data | Airtable **PAGES** base `appEvOdPi94MzZ6Db`. Its tables: Candidate URLs, Live URL Checks, Institutions (a synced copy of 50 States), Ownership exceptions. |
+| Published data | Airtable **50 States** base `appJbAvuFOxhWOID2`. Its tables: 50 States (drives HazingInfo.org), U.S. Hazing Deaths, U.S. Hazing Death Sources. |
+| Rules and vocabulary | Airtable **CHTR Data Dictionary** base `app21HOC4olcnMVZC`, which holds the Data Dictionary and the Controlled Vocabularies. |
 
-```
-DISCOVERY                     REVIEW                      MAINTENANCE
-sitemap crawl  ─┐
-cross-seed     ─┼─► Candidate URLs ─► human review ─► promote ─► 50 States
-search probe   ─┘   (PAGES base)      + AI triage              (live site)
-                                                                    │
-                                          live URL checks ◄─────────┘
-```
+Each school has **two fields per category** in 50 States:
 
-Two Airtable bases:
+- the **record** field: the best page found, whatever its quality (`chtr_index_url`, `located_hazing_policy_url`, `located_report_form_url`);
+- the **published** (compliance) field, which puts the checkmark on the public site (`Transparency Report`, `Hazing Policy`, `Report Form`).
 
-- **PAGES** `appEvOdPi94MzZ6Db` — working data. `Candidate URLs`, plus an `Institutions` table
-  synced one-way from 50 States.
-- **50 States** `appJbAvuFOxhWOID2` — production. Drives the live site.
-
-Every institution has **two URL fields per category**: a *record* field holding the best page
-found regardless of quality (`located_hazing_policy_url`, `located_report_form_url`,
-`chtr_index_url`), and a *compliance* field that drives the public checkmark (`Hazing Policy`,
-`Report Form`, `Transparency Report`). **A filled compliance field must hold the same URL as
-its record field.** Blank compliance means the school still needs a page meeting the standard,
-whether none was found or the one found fell short.
+The published field is filled only when the page meets HazingInfo's standard, and then it holds the same URL as the record field.
 
 ---
 
-## Files
+## 2. The workflow
 
-### Pipeline
+```
+FIND                          JUDGE                        PUBLISH                 WATCH
+discovery (weekly-ish) ─┐
+  cross-seed            ├─► Candidate URLs ─► AI field + ─► Promote ─► 50 States ─► Live URL Checks
+  sitemap search        │   (page text        human review   (nightly)               (every ~10 days)
+  search probe (manual) ┘    captured)        (Accept/Hold/                              │
+                                               Reject…)                                  ▼
+                                                                          human review of flagged links
+                                                                                         │
+                                                              Write-back (nightly) ◄─────┘
+                                                              applies Fixed / Confirmed broken to 50 States
 
-| File | What it does | Start with |
+HAZING DEATHS (separate): U.S. Hazing Death Sources ─► link check (daily, each source every 30 days)
+                          + archive lookup (daily) ─► auto-swap dead links to archived copies ─► email when a person is needed
+```
+
+---
+
+## 3. The files
+
+| File | What it does | Runs |
 |---|---|---|
-| `SitemapFinder.gs` | Stage 1 discovery: crawls each school's sitemap for likely pages, creates Candidate URLs rows. Also owns the shared helpers most other files use — `CATEGORIES`, `CF`, `capPat_`, `rankCandidates_`, `pipelineExistingKeys_`. | `smGateCheck()`, `sitemapSweepStatus()` |
-| `CrossSeed.gs` | Stage 2: crawls a school's *confirmed* page in one category for links to the others. | `xsStatus()`, `xsDryRunChtr10()` |
-| `SearchProbe.gs` | Stage 3: paid Google search (Apify) only where stages 1–2 provably failed. Daily query budget. | `spStatus()`, `spDryRun10()` |
-| `SiteCensus.gs` | Measures sitemap reachability and coverage per school. SearchProbe reads its results **and its constants at load time** — deleting this file breaks the project. | `scStatus()`, `scDryRun10()` |
-| `PreFilterResult.gs` | Cheap pre-filter before the AI pass. | — |
-| `ContentHash.gs` | The single definition of the page-content hash, shared by candidate capture and live checks. **Editing it invalidates every stored hash in both tables.** | `hazHashRegenerationNotes()` |
-| `LiveUrlChecks.gs` | Re-checks promoted URLs for liveness and content drift. | `lucStatus()` |
-| `WriteBack.gs` | Applies reviewer-proposed URLs. Two-function arming: report, then act. | `wbDryRun()` then `wbApply()` |
-| `HazingDeathsLinks.gs` | Independent of the above: checks the media links in **50 States → U.S. Hazing Deaths** and records Wayback snapshots. | `hdlStatus()` |
-| `WebApp.gs` | The web app UI. | — |
+| `SitemapFinder.gs` | **Discovery.** Finds candidate pages for each school that still needs one, through cross-seed (links on a school's other confirmed pages), the school's sitemap, page capture (saving page text for the AI) and the Report Form link pass. Also owns shared helpers other files use. | `pipelineDailyTick`, daily ~3am (installed by `installPipelineSchedule`) |
+| `CrossSeed.gs` | The cross-seed stage of discovery. | inside discovery |
+| `SearchProbe.gs` | Paid Google search (Apify) for schools discovery couldn't solve. Also holds the old "site census" code (`SC_`/`sc` names). | **by hand only**; it costs money |
+| `PreFilterResult.gs` | A cheap filter that drops obvious non-matches before the AI and a person see them. | inside discovery |
+| `ContentHash.gs` | The single definition of a page's content fingerprint. **Editing it invalidates every stored fingerprint.** | shared |
+| `Promote.gs` | Publishes reviewers' Candidate URL decisions to 50 States: URLs, below-standard reasons, hotline and contact details. | nightly |
+| `LiveUrlChecks.gs` | Checks every published link, flags problems for a person, and emails the review count after each sweep. | every 4 hours |
+| `WriteBack.gs` | Publishes reviewers' Live URL Checks decisions ("Fixed - new URL", "Confirmed broken") to 50 States. | nightly |
+| `HazingDeathsLinks.gs` | Checks the news sources on the hazing-deaths pages, swaps dead ones to archived copies, finds archive copies, and emails when a person is needed. | daily (two triggers) |
+| `WebApp.gs` | A small web page for running Live URL Checks by hand. | only when opened |
+| `FindPoison.gs`, `RobotsProbe.gs` | Diagnostics, run by hand: "which URL is hanging?" and "which vendor forms block robots?" | by hand |
 
-### diagnostics/ — hand-run, read-only, not part of any schedule
-
-| File | Answers |
-|---|---|
-| `FindPoison.gs` | *Which URL is hanging?* Fetches one at a time, logging each as it completes — the one it never logs is the culprit. Let it hit the cap; the timeout is the measurement. |
-| `RobotsProbe.gs` | *Can we fetch the vendor report forms?* Measured 2026-08-30: **180 of 220 blocked** by a readable robots.txt, Maxient blocking all 111 of its URLs. This is the evidence behind "Report Form standards are a human pass." Re-run if a vendor's policy changes. |
-
-### archive/ — kept for reference, does not run
-
-| File | Why it is here |
-|---|---|
-| `Scheduler.gs` | **Broken — do not install.** Calls `runLivenessSlice_` and friends from `LinkChecker.gs`, which was replaced by `LiveUrlChecks.gs` and deleted. Kept because its *design* is the best worked example in the repo of a sweep that survives the six-minute cap. See SCHEDULING.md §11. |
+`archive/Scheduler.gs` (GitHub only) is **retired and broken; don't install it.** It was deleted from the project on 2026-09-26, after discovery got its own email function.
 
 ---
 
-## Setup
+## 4. The schedule
 
-Script Properties (Project Settings → Script Properties):
+| Trigger function | When | What it does |
+|---|---|---|
+| `wbApplyForReal` | daily, 1–2am | Live URL Checks decisions → 50 States. Runs before the checks, so they see the latest decisions. |
+| `promoteApplyForReal` | daily, 2–3am | Candidate URL decisions → 50 States. |
+| `pipelineDailyTick` | daily, ~3am | Discovery. Starts a new round **7 days after the last one finished** (`PIPELINE_REST_DAYS`), and restarts a round that stalled. A round spreads over about 3–4 days at 8 slices a day. |
+| `promoteHotlineContactApplyForReal` | daily, 4–5am | Hotline and contact details → 50 States. |
+| `hdlRun` | daily, 5–6am | Hazing-death link check. Each source is rechecked 30 days after its last check. |
+| `hdlFindArchives` | daily, 6–7am | Looks up existing Wayback copies for sources that have none. Resumes where it stopped. |
+| `lucCheckSliceScheduled` | every 4 hours | Live URL Checks. A full sweep starts **7 days after the last finished** (`LUC_MIN_SWEEP_INTERVAL_DAYS`) and takes about 3 days (about 2,600 links). Between sweeps, each run checks only newly added links and retries stuck ones. |
 
-| Key | Needed by |
+`pipelineChainRun` triggers appear and disappear on their own while a discovery round is running. That's normal.
+
+**The daily limit is the hard constraint.** A regular Gmail account gets **90 minutes a day** of triggered run time, shared by everything. When it runs out, Google **silently** skips the rest of that day. The schedule above uses about 75 minutes in the worst case, and any new pass has to fit. Jobs share one lock, so two never run at once; one waits or skips its turn.
+
+**Failure emails:** each trigger has a "Failure notification settings" choice. Use **weekly** normally, and **immediately** only when watching something new.
+
+---
+
+## 5. How each pass handles problems, and how it avoids nagging
+
+The design rule throughout: **a person decides once. The system remembers that decision until the thing it was about changes, then asks again.** Nothing is re-flagged just because time passed, and nothing stays quiet after the facts change.
+
+### 5.1 Discovery → Candidate URLs
+
+- **A rejected URL is never proposed again** for that school and category. The row itself is the blocklist. **Reject, don't delete.** Deleting a row un-blocks its URL. The one exception is rows filed against the wrong school, which are deleted.
+- **A school is skipped** while its published field is filled, or while it still has unreviewed candidates.
+- **Most rounds find nothing new.** That's expected, and it creates no review work. The email comes only when a round finds new candidates, or aborts.
+
+### 5.2 Promote (Candidate URLs → 50 States)
+
+- **Each decision is published once.** A row stamped **Promoted** is never read again, so later corrections made in 50 States stay put.
+- **To re-publish a row after changing its decision,** clear its Promote status.
+- Rows that are **refused** (a contradiction, such as Accept with below-standard reasons) or **skipped** (for example, an ownership check) are rechecked every night. Their reason is in Promote note, and they don't publish until fixed.
+- **Email only when something changed:** a school written, a write failed, or a row newly refused or flagged.
+
+### 5.3 Live URL Checks
+
+**Link statuses:**
+
+| Status | Meaning |
 |---|---|
-| `AIRTABLE_PAT` | everything |
-| `APIFY_TOKEN` | SearchProbe only |
-| `NOTIFY_EMAIL` | optional — defaults to the script owner |
+| Live | The page loaded. |
+| Redirected | It forwards somewhere else; see Redirect target. |
+| Dead link | The server says the page isn't there. |
+| Login required | The page exists but is behind a sign-in. |
+| Unconfirmed | The server refused us. This says nothing about whether the page exists, so it needs a person. |
+| Site error | The server failed, or the request never landed. |
+| No URL | The tracked field has gone blank since the row was created. |
+
+**Reviewer determinations:** Working as-is, Fixed - new URL (with a Reviewer-proposed URL), Confirmed broken - no replacement found, Needs second opinion.
+
+**A reviewed row stays quiet until one of these happens:**
+
+| What changes | What happens |
+|---|---|
+| **The link itself changes** | The review is wiped, and the row returns to Needs review. |
+| **The page appears or disappears** ("not found", or the field emptied, versus anything else) | The review is wiped, and the row returns to Needs review. |
+| **A different error of the same kind** (for example "blocked" becomes "server error") | Nothing changes. |
+| **The page content changes** | The review stays, and the row gets "⚠ page changed". |
+
+**When a sweep finishes**, one email gives counts by status, the number of reviewed pages that changed since review, and a link to the **Needs review** view. It is sent only if something needs a person.
+
+The link to open is PAGES → Live URL Checks → Needs review. `lucEmailReviewQueueNow` sends it by hand.
+
+### 5.4 Write-back (Live URL Checks → 50 States)
+
+It acts only on **Fixed - new URL** and **Confirmed broken**, with three guards:
+
+1. **Only the page the reviewer judged.** That page is the snapshot of the URL taken when the review was made (field `fldVmX5yeRqTZuqDX`), because the Live URL Checks URL column always shows the *current* link. If the published link has changed since, the review is skipped as "needs re-review".
+2. **Field by field.** A 50 States field changes only if it holds that exact page, or already holds the answer. A record field holding a different page is left alone.
+3. **Once.** Applied reviews are remembered in the `wb_applied_*` Script Properties. An old decision never overwrites a later correction.
+   - A new or changed review applies once.
+   - Entries tidy themselves when Live URL Checks wipes a review.
+   - If that record is ever damaged, write-back stops and says so rather than re-applying everything.
+
+**Write-back doesn't email.** Its skips are in the run log.
+
+### 5.5 Hazing-death sources
+
+- **Link status:** Live, Broken, Unverifiable, Not checked. **Status detail** says why.
+- **Muted** means "a person checked this result and it's fine". It stays ticked **only while the check keeps finding the same problem:** the same Link status and the same kind of error, meaning the part of Status detail before " - ", such as "Blocked" or "Dead link".
+  - A different error, a new URL, or the page working again clears the tick.
+  - A working page isn't flagged. The cleared tick just means a future break will be reported.
+- **Automatic swap to the archive:** the dead address moves to **Original URL** and the **Archive URL** moves into **URL**. Any row with Original URL filled has been swapped. It happens only when all three are true:
+  1. the page answers **"not found"** (404/410), **or** a deep link now lands on the site's **homepage**;
+  2. the row has an **Archive URL**;
+  3. **Original URL** is empty (it has never been swapped).
+- **Everything else goes to a person:** blocked, site error, no response, login or paywall, dead but no archive, or an archive copy that has itself failed.
+- **Archive copies:** `hdlFindArchives` finds existing Wayback copies automatically. **Apps Script can't create new ones.** A person uses web.archive.org/save while the page still works. Some sites, such as Ancestry, can't be archived.
+- **Email** comes only when a source *newly* needs a person, or when swaps happened. It gives counts by error type, the total waiting, working sources with no archive, and a link to 50 States → U.S. Hazing Death Sources.
+
+### 5.6 Who gets email
+
+Everything goes to the `NOTIFY_EMAIL` Script Property if it's set, otherwise the HazingInfo Gmail. Promote uses its own `PR_EMAIL_TO` setting in `Promote.gs`; it's blank, so Promote also goes to the HazingInfo Gmail.
 
 ---
 
-## Things that will bite you
+## 6. Script Properties (Project Settings → Script Properties)
 
-**One shared global scope.** Apps Script concatenates every `.gs` file into one namespace.
-Redeclaring a `const` that exists in another file fails **the entire project** — every
-function, not just that file — with `Identifier 'X' has already been declared`. The error
-names whichever file it noticed second, which is usually not the one you edited. Each file
-prefixes its own names (`sm`/`xs`/`sp`/`sc`/`luc`/`hdl`/`rbt`) to keep out of each other's way.
+| Key | What it is |
+|---|---|
+| `AIRTABLE_PAT` | Airtable token. Everything needs it. |
+| `APIFY_TOKEN` | Search probe (Apify) token. |
+| `NOTIFY_EMAIL` | Optional email recipient. |
+| `LUC_SWEEP_STATE`, `LUC_LAST_SWEEP` | When the last Live URL sweep finished. |
+| `luc_chtr_date_after` | Where the CHTR date recheck stopped. |
+| `wb_applied_0`, `wb_applied_1`, … | Write-back's record of applied reviews. |
+| `candidatePipelineState` and other `candidatePipeline…`, `sitemap…`, `xs_…` keys | Discovery progress. It resets itself at the start of each round. |
+| `sp_…`, `hdl_…` | Search probe and hazing-death progress. |
 
-**Pasting is replacing.** Click into the file, **Cmd+A**, Delete, then paste. Without the
-select-all the paste *inserts*, you get two copies of the file, and you are in the failure
-above. Check the last line number against the file here afterwards.
+**If the project is ever copied or moved again:**
 
-**The Run dropdown, not your cursor,** decides which function runs. The **Executions** panel is
-the definitive record of what actually ran — triggered runs never appear in the editor log.
-
-**A function ending in `_` is private** and cannot be selected in the Run dropdown or the
-trigger picker.
-
-**`filterByFormula` addresses fields by NAME.** Most reads here fetch everything and filter in
-code instead, because `Institutions` is a synced table whose names are inherited from 50
-States — a rename there would break a formula silently and return a smaller result, which
-looks like a finding rather than a fault.
-
-**`typecast: true` on an empty select value mints a nameless choice.** It happened once, to
-Form link tier, on 32 rows.
-
-**Rejections are the blocklist.** Discovery dedupes against every existing Candidate URLs row
-including rejected ones, so a rejected URL is never re-proposed. **Reject, don't delete** —
-deleting un-blocks the URL and it comes back on the next sweep.
+1. **Script Properties do not copy.** Re-enter `AIRTABLE_PAT`, `APIFY_TOKEN`, `NOTIFY_EMAIL` and the two `LUC_*` keys. Copy the `wb_applied_*` keys, or run **`wbMarkAllApplied`** once before any real write-back run.
+2. **Triggers don't copy.** Add them again from section 4. Run `installPipelineSchedule` for discovery.
+3. **Don't copy an old `candidatePipelineState`** that says "running". It would try to resume a stale round.
+4. **Leave the old copy without triggers.**
 
 ---
 
-## Where the rules live
+## 7. Checking that it's working
 
-Field definitions, controlled vocabulary terms and extraction rules are **owned in the Airtable
-Data Dictionary**, not here. The below-standard vocabularies on `Candidate URLs` and `50 States`
-must stay **identical term for term**: the promote step writes a term by name from one base to
-the other, and a mismatch fails the whole row's write.
+- **Executions** (left sidebar) lists every run and whether it completed. Triggered runs never appear in the editor's log.
+- `pipelineStatus` shows discovery's state, and `lucStatus` shows Live URL Checks'. `hdlStatus` shows hazing-death sources. `spStatus` shows the search probe.
+- Dry runs write nothing: `wbDryRun`, `promoteDryRun`, `hdlDryRun10`.
+
+---
+
+## 8. Traps
+
+- **Pasting:** click into the file, press Cmd+A, then Delete, then paste. Without the select-all, the paste *inserts*. All files share one global scope, so a duplicated `const` breaks **the whole project**.
+- **The Run dropdown decides what runs,** not where your cursor is. A function ending in `_` can't be run or used as a trigger.
+- **The six-minute cap doesn't throw.** Anything after the cut is lost, which is why every pass writes as it goes.
+- **Airtable single-selects:** writing a name that doesn't exist creates a new option silently. `null` clears a field; `''` doesn't.
+- **Renaming an Airtable choice is safe. Deleting one strips it from every row.** Rename in both bases at the same sitting, because the below-standard vocabularies must match exactly.
+- **Pre-filter drops and rejections are the blocklist.** Don't delete them.
+
+---
+
+## 9. Known gaps (2026-09-26)
+
+- **Live URL Checks watches only the published fields.** Record-only pages (below standard) aren't watched. This is phase 2 of the target-state spec.
+- **A Live URL Checks "Fixed - new URL" can publish a page nobody judged against the standard.** This is spec §9.2.
+- **Write-back clears links but never below-standard reasons,** so a cleared school can keep reasons about a page that's gone.
+- **Open Candidate URL skips:**
+  - 220598 is Accept with a below-standard reason.
+  - 175342 (Alcorn) needs an Ownership exception.
+  - 199272 needs a `/viewform` link.
+- The project's own design notes live in the HazingInfo Claude project: `target-state-spec` (plus its 2026-09-26 v3 update), `data-check-reference` and `apps-script-move-and-schedule`.
