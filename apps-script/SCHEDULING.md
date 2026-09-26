@@ -9,24 +9,17 @@ limits do not raise errors you can catch, they end the execution.
 
 ---
 
-## 1. Current state: nothing is scheduled
+## 1. Current state (updated 2026-09-26): the passes run on a schedule
 
-**No pass in this project runs on a schedule today.** Every one is started by a person from
-the editor's Run dropdown or the web app. That is deliberate for now, not an oversight.
+**This section replaces the 2026-09-10 text.** The project now belongs to the HazingInfo Google account, and its passes run on triggers. See **README.md section 4** for the full schedule, the 90-minute daily budget, and what each trigger does:
 
-Three files nevertheless contain trigger-installing functions, left over from earlier work:
+- discovery rests 7 days after each round;
+- Live URL Checks runs every 4 hours, with a full sweep 7 days after the last one finishes;
+- Promote, write-back and hazing-death links run nightly.
 
-| File | Function | Status |
-|---|---|---|
-| `SitemapFinder.gs` | `installPipelineSchedule()`, `removeScheduledSitemapTrigger()` | present, not installed |
-| `SiteCensus.gs` | `scInstallTrigger()`, `scDeleteTrigger()`, `scTriggerStatus()` | present, not installed |
-| `archive/Scheduler.gs` | `installLivenessSchedule()`, `removeLivenessSchedule()` | **superseded — do not run** |
+**Triggers are added by hand in the editor's Triggers panel, plus one exception.** Discovery installs its own daily trigger through `installPipelineSchedule()`. The Triggers panel is the source of truth for what is scheduled. The rule "no file installs its own trigger" is still the intent; `SitemapFinder.gs` is the one remaining exception.
 
-**The intended structural rule, not yet implemented: no file installs its own trigger. One
-scheduler owns all of them.** Trigger-installing functions scattered across files mean nobody
-can answer "what is scheduled?" without reading every file, and two files can install
-overlapping triggers that fight for the same lock. Until that consolidation happens, treat the
-functions above as inert and check the Triggers panel as the source of truth.
+`archive/Scheduler.gs` was deleted from the running project on 2026-09-26 (see section 11).
 
 ---
 
@@ -133,8 +126,10 @@ lookups consumed entire executions. After several full-length runs only 14 of 27
 snapshot recorded, and the link check — the thing anyone was waiting for — never finished.
 
 **A slow, unreliable third party starves whatever shares an execution with it.** Archive
-lookups now live in `hdlFindArchives()`, their own hand-run pass, where being slow costs only
-that pass. Save Page Now submissions live in `hdlArchiveMissing()` for the same reason.
+lookups now live in `hdlFindArchives()`, their own pass, where being slow costs only that
+pass. Since 2026-09-26 it runs on its own daily trigger. Save Page Now submissions live in
+`hdlArchiveMissing()` for the same reason, but **Save Page Now does not answer Apps Script**,
+so new snapshots are made by a person at web.archive.org/save.
 
 ---
 
@@ -231,20 +226,10 @@ this month is not news, and a checker that mails the same list every run stops b
 Expect a burst on any first sweep: a trigger clearing a backlog will send one email per run
 that finds something newly broken.
 
+**As built (2026-09-26):** each pass mails only when a person has something to do, or when something changed. See README.md section 5.6.
+
 ---
 
 ## 11. About `archive/Scheduler.gs`
 
-**It does not work and must not be installed.** It calls `runLivenessSlice_`, `checkBatch_`,
-`interpretResponse_` and other functions from `LinkChecker.gs`, which was replaced by
-`LiveUrlChecks.gs` and deleted. Every function it depends on is gone.
-
-**It is kept because the design is right and is the best worked example in the repo** of a
-sweep that survives the six-minute cap: quarterly-via-monthly triggers with a month filter
-(Apps Script has no quarterly trigger), self-chaining slices, the watchdog scheduled before
-the work, data-resident progress, the run lock, error backoff with `MAX_CONSECUTIVE_ERRORS`,
-a `MAX_SLICES_PER_SWEEP` backstop, abandoned-sweep detection after 12 hours, and the test
-mode above.
-
-When this project does get a real scheduler, start from this file's structure and repoint it
-at the current passes. Do not start from scratch, and do not run it as it stands.
+**Deleted from the running project on 2026-09-26.** Until then, `SitemapFinder.gs` borrowed its `notify_()` function for the discovery summary email. Discovery now has its own (`smNotify_`), so nothing depends on this file. It stays here in `archive/` only as a worked example of a sweep design: triggers scheduled before the work, progress kept in the data, and a run lock. **Do not install it.**
