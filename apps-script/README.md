@@ -129,9 +129,11 @@ The design rule throughout: **a person decides once. The system remembers that d
 | **A different error of the same kind** (for example "blocked" becomes "server error") | Nothing changes. |
 | **The page content changes** | The review stays, and the row gets "⚠ page changed". |
 
-**When a sweep finishes**, one email gives counts by status, the number of reviewed pages that changed since review, and a link to the **Needs review** view. It is sent only if something needs a person.
+**When a sweep finishes**, one email gives counts by status of links that need a person, with a link to the **Needs review** view (PAGES → Live URL Checks → Needs review). It is sent only if the count isn't zero. `lucEmailReviewQueueNow` sends it by hand.
 
-The link to open is PAGES → Live URL Checks → Needs review. `lucEmailReviewQueueNow` sends it by hand.
+**"Page changed since review" is recorded but not acted on yet.** Acting on content changes is the future content-change phase (target-state spec phase 3), so the email leaves it out.
+
+**A known limit for that phase:** a reviewer can't re-confirm an unchanged verdict. The snapshot automation only fires when the determination's value changes, so picking the same value again records nothing.
 
 ### 5.4 Write-back (Live URL Checks → 50 States)
 
