@@ -502,7 +502,19 @@ const PR_CONTRADICTIONS = {
  *
  * DRY RUNS DO NOT EMAIL. A dry run is something a person is watching.
  */
-const PR_EMAIL_TO       = '';
+const PR_EMAIL_TO       = '';   // overrides NOTIFY_EMAIL if set; normally leave blank
+
+/**
+ * Who gets Promote's emails (2026-09-26): PR_EMAIL_TO if set in this file,
+ * else the NOTIFY_EMAIL script property -- the same property every other
+ * file uses, so one setting moves all the email -- else the account the
+ * script runs as.
+ */
+function prRecipient_() {
+  if (PR_EMAIL_TO) return PR_EMAIL_TO;
+  const prop = PropertiesService.getScriptProperties().getProperty('NOTIFY_EMAIL');
+  return (prop && prop.trim()) || Session.getEffectiveUser().getEmail();
+}
 const PR_EMAIL_ON_APPLY = true;
 // Mail only when a run changed something: a school written, a write that
 // failed, or a Candidate row whose status/note/flag changed (a new refusal or
@@ -1908,7 +1920,7 @@ function prPushStamp_(stamps, recordId, beforeStatus, beforeNote, beforeFlagged,
  * they are the part that is also in the log.
  */
 function prEmail_(r) {
-  const to = PR_EMAIL_TO || Session.getEffectiveUser().getEmail();
+  const to = prRecipient_();
   if (!to) { Logger.log('No address to send the run summary to; skipped.'); return; }
 
   const needsAttention = r.skips.length + r.clearedList.length + r.flaggedList.length;
@@ -3057,7 +3069,7 @@ function prHcFindRecord_(records, recordId) {
  * is invisible. Refusals and conflicts come first, counts last.
  */
 function prHcEmail_(r) {
-  const to = PR_EMAIL_TO || Session.getEffectiveUser().getEmail();
+  const to = prRecipient_();
   if (!to) { Logger.log('No address to send the run summary to; skipped.'); return; }
 
   const needsAttention = r.skips.length + r.conflicts.length;
