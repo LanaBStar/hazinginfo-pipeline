@@ -488,12 +488,16 @@ const LUC_LAST_SWEEP_KEY = 'LUC_LAST_SWEEP';
  * re-fetched all 3,546 URLs daily, forever, consuming the whole 90-minute
  * trigger budget for no new information.
  *
- * 90 days is a placeholder for the open cadence question -- Jolayne wants
- * quarterly, biweekly was the counter-proposal. Whatever is settled, it is
- * this one number, not an emergent side effect of when someone last
- * pressed a button.
+ * SET TO 7 DAYS ON 2026-09-26 (was a 90-day placeholder; Jolayne had asked
+ * for quarterly, biweekly was the counter-proposal). Reason: HazingInfo
+ * publishes these links, so a link that stops working should be caught
+ * within days, not months. A full sweep of ~2,600 links took 12 slices
+ * (2026-08-28), about 3 days on the 4-hourly trigger, so every link is
+ * rechecked roughly every 10 days. The gap is counted from when the last
+ * sweep FINISHED. Whatever is settled, it is this one number, not an
+ * emergent side effect of when someone last pressed a button.
  */
-const LUC_MIN_SWEEP_INTERVAL_DAYS = 90;
+const LUC_MIN_SWEEP_INTERVAL_DAYS = 7;
 
 /**
  * WHETHER A SWEEP MAY CLEAR A HUMAN REVIEW. Switched back ON 2026-08-28,
