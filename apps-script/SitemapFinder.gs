@@ -4700,7 +4700,10 @@ function repickWrite_(pat, writes) {
 // quota, so running at once would just have them competing.
 // -------------------------------------------------------------------------
 
-const PIPELINE_MONTHS = [0, 3, 6, 9];   // Jan, Apr, Jul, Oct (JS months 0-based)
+// MONTHLY SINCE 2026-09-26 (was Jan/Apr/Jul/Oct). With the daily cap below,
+// a full run spreads over about 3-4 days, so each month's new candidates
+// reach review within the week. A run never starts on top of one still going.
+const PIPELINE_MONTHS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];   // every month (JS months 0-based)
 const PIPELINE_START_DAY = 15;
 const PIPELINE_TICK_HOUR = 3;           // 3am, after the link checker's 2am
 
@@ -4708,7 +4711,9 @@ const PIPELINE_SLICE_BUDGET_MS = 4 * 60 * 1000;
 const PIPELINE_CHAIN_GAP_MINUTES = 1;
 const PIPELINE_WATCHDOG_MINUTES = 8;    // must exceed the 6-minute cap
 const PIPELINE_QUOTA_BACKOFF_MINUTES = 360;
-const PIPELINE_MAX_SLICES_PER_DAY = 12; // ~54 min, inside the 90-min allowance
+const PIPELINE_MAX_SLICES_PER_DAY = 8;  // ~36 min. Was 12 (~54 min); lowered 2026-09-26 so discovery,
+                                        // Live URL Checks, write-back, promote and hazing-death links
+                                        // together stay inside the 90-min daily trigger allowance.
 const PIPELINE_MAX_SLICES_PER_RUN = 400;
 const PIPELINE_MAX_CONSECUTIVE_ERRORS = 3;
 const PIPELINE_STALLED_AFTER_MINUTES = 30;
