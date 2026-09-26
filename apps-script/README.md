@@ -187,6 +187,8 @@ Every email goes to the `NOTIFY_EMAIL` Script Property if it's set, otherwise th
 2. **Triggers don't copy.** Add them again from section 4. Run `installPipelineSchedule` for discovery.
 3. **Don't copy an old `candidatePipelineState`** that says "running". It would try to resume a stale round.
 4. **Leave the old copy without triggers.**
+5. **The first run in a new copy asks for permission.** Choose the account, then **Advanced → Go to … (unsafe) → Allow**. This is normal for an unpublished script.
+6. **The web app page, if anyone uses it:** Deploy → New deployment → Web app, with **Execute as: Me** and **Who has access: Only myself**. Archive the old deployment. (Before 2026-09-26 it was open to anyone with the link.)
 
 ---
 
