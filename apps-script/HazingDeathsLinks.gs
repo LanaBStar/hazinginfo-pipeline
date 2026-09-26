@@ -278,8 +278,9 @@ const HDL_TITLE_SANITY_MAX = 8000000;
  *
  * IT NEVER TOUCHES A SOURCE THAT IS MERELY BLOCKED. A 403 from a site that
  * refuses robots is a page that opens perfectly well for a human -- sending
- * a reader to an archived copy of a live article is a downgrade. Only 404
- * and 410 qualify.
+ * a reader to an archived copy of a live article is a downgrade. Two results
+ * qualify: a 404 or 410, and (added 2026-09-26) a deep link that now lands on
+ * the site's homepage, which is how many news sites retire an article.
  */
 const HDL_AUTO_ARCHIVE_SWAP = true;
 
@@ -689,7 +690,7 @@ function hdlWorkLocked_(opts) {
 
     // See HDL_AUTO_ARCHIVE_SWAP (on since 2026-09-26).
     let swapped = false;
-    if (HDL_AUTO_ARCHIVE_SWAP && res.hardDead && row.archive && !row.original) {
+    if (HDL_AUTO_ARCHIVE_SWAP && (res.hardDead || res.homepage) && row.archive && !row.original) {
       swapped = true;
       swappedCount++;
       f[HDL_F_ORIGINAL] = row.url;
@@ -697,7 +698,8 @@ function hdlWorkLocked_(opts) {
       // The swapped-in address has not been checked yet, and saying it is
       // Broken would be a claim about the archived copy nobody has tested.
       f[HDL_F_STATUS]   = HDL_ST_NONE;
-      f[HDL_F_DETAIL]   = 'Original address returned a dead link and has been moved to ' +
+      f[HDL_F_DETAIL]   = 'Original address ' + (res.hardDead ? 'returned a dead link' :
+        'now redirects to the site homepage') + ' and has been moved to ' +
         'Original URL; the archived copy is now in URL and will be checked on the next ' +
         'sweep.';
       f[HDL_F_CHECKED]  = null;
@@ -826,7 +828,7 @@ function hdlDescribe_(row, names, res, status) {
       hdlErrorType_(res.ok ? '' : res.label) === hdlErrorType_(row.detail))) {
     s += '           WOULD CLEAR THE MUTE -- the result is not the problem it was muted for\n';
   }
-  if (HDL_AUTO_ARCHIVE_SWAP && res.hardDead && row.archive && !row.original) {
+  if (HDL_AUTO_ARCHIVE_SWAP && (res.hardDead || res.homepage) && row.archive && !row.original) {
     s += '           WOULD PROMOTE the archived copy into URL\n';
   }
   return s;
@@ -951,6 +953,7 @@ function hdlCheckOne_(url) {
     if (hops > 0 && !hdlIsRootish_(url) && hdlIsRootish_(current)) {
       out.label = 'Redirected to homepage - the article is probably gone. ' +
                   'Landed on ' + current;
+      out.homepage = true;   // qualifies for the archive swap (2026-09-26)
       return out;
     }
     out.ok = true;
@@ -1765,7 +1768,8 @@ function hdlEmail_(rows, outstanding, swappedCount, liveNoArchive) {
   }
   if (swappedCount) {
     body += '<p><b>' + swappedCount + ' dead link(s) were switched to their archived copy ' +
-      'automatically.</b> The dead address is kept in <b>Original URL</b>; the archived copy ' +
+      'automatically</b> (the page answered "not found" or now lands on the homepage). The old ' +
+      'address is kept in <b>Original URL</b>; the archived copy ' +
       'is now in <b>URL</b> and is checked on the next run. Nothing to do.</p>';
   }
   body += '<p>Waiting for a person in total (including earlier ones): <b>' +
@@ -1779,7 +1783,8 @@ function hdlEmail_(rows, outstanding, swappedCount, liveNoArchive) {
     '<b>Muted</b>. It stays quiet while the check keeps finding the same problem.</li>' +
     '<li><b>Really gone, and the row has an Archive URL</b> &rarr; copy URL into ' +
     '<b>Original URL</b>, then paste the Archive URL into <b>URL</b>. (Pages that answer ' +
-    '"not found" are switched automatically; this is for the rest.)</li>' +
+    '"not found" or now send readers to the homepage are switched automatically; ' +
+    'this is for the rest.)</li>' +
     '<li><b>Really gone, no Archive URL</b> &rarr; look for an old copy at ' +
     'web.archive.org/web/*/ followed by the address. If there is one, paste it into ' +
     '<b>Archive URL</b> and switch as above. If not, find a replacement source, or tick ' +
