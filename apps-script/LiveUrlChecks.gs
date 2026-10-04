@@ -183,6 +183,11 @@
 // the validation set for the AI pass that replaces them. Nothing in this
 // file reads or writes them any more.
 //
+// 2026-10-04: below-standard reasons came back to Live URL Checks in a new
+// form -- three tick fields that write-back applies to 50 States (see
+// WriteBack.gs). This file never reads them; it only empties them when it
+// clears a stale review (LUC_F_BELOW_TICKS).
+//
 // NOTES WERE EXEMPT UNTIL 2026-08-28, and the reason they no longer are is
 // worth recording, because the old reason looked strong. On 2026-08-23
 // twenty-nine below-standard URLs were recovered out of reviewer notes and
@@ -250,6 +255,13 @@ const LUC_F_REVIEW_DATE   = 'flddBv57mYSa4jIcM';  // date, written by wflPC5zF6h
 const LUC_F_SNAP_URL      = 'fldVmX5yeRqTZuqDX';
 const LUC_F_SNAP_STATUS   = 'fldjle8wd4pEcRpzv';
 const LUC_F_SNAP_HASH     = 'fldcxODB0EsN4pvOg';
+// The reviewer's below-standard ticks, one per category (added 2026-10-04).
+// Write-back reads them; this file only ever empties them, alongside the
+// determination, when a review goes stale -- so a ticked reason can never be
+// carried over onto a new page. Not in LUC_READ_FIELDS: never read here.
+const LUC_F_BELOW_TICKS   = ['fldgfMu6RujSpxcSn',   // CHTR below standard
+                             'fldjIEUMM0ers0Z4Q',   // Hazing policy below standard
+                             'fldjEkPZeBaqGDyac'];  // Report form below standard
 
 // ---- Institutions fields (synced -- read only, never written) -----------
 const LUC_I_UNITID = 'fldGREvzCIme6HXfl';
@@ -3126,6 +3138,7 @@ function lucClearIfStale_(entry, prev, currentUrl, currentCode) {
   entry.fields[LUC_F_DETERMINATION] = null;
   entry.fields[LUC_F_NOTES] = '';
   entry.fields[LUC_F_REVIEW_DATE] = null;  // date field: null, '' is a 422
+  LUC_F_BELOW_TICKS.forEach(function (f) { entry.fields[f] = []; });  // multiple select: [] empties
 
   if (urlChanged && prev.proposedUrl) {
     entry.fields[LUC_F_PROPOSED_URL] = '';
