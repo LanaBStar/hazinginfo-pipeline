@@ -233,14 +233,12 @@ const LUC_F_REDIRECT     = 'fldqMVflVfvdpzdRw';
 const LUC_F_LAST_CHECKED = 'fldgsBLdEw5YHuzMk';
 const LUC_F_HASH         = 'fldixWKjidD1eEfPC';
 
-// Renamed in Airtable on 2026-08-28: "Last updated date found" -> "CHTR last
-// updated date", "Date check result" -> "CHTR date check result". Nothing
-// broke, because every reference in this file is by field ID -- which is
-// exactly the reason lucBuildDueFormula_ uses IDs in filterByFormula too.
-// Only the constant names changed here, to keep the code readable against
-// the base.
-const LUC_F_CHTR_LAST_UPDATED = 'fldfFB8XvOTuISf5p';
-const LUC_F_CHTR_DATE_RESULT  = 'fld6BX7MLCOLbCK9R';
+// LUC_F_CHTR_LAST_UPDATED ('fldfFB8XvOTuISf5p') and LUC_F_CHTR_DATE_RESULT
+// ('fld6BX7MLCOLbCK9R') were removed 2026-10-04 with the CHTR date read.
+// The date read never worked reliably enough to use; a person judges the
+// 12-month rule instead. Delete the two Airtable fields only AFTER this file
+// is deployed -- the old code writes them, and a write to a deleted field
+// fails the whole batch.
 
 // Human columns. The script reads them to decide a clear and writes them
 // only ever to empty. Which ones clear, and on which signal, is the
@@ -268,8 +266,7 @@ const LUC_I_UNITID = 'fldGREvzCIme6HXfl';
 const LUC_I_NAME   = 'fldHvefXrrPxibBsZ';
 
 /**
- * THE CATALOG. Every tracked field, the Institutions column it reads, and
- * whether the CHTR "last updated" date check applies.
+ * THE CATALOG. Every tracked field and the Institutions column it reads.
  *
  * `name` must match the Live URL Checks single-select option EXACTLY. The
  * script does not pass typecast, so Airtable rejects the whole write batch
@@ -306,14 +303,7 @@ const LUC_I_NAME   = 'fldHvefXrrPxibBsZ';
  * So: check what is published. The located_* fields remain the research
  * record and the write-back target, and nothing checks them any more.
  *
- * `dateCheck` marks the categories where the CHTR "last updated" read
- * applies. Only Transparency Report qualifies: a hazing policy page and a
- * report form have no freshness standard to test.
- *
- * NOTE FOR THE FRESHNESS FINDING: this now reads 841 published CHTRs, not
- * the 885 chtr_index_url pages the "only 25% publish a date" measurement was
- * taken across on 2026-08-28. The ~44 difference is CHTRs that were found
- * but are not published. Re-derive the ratio on 841 before quoting it.
+ * `dateCheck` (the CHTR "last updated" read) was removed 2026-10-04.
  *
  * THIS ARRAY IS THE ONLY PLACE THAT DECIDES WHICH CATEGORIES ARE LIVE.
  * lucReconcile_ gates row creation on `check`, and lucBuildDueFormula_ and
@@ -322,9 +312,9 @@ const LUC_I_NAME   = 'fldHvefXrrPxibBsZ';
  * needs to change.
  */
 const LUC_TRACKED = [
-  { name: 'Transparency Report', instField: 'fldGJPC0iyuPcWtlK', check: true, dateCheck: true  },
-  { name: 'Hazing Policy',       instField: 'fldD9gEpDcw2l35II', check: true, dateCheck: false },
-  { name: 'Report Form',         instField: 'fldIrTzWzi87nD7EU', check: true, dateCheck: false }
+  { name: 'Transparency Report', instField: 'fldGJPC0iyuPcWtlK', check: true },
+  { name: 'Hazing Policy',       instField: 'fldD9gEpDcw2l35II', check: true },
+  { name: 'Report Form',         instField: 'fldIrTzWzi87nD7EU', check: true }
 ];
 
 // THE located_* ENTRIES WERE REMOVED FROM THIS ARRAY ON 2026-08-28, after
@@ -749,160 +739,11 @@ const LUC_LOGIN_BODY_PATTERNS = [
 
 const LUC_LOGIN_PASSWORD_INPUT = /<input[^>]+type\s*=\s*["']?password\b/i;
 
-// -------------------------------------------------------------------------
-// DATE EXTRACTION -- rewritten 2026-08-28
-// -------------------------------------------------------------------------
-// The standard is an EXPLICIT last-updated date: a specific day. A season
-// ("updated Fall 2025"), a month and year alone ("updated October 2025"),
-// an academic year, or the period the incidents cover do not qualify. Every
-// pattern below therefore requires day, month and year. Nothing else can
-// match, which is the point.
-//
-// WHAT THE PREVIOUS VERSION DID, measured against the live base on
-// 2026-08-28 across all 226 rows then marked "Date found":
-//
-//   It accepted `[A-Za-z]+\s+\d{4}` as a date. That is any word followed by
-//   four digits, so "Fall 2025" matched -- and new Date("Fall 2025") does
-//   not fail. V8 discards the word it cannot read and keeps the year,
-//   returning 1 January 2025. Sixteen rows sat on 01-01, and a seasonal
-//   page was being recorded as a hard January date roughly nine months
-//   EARLIER than the page actually meant. Under a twelve-month freshness
-//   window that turns a fresh page stale.
-//
-//   The same pattern matched page furniture. Five rows carried impossible
-//   years -- four Ohio institutions on 2903 and one on 3345 -- from a room
-//   number or extension sitting after the word "updated".
-//
-//   Fifty-four of 226 landed on the first of some month, i.e. were month
-//   precision at best while being stored as a specific day.
-//
-//   And .match() returns only the FIRST hit, so "Updated Fall 2025" earlier
-//   in the page silently shadowed a real "Last updated: October 5, 2025"
-//   further down.
-//
-// FOUR CHANGES FOLLOW FROM THAT:
-//
-//   1. Month names are an explicit alternation, never [A-Za-z]+. A season
-//      is not a month, so it cannot match at all rather than matching and
-//      being silently coerced.
-//   2. Dates are built from captured parts with Date.UTC and verified to
-//      round-trip. new Date(string) is never used on page text again --
-//      its leniency is what produced every bad row above. This also
-//      rejects impossible calendar days like 31 February.
-//   3. The year must be between 2000 and next year. 2903 and 3345 die here
-//      even if some future pattern lets them through.
-//   4. ALL matches are scanned, not the first, and the most recent valid
-//      date wins. A stale coverage date or a leftover notice can no longer
-//      hide a real one.
-//
-// A LABEL IS STILL REQUIRED. A bare date somewhere on the page is not
-// evidence of anything -- it could be an event, a news item, a copyright
-// line. If the audit of the "Date not found on page" rows shows unlabeled
-// dates appearing in a consistent position worth trusting, that is a
-// deliberate addition to make then, with evidence.
-//
-// NUMERIC DATES ARE READ AS US MONTH/DAY/YEAR. Every institution in this
-// base is a US college. A day-first reading would silently swap the two on
-// the ~40% of numeric dates where the day is 12 or lower.
-// -------------------------------------------------------------------------
-
-const LUC_MONTH_NUMBERS = {
-  jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3,
-  apr: 4, april: 4, may: 5, jun: 6, june: 6, jul: 7, july: 7,
-  aug: 8, august: 8, sep: 9, sept: 9, september: 9,
-  oct: 10, october: 10, nov: 11, november: 11, dec: 12, december: 12
-};
-
-// -------------------------------------------------------------------------
-// TWO LABEL TIERS, because a CHTR index page is mostly incident content
-// -------------------------------------------------------------------------
-// A CHTR page is a page-update statement wrapped around a table of
-// incidents, and incident rows carry dates of their own -- occurrence,
-// notice, investigation start and end, sanction. Scanning the whole page
-// for "a label followed by a date" can therefore pick up an incident date
-// and record it as the page's last-updated date. Taking the most recent
-// match makes that worse, not better: a recent incident outranks an older
-// but correct page statement.
-//
-// The 26 verbatim strings hand-coded in CHTR Field Analysis / Review
-// (field: Verbatim "Last Updated" text) settle which labels are actually
-// needed. Every real statement in that sample uses a form of "updated",
-// "last review", or "published". NONE uses "effective date", "as of",
-// "current as of", "revised", "date posted" or "revision date" -- and
-// those are exactly the phrasings most likely to head an incident row
-// ("sanction effective date", "chapter status as of"). They are dropped:
-// they buy nothing on real pages and cost false matches on every one.
-//
-// TIER 1 is unambiguous about the page or report itself. A match here is
-// trusted outright.
-//
-// TIER 2 is the bare verbs. Six of the twenty real statements in the
-// sample are a bare "Updated <date>", so tier 2 cannot be dropped -- but
-// "status updated" and "sanction revised" live in incident rows using the
-// same words. Tier 2 is therefore only consulted when tier 1 found
-// nothing, AND it must be UNANIMOUS: if two different dates both match a
-// tier-2 label, the page is showing a table rather than a statement, and
-// nothing is recorded. A genuine page-update statement appears once.
-// -------------------------------------------------------------------------
-
-const LUC_DATE_LABEL_TIER1 =
-  '(?:this\\s+page\\s+was\\s+last\\s+updated|page\\s+last\\s+updated|' +
-  'report\\s+last\\s+updated|last\\s+updated|last\\s+modified|' +
-  'last\\s+review(?:ed)?|page\\s+updated|information\\s+updated|' +
-  'updated\\s+on|modified\\s+on|reviewed\\s+on|date\\s+posted|' +
-  'date\\s+published|posted\\s+on|published\\s+on)';
-
-// "AS OF" WAS ADDED HERE, NOT TO TIER 1 (2026-09-01).
-//
-// It earned its place: in a 23-page audit of rows reading "Date not found
-// on page", four carried an explicit labelled day-exact date and THREE of
-// the four used this exact wording -- "As of September 1, 2026, there are
-// no adjudications, convictions or incidents of hazing to report"
-// (Georgia Gwinnett), and the same shape at UW-Superior and UW-Eau Claire.
-// That is roughly 17% of the not-found rows, or ~95 of 552.
-//
-// It belongs in tier 2 because it is exactly as ambiguous as the other
-// tier-2 words. UW-Madison (240444) carries "as of July 1, 2026" INSIDE a
-// per-year row of its incident table, beside other dates. Tier 1 would take
-// the most recent and record an incident-table date as the page's update
-// date; tier 2's unanimity rule sees two different dates and correctly
-// records nothing. The guard that already exists for "updated" is the guard
-// this needs.
-//
-// \b guards the front of this alternative only. Without it "as of" matches
-// inside "was of", which the single-word terms cannot do to themselves.
-//
-// "Current as of" needs no separate entry -- "as of" is a substring of it,
-// and the \b sits before "as" either way. "Effective" and "date of last
-// revision" were looked for in the same audit and did not appear once.
-const LUC_DATE_LABEL_TIER2 = '(?:updated|modified|published|revised|\\bas\\s+of)';
-
-// Separator between label and date. Absorbs whitespace, colons, dashes and
-// an optional connecting "on", so "Last updated on May 6, 2026",
-// "Last Updated: June 30, 2026" and "Updated - March 18, 2026" all read the
-// same. It can only cross whitespace and punctuation, never a word, so it
-// cannot bridge a label to an unrelated date further along the page.
-const LUC_DATE_SEPARATOR = '[\\s:.\\-\\u2013]*(?:on[\\s:.\\-\\u2013]+)?';
-
-const LUC_MONTH_ALT =
-  '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|' +
-  'jul(?:y)?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|' +
-  'dec(?:ember)?)';
-
-// Four day-exact shapes, in capture-group order:
-//   1-3   October 5, 2025 / Oct. 5th 2025
-//   4-6   5 October 2025 / 5th Oct 2025
-//   7-9   10/5/2025, 10-5-2025, 10.5.2025 (US month/day)
-//   10-12 2025-10-05
-const LUC_DATE_SHAPES =
-  '(?:(' + LUC_MONTH_ALT + ')\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?\\s*,?\\s*(\\d{4})' +
-  '|(\\d{1,2})(?:st|nd|rd|th)?\\s+(' + LUC_MONTH_ALT + ')\\.?\\s*,?\\s*(\\d{4})' +
-  '|(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{4}|\\d{2})' +
-  '|(\\d{4})-(\\d{2})-(\\d{2}))';
-
-// A page with thousands of label-like hits is a catalogue or a log, not a
-// CHTR page. Stop rather than spend the execution on it.
-const LUC_MAX_DATE_MATCHES = 200;
+// DATE EXTRACTION WAS HERE, REMOVED 2026-10-04. It read a "last updated"
+// date off CHTR pages so the 12-month rule could be a formula. It never
+// worked reliably enough to use: most pages state no date in a readable
+// form, and incident dates were mistaken for page dates. People judge the
+// 12-month rule now. The full code is in the GitHub history before this date.
 
 // LUC_HASH_MAX_CHARS WAS HERE, REMOVED 2026-09-01. The cap it held (200,000
 // characters) moved to HAZ_HASH_MAX_CHARS in ContentHash.gs, along with the
@@ -1479,240 +1320,8 @@ function lucRecheckAbandoned_(budgetMs) {
   return { checked: checked, summary: summary, remaining: remaining };
 }
 
-// =========================================================================
-// CHTR-ONLY DATE RE-SWEEP  (2026-09-01)
-// =========================================================================
-/**
- * Re-reads the last-updated date on CHTR pages, and touches NOTHING ELSE.
- *
- * WHY THIS EXISTS. Two date-extraction fixes shipped 2026-09-01: zero-width
- * characters are now stripped before matching (see lucExtractDate_ -- one
- * U+200B was hiding "Updated: June 15, 2026" on UW-Stevens Point), and
- * "as of" was added to the tier-2 label list. Neither takes effect on a row
- * until that row is fetched again. A full sweep would do it, but a full
- * sweep is 2,600 rows, re-judges every status, and can clear reviews on
- * pages that have moved -- an enormous side effect for a date fix.
- *
- * This reads only the ~550 CHTR rows that currently say "Date not found on
- * page", and writes only the two date fields.
- *
- * WHAT IT DELIBERATELY DOES NOT TOUCH:
- *   Last checked      -- it is the sweep's cursor. Stamping it here would
- *                        pull these rows out of the next real sweep's due
- *                        set on the strength of a fetch that judged nothing
- *                        but a date.
- *   Link status, HTTP code, Redirect target -- not re-judged. A row that
- *                        404s during this pass keeps its Live status until
- *                        a real sweep says otherwise; a date pass is not
- *                        evidence about liveness.
- *   Content hash      -- not rewritten. Same reason.
- *   Any review field  -- lucClearIfStale_ is NEVER called from here. A
- *                        determination cannot go stale because we re-read a
- *                        date.
- *
- * IT ONLY EVER IMPROVES A ROW. A row where a date is now found flips to
- * "Date found" with the date. A row where nothing is found is left exactly
- * as it was -- no write at all, which also makes a re-run cheap. So this
- * cannot turn a found date into a lost one.
- *
- * RESUMABLE BY UNITID WATERMARK, the same shape CrossSeed.gs uses and for
- * the same reason: the candidate list SHRINKS as the pass works, because a
- * row that finds a date leaves the filter. A positional cursor into a
- * shrinking list silently skips rows -- that bug cost this project a full
- * cross-seed run on 2026-08-29. A watermark names a place in the sort
- * order and survives the list changing underneath it.
- *
- * The whole matching set is listed and sorted in code every slice rather
- * than sorted server-side. It is ~550 rows of id + UNITID + URL, which is
- * cheap, and it removes any dependence on Airtable returning a stable order
- * for an unsorted filtered query.
- *
- * RUN: lucChtrDateResweep() until it says FINISHED.
- *      lucChtrDateResweepStatus() to see where it is, without fetching.
- *      lucChtrDateResweepReset() to start over from the top.
- */
-const LUC_CHTR_DATE_PROP  = 'luc_chtr_date_after';
-const LUC_CHTR_DATE_BATCH = 10;   // small: a bisect over a bad wave is the
-                                  // main cost here and it scales with wave size
-
-function lucChtrDateResweep()       { return lucChtrDateResweep_(LUC_SLICE_BUDGET_MANUAL_MS); }
-function lucChtrDateResweepScheduled() { return lucChtrDateResweep_(LUC_SLICE_BUDGET_SCHEDULED_MS); }
-
-function lucChtrDateResweepReset() {
-  PropertiesService.getScriptProperties().deleteProperty(LUC_CHTR_DATE_PROP);
-  Logger.log('CHTR date re-sweep reset. The next run starts from the top.');
-}
-
-function lucChtrDateResweepStatus() {
-  const pat = lucRequirePat_();
-  const after = PropertiesService.getScriptProperties().getProperty(LUC_CHTR_DATE_PROP) || '';
-  const rows = lucChtrDateRows_(pat);
-  let remaining = 0;
-  rows.forEach(function (r) { if (!after || r.unitid > after) remaining++; });
-  Logger.log('CHTR date re-sweep: ' + rows.length + ' row(s) still say "Date not found on page". ' +
-    (after ? 'Resume after UNITID ' + after + ' -- ' + remaining + ' left to try.'
-           : 'Not started.'));
-  return { total: rows.length, after: after, remaining: remaining };
-}
-
-/**
- * Every CHTR row that was read successfully and still has no date.
- *
- * Link status Live is part of the filter on purpose. A row that is Dead,
- * Login required or Unconfirmed did not fail the DATE check, it failed the
- * FETCH -- its result is "Unable to check", not "Date not found on page" --
- * so it is out of scope here and re-fetching it would be a liveness check
- * wearing a date check's clothes.
- */
-function lucChtrDateRows_(pat) {
-  const formula =
-    'AND({' + LUC_F_TRACKED + '} = "Transparency Report", ' +
-        '{' + LUC_F_STATUS  + '} = "Live", ' +
-        '{' + LUC_F_CHTR_DATE_RESULT + '} = "Date not found on page")';
-
-  const raw = lucListAll_(pat, LUC_CHECKS_TABLE,
-    [LUC_F_UNITID, LUC_F_URL, LUC_F_TRACKED], formula);
-
-  const out = [];
-  raw.forEach(function (r) {
-    const unitid = String(r.fields[LUC_F_UNITID] || '').trim();
-    const url = String(r.fields[LUC_F_URL] || '').trim();
-    if (!unitid || !url) return;
-    out.push({ id: r.id, unitid: unitid, url: url });
-  });
-
-  // Same comparator shape as CrossSeed's xsUnitidCmp_ -- plain string order,
-  // defined in exactly one place so the sort and the watermark test cannot
-  // disagree about what "after" means.
-  out.sort(function (a, b) { return a.unitid < b.unitid ? -1 : (a.unitid > b.unitid ? 1 : 0); });
-  return out;
-}
-
-function lucChtrDateResweep_(budgetMs) {
-  const lock = LockService.getScriptLock();
-  if (!lock.tryLock(1000)) {
-    Logger.log('Another run holds the lock. Nothing done.');
-    return { blocked: true };
-  }
-  try {
-    const pat = lucRequirePat_();
-    const startedAt = Date.now();
-    const props = PropertiesService.getScriptProperties();
-    let after = props.getProperty(LUC_CHTR_DATE_PROP) || '';
-
-    const rows = lucChtrDateRows_(pat);
-    if (!rows.length) {
-      Logger.log('Nothing to do: no CHTR row currently reads "Date not found on page".');
-      return { done: true, found: 0 };
-    }
-
-    let i = 0;
-    while (i < rows.length && after && rows[i].unitid <= after) i++;
-    if (i >= rows.length) {
-      Logger.log('FINISHED. Every row past the watermark has been tried. ' +
-        'lucChtrDateResweepReset() to run it again from the top.');
-      return { done: true, found: 0 };
-    }
-
-    let tried = 0, found = 0, skipped = 0, unreadable = 0;
-    const foundList = [];
-
-    while (i < rows.length && Date.now() - startedAt < budgetMs) {
-      const batch = [];
-      while (batch.length < LUC_CHTR_DATE_BATCH && i < rows.length) {
-        const row = rows[i++];
-        // Both guards mirror the main sweep's. A host we know hangs must
-        // not be entered into a wave here either -- one of them would cost
-        // this whole slice, and it would cost it every run.
-        if (lucIsKnownUnfetchable_(row.url) || !lucIsFetchableUrl_(row.url)) {
-          skipped++;
-          after = row.unitid;
-          continue;
-        }
-        batch.push(row);
-      }
-      if (!batch.length) { props.setProperty(LUC_CHTR_DATE_PROP, after); continue; }
-
-      const responses = lucFetchAllSafe_(
-        batch.map(function (r) { return lucRequest_(r.url); }),
-        startedAt + budgetMs);
-
-      const updates = [];
-      batch.forEach(function (row, k) {
-        tried++;
-        const resp = responses[k];
-        // No response, or not a 200: nothing to read. Left untouched --
-        // this pass does not get to say anything about liveness.
-        if (!resp) { unreadable++; return; }
-        let code;
-        try { code = resp.getResponseCode(); } catch (e) { unreadable++; return; }
-        if (code < 200 || code >= 300) { unreadable++; return; }
-
-        const iso = lucExtractDate_(resp);
-        if (!iso) return;   // still nothing -- no write, so a re-run is cheap
-
-        found++;
-        foundList.push(row.unitid + '  ' + iso + '  ' + row.url);
-        const f = {};
-        f[LUC_F_CHTR_LAST_UPDATED] = iso;
-        f[LUC_F_CHTR_DATE_RESULT] = 'Date found';
-        updates.push({ id: row.id, fields: f });
-      });
-
-      if (updates.length) lucChtrDateWrite_(pat, updates);
-
-      // Watermark AFTER the write, and to the LAST row of the batch -- the
-      // one just finished, never the next one. Writing the next row's id is
-      // the off-by-one that skips a school on resume.
-      after = batch[batch.length - 1].unitid;
-      props.setProperty(LUC_CHTR_DATE_PROP, after);
-    }
-
-    const done = i >= rows.length;
-    Logger.log(
-      '\n======== CHTR DATE RE-SWEEP ========\n' +
-      (done ? 'FINISHED. ' : 'Time budget reached. ') +
-      tried + ' page(s) fetched this run, ' +
-      found + ' date(s) newly found, ' +
-      unreadable + ' page(s) could not be read (left untouched), ' +
-      skipped + ' skipped as known-unfetchable or malformed.\n' +
-      'Resume after UNITID ' + after + '.\n' +
-      (done ? 'lucChtrDateResweepReset() to run it again from the top.\n'
-            : 'Run lucChtrDateResweep() again to continue.\n'));
-
-    if (foundList.length) {
-      Logger.log('--- dates found ---');
-      foundList.forEach(function (l) { Logger.log('  ' + l); });
-    }
-
-    return { done: done, tried: tried, found: found,
-             unreadable: unreadable, skipped: skipped, after: after };
-  } finally {
-    lock.releaseLock();
-  }
-}
-
-/**
- * Writes ONLY the two date fields. Its own PATCH rather than lucPatch_,
- * because lucPatch_ stamps Last checked on every record it touches and that
- * is precisely what this pass must not do.
- */
-function lucChtrDateWrite_(pat, updates) {
-  for (let i = 0; i < updates.length; i += LUC_WRITE_BATCH) {
-    const batch = updates.slice(i, i + LUC_WRITE_BATCH);
-    const resp = UrlFetchApp.fetch(
-      'https://api.airtable.com/v0/' + LUC_BASE_ID + '/' + LUC_CHECKS_TABLE,
-      { method: 'patch',
-        headers: { Authorization: 'Bearer ' + pat, 'Content-Type': 'application/json' },
-        payload: JSON.stringify({ records: batch, typecast: true }),
-        muteHttpExceptions: true });
-    if (resp.getResponseCode() !== 200) {
-      Logger.log('Date write failed for ' + batch.length + ' row(s): ' +
-        resp.getContentText().slice(0, 300));
-    }
-    Utilities.sleep(210);
-  }
-}
+// The CHTR-only date re-sweep (lucChtrDateResweep and friends) was removed
+// 2026-10-04 along with the date read. See LUC_F_CHTR_LAST_UPDATED's note.
 
 function lucStatus() {
   const state = lucReadState_();
@@ -2799,169 +2408,6 @@ function lucContentHash_(resp) {
 }
 
 /**
- * Records an OBSERVATION, not a judgment: a date was found, or the page
- * was read and none matched, or we never got to read it, or there is no
- * URL. Whether a date is recent enough is a HazingInfo policy question --
- * settled 2026-08-19 as "updated within the 12 months before the data
- * check date", anchored on September 1 -- and deriving it in Airtable from
- * the stored date means changing the standard is a formula edit that
- * reapplies to every row instantly, instead of a code change plus a full
- * re-sweep during which the base holds a mix of verdicts from two
- * standards with nothing saying which is which.
- */
-function lucExtractDate_(resp) {
-  let text;
-  try {
-    text = resp.getContentText().substring(0, 2000000);
-  } catch (e) {
-    return null;
-  }
-  if (!text) return null;
-
-  // Decode common entities before matching. A literal "&nbsp;" between a
-  // label and its date -- "Last updated:&nbsp;6/22/2026", very common from
-  // WYSIWYG editors -- survives tag-stripping as literal text and blocks
-  // the regex separator even though the two are adjacent on the page.
-  // Whitespace is collapsed last so a label and its date split across two
-  // lines or table cells still read as adjacent.
-  // ZERO-WIDTH CHARACTERS ARE REMOVED, NOT COLLAPSED (added 2026-09-01).
-  //
-  // THE BUG THIS FIXES, found on UW-Stevens Point (240480). The page says
-  // "Updated: June 15, 2026." and the row read "Date not found on page" for
-  // months. The reason is that the page carries U+200B ZERO WIDTH SPACE
-  // between the day and the comma, and again after the year -- the classic
-  // signature of text pasted out of Word or a WYSIWYG editor.
-  //
-  // JavaScript's \s DOES NOT MATCH U+200B. It matches U+00A0 (NBSP) and
-  // U+FEFF, which is why the entity decoding below was enough for the
-  // &nbsp; case and is NOT enough for this one. Verified rather than
-  // assumed: /\s/.test('\u200B') is false, /\s/.test('\u00A0') is true.
-  //
-  // One such character anywhere between the label and the end of the year
-  // breaks the whole match -- LUC_DATE_SHAPES uses \s* between the day, the
-  // comma and the year, and \s* cannot cross it. The failure is silent and
-  // indistinguishable from a page that genuinely has no date.
-  //
-  // REMOVED rather than replaced with a space, because these are joiners
-  // and separators with no width: "20\u200B26" is the year 2026, and
-  // turning it into "20 26" would be a different kind of wrong.
-  //
-  // The entity spellings are handled here too. Airtable's own tag-stripping
-  // never sees them; they arrive as literal text like any other entity.
-  //
-  // NOTE: ContentHash.gs deliberately does NOT do this. A zero-width
-  // character is part of the page's text, and stripping it there would
-  // change every stored hash for no gain -- the hash only has to be
-  // consistent with itself, whereas this regex has to match human wording.
-  const plain = text
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&#8203;|&#x200B;|&zwnj;|&#8204;|&zwj;|&#8205;|&#65279;|&#xFEFF;/gi, '')
-    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&#160;/g, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&#8211;|&ndash;/gi, '-')
-    .replace(/&#8212;|&mdash;/gi, '-')
-    .replace(/\s+/g, ' ');
-
-  const maxYear = new Date().getFullYear() + 1;
-
-  // Tier 1 is trusted outright. Tier 2 is only consulted if tier 1 found
-  // nothing, and only if every tier-2 hit agrees -- see the tier comments.
-  return lucScanForDate_(plain, LUC_DATE_LABEL_TIER1, maxYear, false) ||
-         lucScanForDate_(plain, LUC_DATE_LABEL_TIER2, maxYear, true);
-}
-
-/**
- * Every "<label> <day-exact date>" hit in the page text, reduced to one
- * date, or null.
- *
- * requireUnanimous is what makes the tier-2 fallback safe. A real page
- * statement says "Updated June 30, 2026" once. An incident table says
- * "status updated ..." on every row, with a different date each time. So
- * when a tier-2 scan turns up two or more DIFFERENT dates, the page is
- * showing a table rather than making a statement, and the honest answer is
- * that no page-update date was found.
- *
- * Otherwise the most recent valid date wins. String comparison is exact on
- * zero-padded ISO, so no date parsing is needed to order them.
- */
-function lucScanForDate_(plain, labelAlt, maxYear, requireUnanimous) {
-  // Fresh RegExp per call: a /g regex carries lastIndex between uses, and a
-  // shared one would resume mid-page on the next row and skip matches.
-  const re = new RegExp(labelAlt + LUC_DATE_SEPARATOR + LUC_DATE_SHAPES, 'gi');
-  const distinct = {};
-  let best = null;
-  let seen = 0;
-  let m;
-
-  while ((m = re.exec(plain)) !== null) {
-    if (++seen > LUC_MAX_DATE_MATCHES) break;
-
-    let y, mo, d;
-    if (m[1] !== undefined) {                    // October 5, 2025
-      mo = LUC_MONTH_NUMBERS[m[1].toLowerCase()];
-      d = Number(m[2]);
-      y = Number(m[3]);
-    } else if (m[4] !== undefined) {             // 5 October 2025
-      d = Number(m[4]);
-      mo = LUC_MONTH_NUMBERS[m[5].toLowerCase()];
-      y = Number(m[6]);
-    } else if (m[7] !== undefined) {             // 10/5/2025 -- US order
-      mo = Number(m[7]);
-      d = Number(m[8]);
-      y = Number(m[9]);
-      if (y < 100) y += 2000;
-    } else if (m[10] !== undefined) {            // 2025-10-05
-      y = Number(m[10]);
-      mo = Number(m[11]);
-      d = Number(m[12]);
-    } else {
-      continue;
-    }
-
-    const iso = lucValidIsoDate_(y, mo, d, maxYear);
-    if (!iso) continue;
-    distinct[iso] = true;
-    if (!best || iso > best) best = iso;
-  }
-
-  if (requireUnanimous && Object.keys(distinct).length > 1) return null;
-  return best;
-}
-
-/**
- * Returns yyyy-MM-dd if these parts are a real calendar date inside the
- * plausible range, or null.
- *
- * Built with Date.UTC and round-trip verified rather than parsed from a
- * string. new Date("Fall 2025") returning 1 January 2025 is what put
- * sixteen fabricated dates into the base; nothing here can repeat that,
- * because nothing here parses prose. The round-trip check is what rejects
- * 31 February and 31 April, which Date.UTC would otherwise roll forward
- * into March and May rather than refusing.
- *
- * The lower bound is 2000 rather than the Stop Campus Hazing Act's 2025:
- * a genuinely old "last updated" date is a real and reportable finding
- * about a stale page, and discarding it as noise would hide exactly the
- * schools the freshness standard exists to catch. Only impossible years
- * are rejected.
- */
-function lucValidIsoDate_(y, mo, d, maxYear) {
-  if (!(y >= 2000 && y <= maxYear)) return null;
-  if (!(mo >= 1 && mo <= 12)) return null;
-  if (!(d >= 1 && d <= 31)) return null;
-
-  const dt = new Date(Date.UTC(y, mo - 1, d));
-  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) {
-    return null;
-  }
-
-  const pad = function (n) { return (n < 10 ? '0' : '') + n; };
-  return y + '-' + pad(mo) + '-' + pad(d);
-}
-
-/**
  * Is this page THERE or GONE? The only distinction between HTTP results
  * that a human review can go stale against.
  *
@@ -3206,10 +2652,6 @@ function lucCheckBatch_(rows, deadlineAt) {
       entry.fields[LUC_F_CODE] = '';
       entry.fields[LUC_F_REDIRECT] = '';
       entry.fields[LUC_F_HASH] = '';
-      if (tracked.dateCheck) {
-        entry.fields[LUC_F_CHTR_DATE_RESULT] = 'No URL';
-        entry.fields[LUC_F_CHTR_LAST_UPDATED] = null;  // date field: null, not ''
-      }
       lucClearIfStale_(entry, entry.prev, '', '');
       return;
     }
@@ -3224,7 +2666,6 @@ function lucCheckBatch_(rows, deadlineAt) {
       entry.fields[LUC_F_STATUS] = 'Unconfirmed';
       entry.fields[LUC_F_CODE] = 'Malformed URL';
       entry.fields[LUC_F_REDIRECT] = '';
-      if (tracked.dateCheck) lucMarkDateUnchecked_(entry);
       Logger.log('MALFORMED URL, not fetched -- ' + entry.label + ': "' + url + '"');
       return;
     }
@@ -3245,7 +2686,6 @@ function lucCheckBatch_(rows, deadlineAt) {
       entry.fields[LUC_F_STATUS] = 'Unconfirmed';
       entry.fields[LUC_F_CODE] = 'Known unfetchable';
       entry.fields[LUC_F_REDIRECT] = '';
-      if (tracked.dateCheck) lucMarkDateUnchecked_(entry);
       Logger.log('KNOWN UNFETCHABLE, not fetched -- ' + entry.label + ': ' + url);
       return;
     }
@@ -3267,9 +2707,8 @@ function lucCheckBatch_(rows, deadlineAt) {
 
   const responses = lucRetryFailures_(jobs, firstPass, deadlineAt);
 
-  // Pass 1: status for every URL, and collect the CHTR redirect targets
-  // that still need a date read.
-  const redirectFollowUps = [];
+  // Status for every URL. (A second pass that followed CHTR redirects for
+  // the date read was removed 2026-10-04 with the date read.)
 
   jobs.forEach(function (j, i) {
     const resp = responses[i];
@@ -3333,7 +2772,6 @@ function lucCheckBatch_(rows, deadlineAt) {
       entry.fields[LUC_F_STATUS]   = 'Unconfirmed';
       entry.fields[LUC_F_CODE]     = 'Bisect abandoned';
       entry.fields[LUC_F_REDIRECT] = '';
-      if (entry.tracked.dateCheck) lucMarkDateUnchecked_(entry);
       lucClearIfStale_(entry, entry.prev, j.url, 'Unreachable');
       return;
     }
@@ -3352,71 +2790,10 @@ function lucCheckBatch_(rows, deadlineAt) {
     }
 
     lucClearIfStale_(entry, entry.prev, j.url, interpreted.code);
-
-    if (!entry.tracked.dateCheck) return;
-
-    // "Date not found on page" means something precise: we read the page
-    // and nothing matched. If we never got a readable page -- blocked,
-    // dead, behind a login, server down -- that is "Unable to check",
-    // because claiming we looked would be false.
-    if (interpreted.status === 'Redirected' && interpreted.redirectTarget) {
-      redirectFollowUps.push({ idx: j.idx, url: interpreted.redirectTarget });
-    } else if (resp && interpreted.status === 'Live') {
-      lucApplyDate_(entry, lucExtractDate_(resp));
-    } else {
-      lucMarkDateUnchecked_(entry);
-    }
   });
-
-  // Pass 2: one batched round of redirect destinations for the date read.
-  // Skipped when the slice is out of time -- the statuses are already
-  // recorded by this point, so only the date is lost, which beats starting
-  // a third unbounded wave and having the execution killed with the
-  // statuses still unwritten.
-  if (redirectFollowUps.length && deadlineAt && Date.now() > deadlineAt) {
-    // Skipping the fetch is fine. Skipping the WRITE is not: leaving the
-    // field alone lets a previous sweep's verdict sit there looking
-    // current, because Last checked gets stamped either way.
-    Logger.log('Past deadline; ' + redirectFollowUps.length +
-      ' redirect target(s) marked Unable to check without being read.');
-    redirectFollowUps.forEach(function (f) { lucMarkDateUnchecked_(results[f.idx]); });
-  } else if (redirectFollowUps.length) {
-    const destResponses = lucFetchAllSafe_(redirectFollowUps.map(function (f) {
-      return Object.assign(lucRequest_(f.url), { followRedirects: true });
-    }), deadlineAt);
-
-    redirectFollowUps.forEach(function (f, i) {
-      const destResp = destResponses[i];
-      lucApplyDate_(results[f.idx], destResp ? lucExtractDate_(destResp) : null);
-    });
-  }
 
   return results.filter(function (e) { return !e.skip; });
 }
-
-/**
- * Writes BOTH date fields, always. Never one without the other.
- *
- * Leaving the found date untouched when this run found nothing would put a
- * stale date next to a fresh "Date not found on page" and a fresh Last
- * checked, which together read as "we just verified this date". Clearing
- * it is the only honest option: we did look, and there was nothing there.
- */
-function lucApplyDate_(entry, isoDate) {
-  if (isoDate) {
-    entry.fields[LUC_F_CHTR_LAST_UPDATED] = isoDate;
-    entry.fields[LUC_F_CHTR_DATE_RESULT] = 'Date found';
-  } else {
-    entry.fields[LUC_F_CHTR_LAST_UPDATED] = null;  // date field: null, '' is a 422
-    entry.fields[LUC_F_CHTR_DATE_RESULT] = 'Date not found on page';
-  }
-}
-
-function lucMarkDateUnchecked_(entry) {
-  entry.fields[LUC_F_CHTR_LAST_UPDATED] = null;
-  entry.fields[LUC_F_CHTR_DATE_RESULT] = 'Unable to check';
-}
-
 
 // =========================================================================
 // WRITING BACK
