@@ -82,13 +82,37 @@
 // should be rare enough to be worth reading every time it appears.
 //
 // -------------------------------------------------------------------------
-// WHAT IT ACTS ON
+// WHAT IT ACTS ON (rewritten 2026-10-04 for the below-standard ticks)
 // -------------------------------------------------------------------------
-//   Fixed - new URL                          -> write proposed URL
-//   Confirmed broken - no replacement found  -> clear the sibling
-//   Working as-is                            -> ignored, nothing changed
-//   Needs second opinion                     -> ignored, not settled
-//   (blank)                                  -> ignored, not reviewed
+// Each Live URL Checks row has three below-standard fields, one per
+// category (CHTR / Hazing policy / Report form below standard). Only the
+// one matching the row's category may be ticked. THE TICKS DECIDE WHETHER
+// THE PAGE IS PUBLISHED, exactly as Hold vs Accept does in Promote:
+//
+//   Fixed - new URL, nothing ticked   -> record + published = proposed URL,
+//                                        below-standard reasons cleared
+//   Fixed - new URL, reasons ticked   -> record = proposed URL, published
+//                                        emptied, reasons written
+//   Working as-is, reasons ticked     -> record kept, published emptied,
+//                                        reasons written (the page works
+//                                        but falls short of the standard)
+//   Working as-is, nothing ticked     -> ignored, nothing changes
+//   Confirmed broken - no replacement -> record, published AND reasons all
+//                                        cleared, whatever is ticked
+//   Needs second opinion              -> ignored, not settled
+//   (blank)                           -> ignored, not reviewed
+//
+// WHY ALL THREE FIELDS MOVE TOGETHER. Until 2026-10-04 this file wrote only
+// the two URL fields, so a cleared link left its below-standard reasons
+// behind, and a replacement went onto the site with no standard check at
+// all. Now every applied review sets all three, the way Promote does, so a
+// reason can never outlive the page it describes.
+//
+// THE REASONS FOLLOW THE RECORD FIELD. Reasons are written or cleared only
+// when the record field ends up holding the page they describe. If the
+// record field holds a different page (a hand edit, see the field-level
+// guard), the reasons are left alone; and a review that would take a page
+// off the site with reasons that cannot be recorded is skipped whole.
 //
 // IT READS THE DETERMINATION, NOT A VIEW. Pointing at "Awaiting write-back"
 // would work, but a view's filter is edited in the UI, is not readable
@@ -96,10 +120,11 @@
 // publishes. The two determinations above are named here in code where a
 // diff shows them.
 //
-// WORKING AS-IS IS NOT A WRITE. Under the old design this was a real
-// question -- a row with a fine URL but a blank sibling would have gained a
-// checkmark it arguably earned. That case cannot occur now: a row only
-// exists because the sibling is non-blank. Nothing to reconcile.
+// WORKING AS-IS IS A WRITE ONLY WHEN REASONS ARE TICKED. With nothing
+// ticked the published page stays as it is. With reasons ticked, the reviewer
+// is saying the page works but is below standard -- often a page that was
+// published without the standard being applied properly -- so it comes off
+// the site and the reasons are recorded.
 //
 // -------------------------------------------------------------------------
 // ONE INSTITUTION CAN HAVE THREE ROWS, WHICH IS WHY WRITES ARE MERGED
@@ -185,6 +210,12 @@ const WB_C_NOTES         = 'fldUWo0jlZFkRw2Yl';
 // changed after the review; this field can. Added 2026-09-26 -- see the
 // staleness guard in wbPlan_.
 const WB_C_SNAP_URL      = 'fldVmX5yeRqTZuqDX';
+// The reviewer's below-standard ticks, one field per category (added
+// 2026-10-04). Choice names match the 50 States below-standard fields exactly;
+// they are written by name with typecast off.
+const WB_C_BELOW_CHTR    = 'fldgfMu6RujSpxcSn';  // CHTR below standard
+const WB_C_BELOW_POLICY  = 'fldjIEUMM0ers0Z4Q';  // Hazing policy below standard
+const WB_C_BELOW_FORM    = 'fldjEkPZeBaqGDyac';  // Report form below standard
 
 // ---- 50 States fields ----------------------------------------------------
 const WB_S_UNITID      = 'fldSOdX8KWnxZ3wFv';
@@ -196,10 +227,12 @@ const WB_S_INSTITUTION = 'fldb8bn85BkJbu7YT';
 // options were renamed and a substring match stopped matching.
 const WB_DET_FIXED  = 'Fixed - new URL';
 const WB_DET_BROKEN = 'Confirmed broken - no replacement found';
+const WB_DET_WORKING = 'Working as-is';
 
 /**
- * THE CATEGORY MAP. Tracked field option -> the pair of 50 States fields it
- * writes. All six targets verified as multilineText (writable, not formulas)
+ * THE CATEGORY MAP. Tracked field option -> the 50 States fields it writes
+ * (record, published, below-standard) and the Live URL Checks field holding
+ * the reviewer's ticks for that category. All six targets verified as multilineText (writable, not formulas)
  * against the live schema on 2026-08-28.
  *
  * THE KEYS CHANGED ON 2026-08-28 when Live URL Checks switched from tracking
@@ -219,17 +252,23 @@ const WB_CATEGORIES = {
   'Transparency Report': {
     label:   'CHTR',
     located: 'fldF1eBetEtn3P9ai',
-    sibling: 'flde8Mfh5vVz1iD0a'
+    sibling: 'flde8Mfh5vVz1iD0a',
+    below:   'fld1OvoiS3flecsZ7',   // chtr_below_standard
+    ticks:   WB_C_BELOW_CHTR
   },
   'Hazing Policy': {
     label:   'Hazing Policy',
     located: 'fldeV6a02lVAwHYOd',
-    sibling: 'fldhLNehpqJqXgWPT'
+    sibling: 'fldhLNehpqJqXgWPT',
+    below:   'fld1elkZEyrtENFMU',   // hazing_policy_below_standard
+    ticks:   WB_C_BELOW_POLICY
   },
   'Report Form': {
     label:   'Report Form',
     located: 'fldYG8a7J9o5hfoN2',
-    sibling: 'fldhHGkKvHK8BtC1e'
+    sibling: 'fldhHGkKvHK8BtC1e',
+    below:   'fldSepO8coDh0MSWq',   // report_form_below_standard
+    ticks:   WB_C_BELOW_FORM
   }
 };
 
@@ -332,12 +371,10 @@ function wbRun_(dryRun) {
       : '=== APPLYING -- writing to 50 States ===');
 
     // ---- 1. the settled reviews --------------------------------------
-    const formula = 'OR({' + WB_C_DETERMINATION + '} = "' + WB_DET_FIXED + '", ' +
-                    '{' + WB_C_DETERMINATION + '} = "' + WB_DET_BROKEN + '")';
-
     const rows = wbListAll_(pat, WB_PAGES_BASE, WB_CHECKS_TABLE,
       [WB_C_UNITID, WB_C_TRACKED, WB_C_URL, WB_C_DETERMINATION,
-       WB_C_PROPOSED_URL, WB_C_NOTES, WB_C_SNAP_URL], formula);
+       WB_C_PROPOSED_URL, WB_C_NOTES, WB_C_SNAP_URL,
+       WB_C_BELOW_CHTR, WB_C_BELOW_POLICY, WB_C_BELOW_FORM], wbSettledFormula_());
 
     Logger.log('Settled reviews found: ' + rows.length);
     if (!rows.length) {
@@ -348,7 +385,8 @@ function wbRun_(dryRun) {
     // ---- 2. the target table ------------------------------------------
     const targetFields = [WB_S_UNITID, WB_S_INSTITUTION];
     for (const k in WB_CATEGORIES) {
-      targetFields.push(WB_CATEGORIES[k].located, WB_CATEGORIES[k].sibling);
+      targetFields.push(WB_CATEGORIES[k].located, WB_CATEGORIES[k].sibling,
+                        WB_CATEGORIES[k].below);
     }
 
     const institutions = wbListAll_(pat, WB_STATES_BASE, WB_INST_TABLE, targetFields, '');
@@ -412,7 +450,9 @@ function wbRun_(dryRun) {
         Logger.log('    ' + p.category.label + ': ' + p.action);
         Logger.log('        published (sibling) was: "' + p.currentSibling + '" -> "' + p.value + '"');
         Logger.log('        located_* was:           "' + p.currentLocated + '" -> ' +
-          (p.writesLocated ? '"' + p.value + '"' : 'unchanged (kept on purpose)'));
+          (p.writesLocated ? '"' + p.locatedTarget + '"' : 'unchanged (kept on purpose)'));
+        Logger.log('        below-standard was:      [' + p.currentBelow.join('; ') + '] -> ' +
+          (p.writesBelow ? '[' + p.belowTarget.join('; ') + ']' : 'unchanged'));
         if (!p.currentSibling && p.value) {
           newCheckmarks++;
           Logger.log('        *** NEW CHECKMARK -- this school gains a ' +
@@ -452,6 +492,10 @@ function wbRun_(dryRun) {
     Logger.log('Institutions to update: ' + targets.length +
       ' (from ' + ops.length + ' reviewed row(s))');
     Logger.log('New checkmarks: ' + newCheckmarks + ' | Cleared checkmarks: ' + lostCheckmarks);
+    Logger.log('Below-standard reasons written: ' + ops.filter(function (o) {
+      return o.writesBelow && o.belowTarget.length; }).length +
+      ' | cleared: ' + ops.filter(function (o) {
+      return o.writesBelow && !o.belowTarget.length; }).length);
 
     if (targets.length > WB_MAX_WRITES) {
       throw new Error('Refusing to run: ' + targets.length + ' institutions exceeds ' +
@@ -570,8 +614,30 @@ function wbPlan_(row, byUnitid) {
   const target = matches[0];
   const currentLocated = String(target.fields[category.located] || '').trim();
   const currentSibling = String(target.fields[category.sibling] || '').trim();
+  const currentBelow   = wbNames_(target.fields[category.below]);
+  const snapUrl        = String(row.fields[WB_C_SNAP_URL] || '').trim();
 
-  let value, action, writesLocated;
+  // TICKS IN ANOTHER CATEGORY'S FIELD ARE REFUSED, never moved or guessed.
+  // The same rule as Promote: a reason in the wrong field is a reviewer slip,
+  // and publishing on the strength of it could clear or keep the wrong page.
+  const ticks = wbNames_(row.fields[category.ticks]);
+  const stray = [];
+  for (const k in WB_CATEGORIES) {
+    const other = WB_CATEGORIES[k];
+    if (other !== category && wbNames_(row.fields[other.ticks]).length) stray.push(other.label);
+  }
+  if (stray.length) {
+    base.reason = 'REFUSED -- below-standard reasons are ticked in the ' + stray.join(' and ') +
+      ' field on a ' + category.label + ' row. Move them to the ' + category.label +
+      ' field, or clear them.';
+    return base;
+  }
+
+  // value         -> the published (sibling) field
+  // locatedValue  -> the record field, or null to leave it alone
+  // belowValue    -> the below-standard field
+  // marksPage     -> the page those reasons describe ('' when clearing)
+  let value, locatedValue, belowValue, marksPage, action;
 
   if (determination === WB_DET_FIXED) {
     if (!proposed) {
@@ -586,14 +652,33 @@ function wbPlan_(row, byUnitid) {
       base.reason = 'REFUSED -- proposed URL is a login wall, will not publish: "' + proposed + '"';
       return base;
     }
-    value = proposed;
-    action = 'write proposed URL';
-    writesLocated = true;          // a verified address is the best URL known
+    locatedValue = proposed;        // a verified address is the best URL known
+    value        = ticks.length ? '' : proposed;
+    belowValue   = ticks;
+    marksPage    = proposed;
+    action = ticks.length
+      ? 'record the proposed URL as BELOW STANDARD (not published), with ' + ticks.length + ' reason(s)'
+      : 'write proposed URL, clear any below-standard reasons';
 
-} else if (determination === WB_DET_BROKEN) {
-  value = '';
-  action = 'CLEAR the published link (confirmed broken, no replacement)';
-  writesLocated = true;          // confirmed dead -- forget it, so discovery looks again
+  } else if (determination === WB_DET_BROKEN) {
+    value        = '';
+    locatedValue = '';               // confirmed dead -- forget it, so discovery looks again
+    belowValue   = [];
+    marksPage    = '';
+    action = 'CLEAR the published link, the record field and the below-standard reasons ' +
+             '(confirmed broken, no replacement)';
+
+  } else if (determination === WB_DET_WORKING) {
+    if (!ticks.length) {
+      base.reason = '"' + WB_DET_WORKING + '" with nothing ticked -- nothing to change';
+      return base;
+    }
+    value        = '';
+    locatedValue = null;             // the record field keeps the page
+    belowValue   = ticks;
+    marksPage    = snapUrl;
+    action = 'take the link OFF the site (works, but below standard), keep it in the record field, ' +
+             'with ' + ticks.length + ' reason(s)';
 
   } else {
     base.reason = 'determination "' + determination + '" is not acted on';
@@ -632,7 +717,6 @@ function wbPlan_(row, byUnitid) {
   //                     snapshot to tell -- skip and ask for a re-review.
   //                     The next Live URL Checks sweep clears the stale
   //                     review on its own; nothing here is lost.
-  const snapUrl = String(row.fields[WB_C_SNAP_URL] || '').trim();
   if (reviewedUrl !== value) {
     if (!snapUrl) {
       base.reason = 'no snapshot of the address the reviewer saw, so it cannot tell whether ' +
@@ -647,16 +731,14 @@ function wbPlan_(row, byUnitid) {
     }
   }
 
-  // Build exactly what will be sent, then test THAT for a no-op. Testing the
-  // pair when only one of them is written would make every clear look like a
-  // pending change forever, because located_* is deliberately left alone.
+  // Build exactly what will be sent, then test THAT for a no-op.
   const fields = {};
   fields[category.sibling] = value;
-  if (writesLocated) fields[category.located] = value;
+  if (locatedValue !== null) fields[category.located] = locatedValue;
 
   // THE FIELD-LEVEL GUARD (added 2026-09-26). A review is about ONE page: the
-  // address the reviewer saw (the snapshot). Each field is changed only if it
-  // holds that exact page now, or already holds the target value. Anything
+  // address the reviewer saw (the snapshot). Each URL field is changed only if
+  // it holds that exact page now, or already holds the target value. Anything
   // else is left alone. Found on 2026-09-26: Richmond's review judged
   // org-conduct.html, but the published field was already blank, so the run
   // went on to clear the record field (located_*) -- which held a DIFFERENT,
@@ -670,10 +752,29 @@ function wbPlan_(row, byUnitid) {
     heldBack.push(f === category.sibling ? 'published' : 'located_*');
     delete fields[f];
   }
-  if (!(category.located in fields)) writesLocated = false;
+  const writesLocated = (category.located in fields);
 
-  let changes = false;
+  // THE REASONS FOLLOW THE RECORD FIELD (added 2026-10-04). They describe one
+  // page, so they are written or cleared only when the record field ends up
+  // holding that page. If the reviewer ticked reasons and the record field
+  // cannot hold the page they describe, nothing is applied: taking a link off
+  // the site without recording why would lose the finding.
+  const finalLocated = writesLocated ? fields[category.located] : currentLocated;
+  if (finalLocated === marksPage) {
+    if (!wbSameList_(currentBelow, belowValue)) fields[category.below] = belowValue;
+  } else if (belowValue.length) {
+    base.reason = 'left alone: below-standard reasons are ticked, but the record field holds a ' +
+      'different page ("' + finalLocated + '") from the one they describe ("' +
+      (marksPage || '(none)') + '") -- fix the record field, then re-review';
+    return base;
+  } else if (currentBelow.length) {
+    heldBack.push('below-standard (they belong to the page in the record field)');
+  }
+  const writesBelow = (category.below in fields);
+
+  let changes = writesBelow;
   for (const f in fields) {
+    if (f === category.below) continue;
     const current = String(target.fields[f] || '').trim();
     if (current !== fields[f]) { changes = true; break; }
   }
@@ -695,6 +796,10 @@ function wbPlan_(row, byUnitid) {
     category: category,
     fields: fields,
     writesLocated: writesLocated,
+    locatedTarget: writesLocated ? fields[category.located] : currentLocated,
+    writesBelow: writesBelow,
+    belowTarget: belowValue,
+    currentBelow: currentBelow,
     currentLocated: currentLocated,
     currentSibling: currentSibling,
     value: value,
@@ -722,12 +827,46 @@ function wbPlan_(row, byUnitid) {
 // IF THE PROJECT IS EVER COPIED, copy the wb_applied_* properties too, or run
 // wbMarkAllApplied() once in the new copy before the first real run.
 const WB_APPLIED_PREFIX = 'wb_applied_';
+
+/**
+ * The reviews this script reads: Fixed, Confirmed broken, and Working as-is
+ * only when a below-standard reason is ticked. Working as-is with nothing
+ * ticked changes nothing, so it is not read at all.
+ */
+function wbSettledFormula_() {
+  const ticked = 'OR({' + WB_C_BELOW_CHTR + '} != "", {' + WB_C_BELOW_POLICY + '} != "", {' +
+                 WB_C_BELOW_FORM + '} != "")';
+  return 'OR({' + WB_C_DETERMINATION + '} = "' + WB_DET_FIXED + '", ' +
+         '{' + WB_C_DETERMINATION + '} = "' + WB_DET_BROKEN + '", ' +
+         'AND({' + WB_C_DETERMINATION + '} = "' + WB_DET_WORKING + '", ' + ticked + '))';
+}
+
+/** A multiple-select value as a sorted list of trimmed names. */
+function wbNames_(v) {
+  if (!v) return [];
+  return (Array.isArray(v) ? v : [v])
+    .map(function (x) { return String(x && x.name ? x.name : x).trim(); })
+    .filter(function (x) { return x; })
+    .sort();
+}
+
+function wbSameList_(a, b) {
+  return a.length === b.length && a.join('\n') === b.join('\n');
+}
 const WB_APPLIED_CHUNK  = 8000;   // characters per property; the limit is 9 KB
 
 function wbFingerprint_(row) {
   const f = (row && row.fields) || {};
-  const raw = [f[WB_C_DETERMINATION] || '', String(f[WB_C_SNAP_URL] || '').trim(),
-               String(f[WB_C_PROPOSED_URL] || '').trim()].join('|');
+  const parts = [f[WB_C_DETERMINATION] || '', String(f[WB_C_SNAP_URL] || '').trim(),
+                 String(f[WB_C_PROPOSED_URL] || '').trim()];
+  // Ticks join the fingerprint only when there are some (2026-10-04), so a
+  // changed set of reasons applies again, and every review applied before the
+  // ticks existed keeps the fingerprint it was recorded with.
+  const ticks = [WB_C_BELOW_CHTR, WB_C_BELOW_POLICY, WB_C_BELOW_FORM]
+    .map(function (id) { return wbNames_(f[id]).join(';'); })
+    .filter(function (t) { return t; });
+  if (ticks.length) parts.push(ticks.join('/'));
+  const raw = parts.join('|');
   const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, raw,
                                         Utilities.Charset.UTF_8);
   return Utilities.base64EncodeWebSafe(bytes).slice(0, 12);
@@ -777,10 +916,9 @@ function wbSaveApplied_(map) {
  */
 function wbMarkAllApplied() {
   const pat = wbRequirePat_();
-  const formula = 'OR({' + WB_C_DETERMINATION + '} = "' + WB_DET_FIXED + '", ' +
-                  '{' + WB_C_DETERMINATION + '} = "' + WB_DET_BROKEN + '")';
   const rows = wbListAll_(pat, WB_PAGES_BASE, WB_CHECKS_TABLE,
-    [WB_C_DETERMINATION, WB_C_PROPOSED_URL, WB_C_SNAP_URL], formula);
+    [WB_C_DETERMINATION, WB_C_PROPOSED_URL, WB_C_SNAP_URL,
+     WB_C_BELOW_CHTR, WB_C_BELOW_POLICY, WB_C_BELOW_FORM], wbSettledFormula_());
   const map = {};
   rows.forEach(function (r) { map[r.id] = wbFingerprint_(r); });
   wbSaveApplied_(map);
