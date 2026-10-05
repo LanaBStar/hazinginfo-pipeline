@@ -178,6 +178,16 @@ const SP_I_C_TRANSPARENCY = 'fldGJPC0iyuPcWtlK'; // Transparency Report -- pairs
 const SP_I_C_POLICY       = 'fldD9gEpDcw2l35II'; // Hazing Policy       -- pairs with located_hazing_policy_url
 const SP_I_C_FORM         = 'fldIrTzWzi87nD7EU'; // Report Form         -- pairs with located_report_form_url
 
+// THE RECORD FIELDS JOIN THE GATE, 2026-10-04. A school with a page in the
+// record field (typically one judged below standard) is no longer searched
+// either. Same change as discovery's gate: see the 2026-10-04 note above
+// CATEGORIES in SitemapFinder.gs, which supersedes "WHY COMPLIANCE" above.
+// Own SP_ names and their own object key (`recorded`), per the warning in
+// the next block -- never the old SC_I_* names.
+const SP_I_R_CHTR   = 'fldqQrSD83OVoteFx';   // chtr_index_url            RECORD
+const SP_I_R_POLICY = 'fldKyIAd65Yfn5g0V';   // located_hazing_policy_url RECORD
+const SP_I_R_FORM   = 'fldeBRiCU8dnIKsYk';   // located_report_form_url   RECORD
+
 // =========================================================================
 // MOVED FROM SiteCensus.gs  (2026-09-13)
 //
@@ -830,6 +840,7 @@ function spEligible_(inst, c) {
   if (inst.probeStatus) return '';
 
   if (inst.gate[c.catKey]) return '';
+  if (inst.recorded[c.catKey]) return '';   // 2026-10-04, see SP_I_R_*
   if (inst.counts[c.catKey] > 0) return '';
   if (inst.pending[c.catKey] > 0) return '';
 
@@ -873,6 +884,8 @@ function spInstitutions_(pat) {
     // record URL. Re-add them WITH their own object key if that changes;
     // do not fold them back into `gate`.
     SP_I_C_TRANSPARENCY, SP_I_C_POLICY, SP_I_C_FORM,
+    // The record three, read into `recorded` since 2026-10-04.
+    SP_I_R_CHTR, SP_I_R_POLICY, SP_I_R_FORM,
     SC_I_CNT_CHTR, SC_I_CNT_POLICY, SC_I_CNT_FORM,
     CATEGORIES.chtr.pendingCountField,
     CATEGORIES.hazingPolicy.pendingCountField,
@@ -911,6 +924,11 @@ function spInstitutions_(pat) {
           chtr:         String(f[SP_I_C_TRANSPARENCY] || '').trim(),
           hazingPolicy: String(f[SP_I_C_POLICY]       || '').trim(),
           reportForm:   String(f[SP_I_C_FORM]         || '').trim()
+        },
+        recorded: {
+          chtr:         String(f[SP_I_R_CHTR]   || '').trim(),
+          hazingPolicy: String(f[SP_I_R_POLICY] || '').trim(),
+          reportForm:   String(f[SP_I_R_FORM]   || '').trim()
         },
         counts: {
           chtr:         Number(f[SC_I_CNT_CHTR]   || 0),
