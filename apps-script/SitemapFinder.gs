@@ -608,7 +608,11 @@ function resetChtrProgress()         { return resetSitemapProgress('chtr'); }
 function resetHazingPolicyProgress() { return resetSitemapProgress('hazingPolicy'); }
 function resetReportFormProgress()   { return resetSitemapProgress('reportForm'); }
 
-function runOrResumeSitemapBatch(categoryKey) {
+// deadlineAt (optional, 2026-10-05): a clock time the CALLER must stop by.
+// The pipeline passes its slice deadline here so a batch started late in a
+// slice cannot run past it. Callers without one (the web app, the editor
+// wrappers, the legacy sweep) leave it out and get the batch's own budget.
+function runOrResumeSitemapBatch(categoryKey, deadlineAt) {
   const category = CATEGORIES[categoryKey];
   if (!category) throw new Error('Unknown category: ' + categoryKey);
 
@@ -633,7 +637,7 @@ function runOrResumeSitemapBatch(categoryKey) {
     props.deleteProperty(PROP_SITEMAP_SKIPPED_PREFIX + categoryKey);
   }
 
-  return runNextSitemapBatch_(category, after || '');
+  return runNextSitemapBatch_(category, after || '', deadlineAt);
 }
 
 function resetSitemapProgress(categoryKey) {
@@ -657,10 +661,33 @@ function resetSitemapProgress(categoryKey) {
 // not happen, and the resume offset is not saved. The whole batch is lost.
 // Measured 2026-09-12: a 20-school batch at >18s per school hit the cap and
 // lost everything it had done.
+//
+// TWO CHANGES ON 2026-10-05, after the 10/5 03:41 slice was killed.
+//
+// 1. THE BUDGET NOW ALSO RESPECTS THE CALLER'S DEADLINE. This 4 minutes was
+//    counted from the start of the BATCH, but the pipeline starts batches
+//    for up to 4 minutes into a SLICE. A batch started 2 minutes in could
+//    run to 6 minutes -- exactly what happened: the third batch started at
+//    03:43:32, and its 4 minutes ran out at 03:47:32, the same second the
+//    platform killed the slice. The stop is now whichever comes first.
+//
+// 2. EACH SCHOOL IS WRITTEN AS SOON AS IT FINISHES, not at the end of the
+//    batch. The in-flight marker is per school, so a kill skipped only the
+//    school being read -- but the schools finished earlier in that batch
+//    were never written AND the resume point jumped past them, so they were
+//    lost for the round without being named (10/5: six schools, 167288 to
+//    168591). Now a kill loses at most the one school in progress, and that
+//    school is named. Cost: two or three small Airtable calls per school
+//    instead of per batch, roughly a second each.
 const SITEMAP_BATCH_BUDGET_MS = 4 * 60 * 1000;
 
-function runNextSitemapBatch_(category, after) {
+function runNextSitemapBatch_(category, after, deadlineAt) {
   const startedAt = Date.now();
+  // Whichever comes first: this batch's own budget or the caller's deadline.
+  const batchStopAt = startedAt + SITEMAP_BATCH_BUDGET_MS;
+  const stopAt = deadlineAt ? Math.min(batchStopAt, deadlineAt) : batchStopAt;
+  const stoppedBy = (deadlineAt && deadlineAt < batchStopAt)
+    ? "the slice's 4-minute budget" : "this batch's 4-minute budget";
   const pat = capPat_();
   const props = PropertiesService.getScriptProperties();
   const categoryKey = category.key;
@@ -685,50 +712,69 @@ function runNextSitemapBatch_(category, after) {
   const results = [];
   let budgetHit = false;
 
+  const summaryKey   = PROP_SITEMAP_SUMMARY_PREFIX + categoryKey;
+  const processedKey = PROP_SITEMAP_PROCESSED_PREFIX + categoryKey;
+  const errorsKey    = PROP_SITEMAP_WRITE_ERRORS_PREFIX + categoryKey;
+  const afterKey     = PROP_SITEMAP_AFTER_PREFIX + categoryKey;
+
+  const write = { created: 0, skipped: 0, writeErrors: [] };
+  const instWrite = { written: 0, errors: [] };
+  const cumulative = JSON.parse(props.getProperty(summaryKey) || '{}');
+  let cumulativeWriteErrors = JSON.parse(props.getProperty(errorsKey) || '[]');
+  let processedSoFar = parseInt(props.getProperty(processedKey) || '0', 10);
+
   for (let i = 0; i < page.records.length; i++) {
-    // STOP BEFORE THE PLATFORM DOES. Breaking here means everything already
-    // processed still gets written below; letting the cap fire means none
-    // of it does. Per-school cost is not predictable from a sample -- it
-    // climbed from 7.2s to over 18s across one afternoon, and to about 84s
-    // on 2026-10-04, because big sites arrive in runs.
-    if (Date.now() - startedAt > SITEMAP_BATCH_BUDGET_MS) { budgetHit = true; break; }
-    props.setProperty(inFlightKey, String(page.records[i].fields[SM_F_UNITID] || '').trim());
-    results.push(processRecord_(page.records[i], category));
+    // STOP BEFORE THE PLATFORM DOES. Per-school cost is not predictable
+    // from a sample -- it climbed from 7.2s to over 18s across one
+    // afternoon, and to about 84s on 2026-10-04, because big sites arrive
+    // in runs. See SITEMAP_BATCH_BUDGET_MS for why stopAt can be the
+    // caller's deadline rather than this batch's own.
+    if (Date.now() > stopAt) { budgetHit = true; break; }
+
+    const unitid = String(page.records[i].fields[SM_F_UNITID] || '').trim();
+    props.setProperty(inFlightKey, unitid);
+    const r = processRecord_(page.records[i], category);
+    results.push(r);
+
+    // WRITE THIS SCHOOL NOW (2026-10-05). Candidate rows first, then the
+    // Institutions recording, then the resume point, then clear the
+    // in-flight marker. A kill anywhere before the last step leaves the
+    // marker set, so the next run names and skips this school; dedupe
+    // stops any rows that did land from doubling on a later round.
+    const w = writeSitemapCandidates_(pat, category, [r]);
+    write.created += w.created;
+    write.skipped += w.skipped;
+    if (w.writeErrors.length) {
+      write.writeErrors = write.writeErrors.concat(w.writeErrors);
+      cumulativeWriteErrors = cumulativeWriteErrors.concat(w.writeErrors);
+      props.setProperty(errorsKey, JSON.stringify(cumulativeWriteErrors));
+    }
+    const iw = dscWriteInstitutions_(pat, category, [r]);
+    instWrite.written += iw.written;
+    instWrite.errors = instWrite.errors.concat(iw.errors);
+
+    mergeSitemapSummary_(cumulative, [r]);
+    props.setProperty(summaryKey, JSON.stringify(cumulative));
+    processedSoFar++;
+    props.setProperty(processedKey, String(processedSoFar));
+
+    // THE RESUME POINT IS THE LAST SCHOOL FINISHED (2026-10-04), and since
+    // 2026-10-05 it moves one school at a time, only after that school is
+    // written. Before that it moved once per batch, after the writes -- so
+    // it could never point past an unwritten school, but a kill lost the
+    // whole batch's work.
+    if (unitid) {
+      after = unitid;
+      props.setProperty(afterKey, after);
+    }
+    props.deleteProperty(inFlightKey);
+
     Utilities.sleep(CRAWL_POLITENESS_DELAY_MS);
   }
 
-  const write = writeSitemapCandidates_(pat, category, results);
-  const instWrite = dscWriteInstitutions_(pat, category, results);
-
-  const cumulative = JSON.parse(props.getProperty(PROP_SITEMAP_SUMMARY_PREFIX + categoryKey) || '{}');
-  mergeSitemapSummary_(cumulative, results);
-  props.setProperty(PROP_SITEMAP_SUMMARY_PREFIX + categoryKey, JSON.stringify(cumulative));
-
-  const cumulativeWriteErrors =
-    JSON.parse(props.getProperty(PROP_SITEMAP_WRITE_ERRORS_PREFIX + categoryKey) || '[]')
-      .concat(write.writeErrors);
-  props.setProperty(PROP_SITEMAP_WRITE_ERRORS_PREFIX + categoryKey,
-    JSON.stringify(cumulativeWriteErrors));
-
-  const processedSoFar =
-    parseInt(props.getProperty(PROP_SITEMAP_PROCESSED_PREFIX + categoryKey) || '0', 10) +
-    results.length;
-  props.setProperty(PROP_SITEMAP_PROCESSED_PREFIX + categoryKey, String(processedSoFar));
-
-  // THE RESUME POINT IS THE LAST SCHOOL FINISHED (2026-10-04). Until then
-  // it was an Airtable page offset, which points past a whole page of 10,
-  // so it could only advance when all 10 were done. On slow sites the
-  // 4-minute budget ran out after 4, the offset stayed put, and every run
-  // redid the same 4 schools: about 45 minutes a night for no progress
-  // (2026-10-04, CHTR stuck at the same page all week). Now the next run
-  // starts after the last school actually written, however many that was.
   props.deleteProperty(inFlightKey);
-  if (results.length) {
-    after = String(results[results.length - 1].unitid || after);
-    props.setProperty(PROP_SITEMAP_AFTER_PREFIX + categoryKey, after);
-  }
   const done = !budgetHit && results.length === page.records.length && page.remaining === 0;
-  if (done) props.deleteProperty(PROP_SITEMAP_AFTER_PREFIX + categoryKey);
+  if (done) props.deleteProperty(afterKey);
 
   // LOG THE SUMMARY, DO NOT ONLY RETURN IT.
   //
@@ -757,9 +803,9 @@ function runNextSitemapBatch_(category, after) {
              : ''));
   if (budgetHit) {
     log.push('');
-    log.push('*** STOPPED ON THE 4-MINUTE BUDGET, before the platform cap.');
-    log.push('    Everything above WAS written, and the next run starts after the');
-    log.push('    last school finished. Nothing is redone.');
+    log.push('*** STOPPED ON ' + stoppedBy.toUpperCase() + ', before the platform cap.');
+    log.push('    Each school above was written as soon as it finished, and the');
+    log.push('    next run starts after the last one. Nothing is redone.');
   }
   log.push('Candidate rows created: ' + write.created +
            '   |   already present (deduped): ' + write.skipped);
@@ -2066,6 +2112,10 @@ function pdfBackfill_(dryRun, limit) {
  * rows per batch of 15 schools would be about 800 wasted API calls.
  * Asking only about the UNITIDs in hand is one call, and it is exact
  * rather than approximate.
+ *
+ * Since 2026-10-05 discovery calls this once PER SCHOOL (results holds one
+ * school), so a school is written the moment it is finished. Still one
+ * small filtered read per call.
  */
 function writeSitemapCandidates_(pat, category, results) {
   const label = PIPELINE_CATEGORY_LABEL[category.key];
@@ -5126,7 +5176,9 @@ function pipelineStageDiscover_(deadlineAt, state) {
 
   while (Date.now() < deadlineAt) {
     if (idx >= SITEMAP_SWEEP_ORDER.length) return { done: true };
-    const res = runOrResumeSitemapBatch(SITEMAP_SWEEP_ORDER[idx]);
+    // Pass the slice deadline (2026-10-05). Without it a batch started late
+    // in the slice runs on its own 4 minutes and past the 6-minute cap.
+    const res = runOrResumeSitemapBatch(SITEMAP_SWEEP_ORDER[idx], deadlineAt);
     state.stats.created += res.rowsCreatedThisBatch || 0;
     state.stats.alreadyThere += res.rowsAlreadyPresent || 0;
     Logger.log('  discover/' + SITEMAP_SWEEP_ORDER[idx] + ': ' +
