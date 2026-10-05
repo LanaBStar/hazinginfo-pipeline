@@ -266,10 +266,18 @@ const XS_PROP_STATS   = 'xs_stats_';
 // single-field. It was genuinely two per category for a few hours on
 // 2026-08-26 (compliance OR located), before the located_* backfill made
 // one enough; the plural survives that.
+//
+// 2026-10-04: EVERY TARGET IS TWO FIELDS AGAIN -- compliance AND record.
+// A school with a page in either field counts as answered, so a school
+// whose record field holds a below-standard page is no longer searched.
+// Same change, same reason, as discovery's gate: see the 2026-10-04 note
+// above CATEGORIES in SitemapFinder.gs. The paragraph above about why a
+// below-standard page "does not answer it" is superseded; kept as history.
+// Seeds are unaffected (XS_SEED_META below still reads the record fields).
 const XS_TARGETS = {
-  reportForm:   { label: 'Report Form',   fields: [XS_I_FORM],         seeds: ['chtr', 'policy'] },
-  chtr:         { label: 'CHTR',          fields: [XS_I_TRANSPARENCY], seeds: ['policy'] },
-  hazingPolicy: { label: 'Hazing Policy', fields: [XS_I_POLICY],       seeds: ['chtr'] }
+  reportForm:   { label: 'Report Form',   fields: [XS_I_FORM, XS_I_LOC_FORM],           seeds: ['chtr', 'policy'] },
+  chtr:         { label: 'CHTR',          fields: [XS_I_TRANSPARENCY, XS_I_CHTR],       seeds: ['policy'] },
+  hazingPolicy: { label: 'Hazing Policy', fields: [XS_I_POLICY, XS_I_LOC_POLICY],       seeds: ['chtr'] }
 };
 
 // SEEDS READ THE RECORD FIELDS, AND DELIBERATELY STAY THAT WAY -- they
