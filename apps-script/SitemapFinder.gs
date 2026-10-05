@@ -338,7 +338,18 @@ const INTAKE_CREATE_BATCH = 10;       // Airtable's cap per create call
 
 // Resumable progress, suffixed per category so switching categories
 // mid-review does not collide with an in-progress run of another.
-const PROP_SITEMAP_OFFSET_PREFIX = 'sitemapOffset_';
+const PROP_SITEMAP_OFFSET_PREFIX = 'sitemapOffset_';   // RETIRED 2026-10-04; only deleted now
+// Resume point since 2026-10-04: the UNITID of the last school FINISHED in
+// this category's current round. See smFetchEligibleAfter_.
+const PROP_SITEMAP_AFTER_PREFIX = 'sitemapAfter_';
+// The UNITID being processed right now. Set before each school, cleared
+// after the batch is written. Still set at the start of the next batch
+// means the previous run was killed mid-school (the platform's six-minute
+// cap runs no cleanup): that school is skipped for this round so it cannot
+// stop the round again. Skipped UNITIDs are listed in
+// PROP_SITEMAP_SKIPPED_PREFIX and in the batch log.
+const PROP_SITEMAP_INFLIGHT_PREFIX = 'sitemapInFlight_';
+const PROP_SITEMAP_SKIPPED_PREFIX = 'sitemapSkipped_';
 const PROP_SITEMAP_SUMMARY_PREFIX = 'sitemapSummary_';
 const PROP_SITEMAP_PROCESSED_PREFIX = 'sitemapProcessed_';
 const PROP_SITEMAP_WRITE_ERRORS_PREFIX = 'sitemapWriteErrors_';
@@ -497,11 +508,22 @@ function matchesKeyword_(slug, term) {
 // Each blankFields line below also names its paired record field, because
 // the promote step writes both and a reader here will want to know which
 // is which.
+//
+// 2026-10-04: THE GATE NOW READS BOTH FIELDS. A school is searched for a
+// category only when its compliance field AND its record field are blank.
+// blankFields[0] stays the compliance field (outbound links read [0]).
+// Why: a school whose record field holds a page judged below standard was
+// still searched every round, and on 2026-10-04 the candidate rows for
+// those 328 school-category pairs had produced 1 accept against 121
+// rejects, 31 duplicates and 102 waiting rows. A below-standard page that
+// improves is to be caught by a planned check of recorded pages for
+// content changes, not by re-searching the whole site. This reverses the
+// 2026-09-10 reasoning in fetchBlankRecordsPage_'s header, deliberately.
 const CATEGORIES = {
   reportForm: {
     key: 'reportForm',
     label: 'Report Form',
-    blankFields: ['fldIrTzWzi87nD7EU'],   // Report Form (COMPLIANCE). Record field: located_report_form_url fldeBRiCU8dnIKsYk
+    blankFields: ['fldIrTzWzi87nD7EU', 'fldeBRiCU8dnIKsYk'],   // Report Form (COMPLIANCE) + located_report_form_url (RECORD). See the 2026-10-04 note above.
     pendingCountField: 'flduSxLVwgo24QZAc',
     primaryKeywords: ['hazing-report', 'report-hazing', 'hazing', 'incident-report', 'reportanincident', 'title-ix-report', 'title-ix-reporting'],
     secondaryKeywords: ['report', 'conduct', 'title-ix', 'titleix', 'incident', 'complaint', 'greek-life', 'fraternity', 'sorority', 'student-conduct']
@@ -509,7 +531,7 @@ const CATEGORIES = {
   hazingPolicy: {
     key: 'hazingPolicy',
     label: 'Hazing Policy',
-    blankFields: ['fldD9gEpDcw2l35II'],   // Hazing Policy (COMPLIANCE). Record field: located_hazing_policy_url fldKyIAd65Yfn5g0V
+    blankFields: ['fldD9gEpDcw2l35II', 'fldKyIAd65Yfn5g0V'],   // Hazing Policy (COMPLIANCE) + located_hazing_policy_url (RECORD)
     pendingCountField: 'fldJQyUvlr97N5asf',
     primaryKeywords: ['hazing-policy', 'anti-hazing', 'hazing-prevention', 'hazing'],
     secondaryKeywords: ['policy', 'student-handbook', 'code-of-conduct', 'conduct-code', 'handbook', 'greek-life'],
@@ -522,7 +544,7 @@ const CATEGORIES = {
   chtr: {
     key: 'chtr',
     label: 'CHTR Index URL',
-    blankFields: ['fldGJPC0iyuPcWtlK'],   // Transparency Report (COMPLIANCE). Record field: chtr_index_url fldqQrSD83OVoteFx
+    blankFields: ['fldGJPC0iyuPcWtlK', 'fldqQrSD83OVoteFx'],   // Transparency Report (COMPLIANCE) + chtr_index_url (RECORD)
     pendingCountField: 'fldvBRkcCPToNh26v',
     // "hazing" was previously secondary-only here, which meant real
     // on-domain matches like /policies/hazing.php never accumulated
@@ -591,22 +613,35 @@ function runOrResumeSitemapBatch(categoryKey) {
   if (!category) throw new Error('Unknown category: ' + categoryKey);
 
   const props = PropertiesService.getScriptProperties();
-  const offsetKey = PROP_SITEMAP_OFFSET_PREFIX + categoryKey;
-  const offset = props.getProperty(offsetKey);
+  const after = props.getProperty(PROP_SITEMAP_AFTER_PREFIX + categoryKey);
 
-  if (!offset) {
+  // ONE-TIME MIGRATION (2026-10-04). The old Airtable offset cannot be
+  // turned into a UNITID, so a round that was mid-way under the old code
+  // starts over. Schools already done this round are re-read once; dedupe
+  // stops their rows doubling.
+  if (props.getProperty(PROP_SITEMAP_OFFSET_PREFIX + categoryKey)) {
+    props.deleteProperty(PROP_SITEMAP_OFFSET_PREFIX + categoryKey);
+    Logger.log('Retired the old Airtable offset resume point for ' + category.label +
+      '. This round restarts from the lowest UNITID, once.');
+  }
+
+  if (!after) {
     props.setProperty(PROP_SITEMAP_SUMMARY_PREFIX + categoryKey,
       JSON.stringify(smEmptySummary_()));
     props.setProperty(PROP_SITEMAP_PROCESSED_PREFIX + categoryKey, '0');
     props.deleteProperty(PROP_SITEMAP_WRITE_ERRORS_PREFIX + categoryKey);
+    props.deleteProperty(PROP_SITEMAP_SKIPPED_PREFIX + categoryKey);
   }
 
-  return runNextSitemapBatch_(category, offset || null);
+  return runNextSitemapBatch_(category, after || '');
 }
 
 function resetSitemapProgress(categoryKey) {
   const props = PropertiesService.getScriptProperties();
   props.deleteProperty(PROP_SITEMAP_OFFSET_PREFIX + categoryKey);
+  props.deleteProperty(PROP_SITEMAP_AFTER_PREFIX + categoryKey);
+  props.deleteProperty(PROP_SITEMAP_INFLIGHT_PREFIX + categoryKey);
+  props.deleteProperty(PROP_SITEMAP_SKIPPED_PREFIX + categoryKey);
   props.deleteProperty(PROP_SITEMAP_SUMMARY_PREFIX + categoryKey);
   props.deleteProperty(PROP_SITEMAP_PROCESSED_PREFIX + categoryKey);
   props.deleteProperty(PROP_SITEMAP_WRITE_ERRORS_PREFIX + categoryKey);
@@ -624,13 +659,29 @@ function resetSitemapProgress(categoryKey) {
 // lost everything it had done.
 const SITEMAP_BATCH_BUDGET_MS = 4 * 60 * 1000;
 
-function runNextSitemapBatch_(category, startOffset) {
+function runNextSitemapBatch_(category, after) {
   const startedAt = Date.now();
   const pat = capPat_();
   const props = PropertiesService.getScriptProperties();
   const categoryKey = category.key;
+  const inFlightKey = PROP_SITEMAP_INFLIGHT_PREFIX + categoryKey;
 
-  const page = fetchBlankRecordsPageWithRecovery_(pat, category, startOffset, props);
+  // A SCHOOL THAT KILLED THE LAST RUN IS SKIPPED FOR THIS ROUND. See
+  // PROP_SITEMAP_INFLIGHT_PREFIX. Without this, one school whose sitemap
+  // takes longer than the platform cap would stop the round for good.
+  const killedOn = props.getProperty(inFlightKey);
+  let skippedNow = '';
+  if (killedOn) {
+    skippedNow = killedOn;
+    if (smUnitidNum_(killedOn) > smUnitidNum_(after)) after = killedOn;
+    props.setProperty(PROP_SITEMAP_AFTER_PREFIX + categoryKey, after);
+    const skipped = JSON.parse(props.getProperty(PROP_SITEMAP_SKIPPED_PREFIX + categoryKey) || '[]');
+    skipped.push(killedOn);
+    props.setProperty(PROP_SITEMAP_SKIPPED_PREFIX + categoryKey, JSON.stringify(skipped));
+    props.deleteProperty(inFlightKey);
+  }
+
+  const page = smFetchEligibleAfter_(pat, category, after, SITEMAP_RECORDS_PER_RUN);
   const results = [];
   let budgetHit = false;
 
@@ -638,9 +689,10 @@ function runNextSitemapBatch_(category, startOffset) {
     // STOP BEFORE THE PLATFORM DOES. Breaking here means everything already
     // processed still gets written below; letting the cap fire means none
     // of it does. Per-school cost is not predictable from a sample -- it
-    // climbed from 7.2s to over 18s across one afternoon, because schools
-    // are ordered by UNITID and big sites arrive in runs.
+    // climbed from 7.2s to over 18s across one afternoon, and to about 84s
+    // on 2026-10-04, because big sites arrive in runs.
     if (Date.now() - startedAt > SITEMAP_BATCH_BUDGET_MS) { budgetHit = true; break; }
+    props.setProperty(inFlightKey, String(page.records[i].fields[SM_F_UNITID] || '').trim());
     results.push(processRecord_(page.records[i], category));
     Utilities.sleep(CRAWL_POLITENESS_DELAY_MS);
   }
@@ -663,20 +715,20 @@ function runNextSitemapBatch_(category, startOffset) {
     results.length;
   props.setProperty(PROP_SITEMAP_PROCESSED_PREFIX + categoryKey, String(processedSoFar));
 
-  // THE OFFSET ONLY ADVANCES ON A COMPLETE PAGE. Airtable's offset points
-  // past the whole page, not at a record within it, so advancing after a
-  // partial batch would skip the schools that were not reached -- silently,
-  // and permanently for this sweep. Leaving it put means the next run
-  // re-reads this page and redoes the finished schools; that costs fetches
-  // but loses nothing, and dedupe stops the rows doubling.
-  const done = !page.nextOffset && !budgetHit;
-  if (budgetHit) {
-    // leave the offset exactly where it was
-  } else if (done) {
-    props.deleteProperty(PROP_SITEMAP_OFFSET_PREFIX + categoryKey);
-  } else {
-    props.setProperty(PROP_SITEMAP_OFFSET_PREFIX + categoryKey, page.nextOffset);
+  // THE RESUME POINT IS THE LAST SCHOOL FINISHED (2026-10-04). Until then
+  // it was an Airtable page offset, which points past a whole page of 10,
+  // so it could only advance when all 10 were done. On slow sites the
+  // 4-minute budget ran out after 4, the offset stayed put, and every run
+  // redid the same 4 schools: about 45 minutes a night for no progress
+  // (2026-10-04, CHTR stuck at the same page all week). Now the next run
+  // starts after the last school actually written, however many that was.
+  props.deleteProperty(inFlightKey);
+  if (results.length) {
+    after = String(results[results.length - 1].unitid || after);
+    props.setProperty(PROP_SITEMAP_AFTER_PREFIX + categoryKey, after);
   }
+  const done = !budgetHit && results.length === page.records.length && page.remaining === 0;
+  if (done) props.deleteProperty(PROP_SITEMAP_AFTER_PREFIX + categoryKey);
 
   // LOG THE SUMMARY, DO NOT ONLY RETURN IT.
   //
@@ -689,13 +741,15 @@ function runNextSitemapBatch_(category, startOffset) {
   const log = [];
   log.push('');
   log.push('======== SITEMAP BATCH -- ' + category.label + ' ========');
-  if (page.recovered) {
-    log.push('NOTE: saved resume point had expired. Restarted from the beginning;');
-    log.push('processed count and summary were reset. Nothing was lost -- dedupe');
-    log.push('stops already-proposed URLs being recreated.');
+  if (skippedNow) {
+    log.push('SKIPPED UNITID ' + skippedNow + ' for this round: the previous run was stopped');
+    log.push('by the platform while reading it. Look at its website by hand if it matters.');
   }
   log.push('Schools this batch: ' + results.length + ' of ' + page.records.length +
-           ' pulled   |   cumulative: ' + processedSoFar);
+           ' pulled   |   this round so far: ' + processedSoFar +
+           '   |   still to do after this batch: ' +
+           (page.remaining + page.records.length - results.length) +
+           '   |   resume after UNITID ' + (after || '(start)'));
   log.push('Elapsed: ' + Math.round((Date.now() - startedAt) / 1000) + 's' +
            (results.length
              ? '   |   ' + (Math.round((Date.now() - startedAt) / results.length / 100) / 10) +
@@ -704,10 +758,8 @@ function runNextSitemapBatch_(category, startOffset) {
   if (budgetHit) {
     log.push('');
     log.push('*** STOPPED ON THE 4-MINUTE BUDGET, before the platform cap.');
-    log.push('    Everything above WAS written. The resume point was NOT advanced,');
-    log.push('    so the next run re-reads this page -- the schools already done');
-    log.push('    will be redone and deduped. If this keeps happening, lower');
-    log.push('    SITEMAP_RECORDS_PER_RUN (currently ' + SITEMAP_RECORDS_PER_RUN + ').');
+    log.push('    Everything above WAS written, and the next run starts after the');
+    log.push('    last school finished. Nothing is redone.');
   }
   log.push('Candidate rows created: ' + write.created +
            '   |   already present (deduped): ' + write.skipped);
@@ -754,7 +806,7 @@ function runNextSitemapBatch_(category, startOffset) {
 
   log.push(done
     ? 'DONE. Every eligible school in this category has been processed.'
-    : 'NOT DONE -- run this again to continue from the saved resume point.');
+    : 'NOT DONE -- run this again to continue after UNITID ' + after + '.');
   log.push('');
   Logger.log(log.join('\n'));
 
@@ -762,7 +814,8 @@ function runNextSitemapBatch_(category, startOffset) {
     done: done,
     category: categoryKey,
     categoryLabel: category.label,
-    recovered: page.recovered,
+    recovered: false,
+    skippedUnitid: skippedNow,
     recordsProcessedThisBatch: results.length,
     recordsPulled: page.records.length,
     budgetHit: budgetHit,
@@ -784,6 +837,40 @@ function runNextSitemapBatch_(category, startOffset) {
       };
     })
   };
+}
+
+// ---- The schools still to do in this round (2026-10-04) ----
+// Reads every school that passes the discovery gate (see
+// fetchBlankRecordsPage_ for the gate itself), sorts them by UNITID in
+// code, and returns the first maxRecords AFTER the resume UNITID, plus how
+// many more remain. Sorting in code, the same way CrossSeed.gs does,
+// means the order cannot depend on Airtable's default view order, which
+// is what made the old page offset impossible to resume from mid-page.
+// The full read is about 15 light requests, a few seconds.
+//
+// THE LIST SHRINKS DURING A ROUND, BY DESIGN: a school drops out of the
+// gate once it has an unreviewed candidate. A UNITID watermark is safe
+// with that; a position in the list would not be.
+function smFetchEligibleAfter_(pat, category, after, maxRecords) {
+  const all = fetchBlankRecordsPage_(pat, category, null, 100000).records;
+  const afterNum = smUnitidNum_(after);
+  const todo = all.filter(function (r) {
+    const u = String(r.fields[SM_F_UNITID] || '').trim();
+    return u && smUnitidNum_(u) > afterNum;
+  });
+  todo.sort(function (a, b) {
+    return smUnitidNum_(a.fields[SM_F_UNITID]) - smUnitidNum_(b.fields[SM_F_UNITID]);
+  });
+  return {
+    records: todo.slice(0, maxRecords),
+    remaining: Math.max(0, todo.length - maxRecords)
+  };
+}
+
+// UNITIDs compared as numbers. '' (no resume point yet) is -1, before all.
+function smUnitidNum_(u) {
+  const n = parseInt(String(u || '').trim(), 10);
+  return isNaN(n) ? -1 : n;
 }
 
 // ---- Fetch up to maxRecords blank-field records starting at startOffset ----
@@ -860,6 +947,10 @@ function fetchBlankRecordsPage_(pat, category, startOffset, maxRecords) {
   // located_hazing_policy_url fldKyIAd65Yfn5g0V, chtr_index_url
   // fldqQrSD83OVoteFx -- are named on each CATEGORIES line for reference
   // and are NOT read here.
+  //
+  // SUPERSEDED 2026-10-04: blankFields now holds BOTH fields, so a school
+  // with a recorded below-standard page is no longer searched. See the
+  // note above CATEGORIES. The reasoning below is kept as history.
   //
   // Why compliance rather than located_*: a page that was found but judged
   // below standard fills the record field while leaving compliance blank.
@@ -2445,7 +2536,8 @@ function adoptSitemapSweep(startCategoryKey) {
   const done = SITEMAP_SWEEP_ORDER.map(function (k) {
     return '  ' + k + ': ' +
       (props.getProperty(PROP_SITEMAP_PROCESSED_PREFIX + k) || '0') + ' processed' +
-      (props.getProperty(PROP_SITEMAP_OFFSET_PREFIX + k) ? ' (resume point saved)' : '');
+      (props.getProperty(PROP_SITEMAP_AFTER_PREFIX + k)
+        ? ' (resumes after UNITID ' + props.getProperty(PROP_SITEMAP_AFTER_PREFIX + k) + ')' : '');
   }).join('\n');
 
   Logger.log(
