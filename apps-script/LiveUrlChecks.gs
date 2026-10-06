@@ -79,6 +79,11 @@
 // a sweep silently re-baseline a verdict against a page the reviewer never
 // looked at.
 //
+// AMENDED 2026-10-06: that still holds for every row WITH a determination.
+// On rows with NO determination there is no verdict to re-baseline, and the
+// script now writes the trio there as the page's "before" copy. See
+// "PAGE-CHANGE WATCHING, STEP 1" below.
+//
 // THE PENDING_VERIFICATION SENTINEL WAS REMOVED ON 2026-08-27, and the
 // reason is worth keeping because the sentinel was right for the system it
 // was written for.
@@ -214,6 +219,46 @@
 // the queue on an arbitrary anniversary with no new information to justify
 // re-asking, which is the exact cost this whole snapshot design exists to
 // avoid.
+//
+// -------------------------------------------------------------------------
+// PAGE-CHANGE WATCHING, STEP 1  (added 2026-10-06, tracker #36)
+// -------------------------------------------------------------------------
+// Three changes, so that a later step can act when a page changes:
+//
+// 1. BELOW-STANDARD PAGES ARE WATCHED. A school's record field (chtr_index_url,
+//    located_hazing_policy_url, located_report_form_url) can hold the right
+//    page while the published field is blank or different, because the page
+//    falls short of the standard. Those pages were never checked. They now
+//    get their own rows, under three "(below standard)" Tracked options. The
+//    rule, not a list, decides which: a row exists while the record field
+//    holds a URL that differs from the published field (337 on 2026-10-06:
+//    328 record-only, 9 where the two fields differ). When the two become the
+//    same, or the record goes blank, the row is kept but marked "Not watched"
+//    (blank Link status) and no longer fetched, so a published page is not
+//    watched twice. Write-back skips these rows (it only knows the three
+//    published options), and the review email leaves them out.
+//
+// 2. THE "BEFORE" COPY. To notice a change, each address needs a fingerprint
+//    taken at a known point. That is the snapshot trio (Checked URL snapshot,
+//    Checked status snapshot, Content hash snapshot). Until now only the
+//    reviewer automation wrote it, so an unreviewed row had nothing to compare
+//    against. Now, on a row with NO Reviewer determination, this script takes
+//    the trio itself the first time it reads the address with a readable
+//    body, and takes it again when the address changes or the page crosses
+//    between there and gone. "Page changed since review" therefore also works
+//    on unreviewed rows: it means "changed since the before copy".
+//    On a REVIEWED row the automation still owns the trio; the script only
+//    fills a missing Content hash snapshot while the review is still valid
+//    (same address, same status class), exactly as lucRestampSnapshots did.
+//    The script writes all three together on unreviewed rows: writing the
+//    address without the status would make every sweep look like a status
+//    change.
+//
+// 3. REDIRECTS ARE FOLLOWED. A link that forwards elsewhere stays "Redirected",
+//    but the page it lands on is now fetched and fingerprinted, so a moved
+//    page with new content (or a redirect to a home page) shows as a change,
+//    and one that only moved from http to https does not. If the landing page
+//    is a sign-in page, the row becomes "Login required".
 // =========================================================================
 
 
@@ -253,6 +298,12 @@ const LUC_F_REVIEW_DATE   = 'flddBv57mYSa4jIcM';  // date, written by wflPC5zF6h
 const LUC_F_SNAP_URL      = 'fldVmX5yeRqTZuqDX';
 const LUC_F_SNAP_STATUS   = 'fldjle8wd4pEcRpzv';
 const LUC_F_SNAP_HASH     = 'fldcxODB0EsN4pvOg';
+// Lookups of the three PUBLISHED Institutions fields, already on this table.
+// Read only to decide whether a below-standard row is still watched (its
+// address must differ from the published one). Added 2026-10-06.
+const LUC_F_SRC_CHTR      = 'fldBiCRimNasigH0O';   // src Transparency Report
+const LUC_F_SRC_POLICY    = 'fldVLVitM6kQOrSOO';   // src Hazing Policy
+const LUC_F_SRC_FORM      = 'fldiDcJy8vyOhxkYv';   // src Report Form
 // The reviewer's below-standard ticks, one per category (added 2026-10-04).
 // Write-back reads them; this file only ever empties them, alongside the
 // determination, when a review goes stale -- so a ticked reason can never be
@@ -312,9 +363,27 @@ const LUC_I_NAME   = 'fldHvefXrrPxibBsZ';
  * needs to change.
  */
 const LUC_TRACKED = [
-  { name: 'Transparency Report', instField: 'fldGJPC0iyuPcWtlK', check: true },
-  { name: 'Hazing Policy',       instField: 'fldD9gEpDcw2l35II', check: true },
-  { name: 'Report Form',         instField: 'fldIrTzWzi87nD7EU', check: true }
+  { name: 'Transparency Report', instField: 'fldGJPC0iyuPcWtlK', check: true, srcField: LUC_F_SRC_CHTR },
+  { name: 'Hazing Policy',       instField: 'fldD9gEpDcw2l35II', check: true, srcField: LUC_F_SRC_POLICY },
+  { name: 'Report Form',         instField: 'fldIrTzWzi87nD7EU', check: true, srcField: LUC_F_SRC_FORM },
+
+  // BELOW-STANDARD PAGES (added 2026-10-06). `watchOf` names the published
+  // entry this one shadows. instField is the RECORD field. A row exists and
+  // is fetched only while the record URL differs from the published URL --
+  // see "PAGE-CHANGE WATCHING, STEP 1" in the header. `email: false` keeps
+  // them out of the sweep email until they have a review workflow.
+  // The Current URL formula must read the record-field lookup for each of
+  // these names, or every one of these rows reads as "Not watched". Those
+  // lookups (added 2026-10-06): src chtr_index_url fldDP0cUAhDifB8gd,
+  // src located_hazing_policy_url fld1udS45mefOcflr, src located_report_form_url
+  // fldxMck8O1gNpEdDF. The names below must also exist as Tracked field
+  // options, or lucCreateRows_ fails (no typecast).
+  { name: 'Transparency Report (below standard)', instField: 'fldqQrSD83OVoteFx', check: true,
+    watchOf: 'Transparency Report', email: false },
+  { name: 'Hazing Policy (below standard)',       instField: 'fldKyIAd65Yfn5g0V', check: true,
+    watchOf: 'Hazing Policy',       email: false },
+  { name: 'Report Form (below standard)',         instField: 'fldeBRiCU8dnIKsYk', check: true,
+    watchOf: 'Report Form',         email: false }
 ];
 
 // THE located_* ENTRIES WERE REMOVED FROM THIS ARRAY ON 2026-08-28, after
@@ -381,6 +450,39 @@ function lucCheckedClause_() {
     return '{' + LUC_F_TRACKED + '} = "' + n + '"';
   }).join(', ') + ')';
 }
+
+/**
+ * Same shape as lucCheckedClause_, but only the categories counted in the
+ * sweep email. Below-standard rows are checked but not emailed (2026-10-06).
+ */
+function lucEmailClause_() {
+  const names = LUC_TRACKED.filter(function (t) { return t.check && t.email !== false; })
+    .map(function (t) { return t.name; });
+  return 'OR(' + names.map(function (n) {
+    return '{' + LUC_F_TRACKED + '} = "' + n + '"';
+  }).join(', ') + ')';
+}
+
+/** The published entry a below-standard entry shadows, or null. */
+function lucPublishedOf_(tracked) {
+  return (tracked && tracked.watchOf) ? lucTrackedByName_(tracked.watchOf) : null;
+}
+
+/**
+ * The watch rule for a below-standard row: watched while the record URL is
+ * present and differs from the published URL. Both are compared as stored
+ * (trimmed), the same way each row's own URL is fetched.
+ */
+function lucIsWatched_(recordUrl, publishedUrl) {
+  const r = String(recordUrl || '').trim();
+  const p = String(publishedUrl || '').trim();
+  return !!r && r !== p;
+}
+
+// What a below-standard row records when the rule says it is no longer
+// watched. Link status is left BLANK, so the email, the review views and
+// lucStatusClass_ all ignore the row; the code says why.
+const LUC_NOT_WATCHED_CODE = 'Not watched: record field blank or same as published';
 
 // ---- Sizes and budgets --------------------------------------------------
 // One row is one URL, where a LinkChecker record was up to three, so 30
@@ -807,7 +909,12 @@ function lucReconcile_(dryRun, callerHoldsLock) {
 
     institutions.forEach(function (inst) {
       LUC_TRACKED.forEach(function (t) {
-        const url = lucFirstUrl_(inst.fields[t.instField]);
+        let url = lucFirstUrl_(inst.fields[t.instField]);
+        // Below-standard entries: only while the record differs from the
+        // published field (2026-10-06). An existing row that no longer
+        // qualifies is kept and counted below as "no longer watched".
+        const pub = lucPublishedOf_(t);
+        if (pub && !lucIsWatched_(url, lucFirstUrl_(inst.fields[pub.instField]))) url = '';
         const key = inst.id + '|' + t.name;
         const has = existing.keys[key];
         // t.check gates row CREATION here, not just the sweep, so a
@@ -835,8 +942,9 @@ function lucReconcile_(dryRun, callerHoldsLock) {
     const orphanTotal = LUC_TRACKED.reduce(function (n, t) { return n + orphans[t.name]; }, 0);
     if (orphanTotal) {
       Logger.log('Rows whose URL has since gone blank: ' + orphanTotal +
-        ' -- kept, and the next check slice will mark them "No URL". Not deleted: ' +
-        'the field held something once and somebody may have judged it.');
+        ' -- kept, and the next check slice will mark them "No URL" (below-standard ' +
+        'rows: "Not watched"). Not deleted: the field held something once and ' +
+        'somebody may have judged it.');
     }
 
     if (dryRun) {
@@ -1639,7 +1747,9 @@ const LUC_STATUS_MEANING = {
 
 function lucEmailReviewQueue_(pat, state) {
   try {
-    const formula = 'AND(' + lucCheckedClause_() + ', ' +
+    // lucEmailClause_, not lucCheckedClause_: below-standard rows are checked
+    // but not counted here (2026-10-06).
+    const formula = 'AND(' + lucEmailClause_() + ', ' +
       '{' + LUC_F_STATUS + '} != "Live", {' + LUC_F_STATUS + '} != "", ' +
       'OR({' + LUC_F_DETERMINATION + '} = "", {' + LUC_F_DETERMINATION +
       '} = "Needs second opinion"))';
@@ -1870,10 +1980,13 @@ function lucBuildDueFormula_(cutoffDate, stuckIds) {
 // needs them -- only the two snapshots decide that -- but because
 // lucClearIfStale_ logs what it discarded, and a cleared review is gone
 // from the row for good. The execution log is the only place it survives.
+// The snapshot hash and the three published lookups were added 2026-10-06:
+// the first for the before copy, the others for the below-standard watch rule.
 const LUC_READ_FIELDS = [
   LUC_F_URL, LUC_F_TRACKED, LUC_F_UNITID, LUC_F_INSTITUTION,
-  LUC_F_SNAP_URL, LUC_F_SNAP_STATUS, LUC_F_DETERMINATION,
-  LUC_F_PROPOSED_URL, LUC_F_NOTES
+  LUC_F_SNAP_URL, LUC_F_SNAP_STATUS, LUC_F_SNAP_HASH, LUC_F_DETERMINATION,
+  LUC_F_PROPOSED_URL, LUC_F_NOTES,
+  LUC_F_SRC_CHTR, LUC_F_SRC_POLICY, LUC_F_SRC_FORM
 ];
 
 /**
@@ -2123,7 +2236,7 @@ function lucIsFetchableUrl_(url) {
   return /^https?:\/\/[^\/\s:]+\.[^\/\s:]+(?::\d+)?(?:[\/?#]|$)/i.test(url);
 }
 
-function lucRequest_(url, method) {
+function lucRequest_(url, method, followRedirects) {
   const m = String(method || 'get').toLowerCase();
   const safe = LUC_VALID_FETCH_METHODS.indexOf(m) === -1 ? 'get' : m;
   if (safe !== m) {
@@ -2133,7 +2246,9 @@ function lucRequest_(url, method) {
   return {
     url: url,
     method: safe,
-    followRedirects: false,
+    // false for the status check, so a redirect is seen as a redirect;
+    // true only for the landing-page fetch (lucFollowRedirects_).
+    followRedirects: !!followRedirects,
     muteHttpExceptions: true,
     headers: LUC_BROWSER_HEADERS
   };
@@ -2548,6 +2663,13 @@ function lucClearIfStale_(entry, prev, currentUrl, currentCode) {
   const hadSnapshot = !!(prev.snapUrl || prev.snapStatus);
   if (!hadSnapshot) return false;
 
+  // NO DETERMINATION, NO REVIEW TO CLEAR (added 2026-10-06). Since this script
+  // now writes the snapshot trio on unreviewed rows as their before copy, a
+  // snapshot no longer proves a review exists. Without this guard a moved
+  // address would wipe notes and a proposed URL a reviewer had started but not
+  // yet decided. The before copy itself is retaken by lucTakeBeforeCopy_.
+  if (!prev.determination) return false;
+
   // See lucBrokenAndNowBlank_. Logged rather than silent: a review that
   // survives a staleness test for a stated reason should be as visible in
   // the log as one that gets discarded, or the next person debugging this
@@ -2623,6 +2745,7 @@ function lucCheckBatch_(rows, deadlineAt) {
       prev: {
         snapUrl: r.fields[LUC_F_SNAP_URL] || '',
         snapStatus: r.fields[LUC_F_SNAP_STATUS] || '',
+        snapHash: r.fields[LUC_F_SNAP_HASH] || '',
         determination: r.fields[LUC_F_DETERMINATION] || '',
         proposedUrl: r.fields[LUC_F_PROPOSED_URL] || '',
         notes: r.fields[LUC_F_NOTES] || ''
@@ -2648,12 +2771,38 @@ function lucCheckBatch_(rows, deadlineAt) {
       return;
     }
 
+    // BELOW-STANDARD ROW THAT THE RULE NO LONGER WATCHES (2026-10-06): the
+    // record field went blank, or now holds the published address (which its
+    // published row already checks). Not fetched. Link status blank, so it
+    // drops out of the email and the review views; the stored hash is left
+    // alone; the before copy is discarded so a fresh one is taken if the row
+    // is ever watched again. Last checked is still stamped by lucPatch_, so
+    // the row leaves the due set.
+    const pub = lucPublishedOf_(tracked);
+    if (pub) {
+      // A lookup comes back as an array; join it the way the Current URL
+      // formula does (ARRAYJOIN with ""). Compared on the first URL token, the
+      // same test lucReconcile_ uses, so the two can never disagree.
+      const src = r.fields[pub.srcField];
+      const publishedUrl = Array.isArray(src) ? src.join('') : String(src || '');
+      if (!lucIsWatched_(lucFirstUrl_(url), lucFirstUrl_(publishedUrl))) {
+        entry.fields[LUC_F_STATUS] = null;   // single select: null, '' is a 422
+        entry.fields[LUC_F_CODE] = LUC_NOT_WATCHED_CODE;
+        entry.fields[LUC_F_REDIRECT] = '';
+        lucDropBeforeCopy_(entry);
+        Logger.log('NOT WATCHED -- ' + entry.label + ': record field ' +
+          (url ? 'now matches the published field' : 'is blank') + '.');
+        return;
+      }
+    }
+
     if (!url) {
       entry.fields[LUC_F_STATUS] = 'No URL';
       entry.fields[LUC_F_CODE] = '';
       entry.fields[LUC_F_REDIRECT] = '';
       entry.fields[LUC_F_HASH] = '';
-      lucClearIfStale_(entry, entry.prev, '', '');
+      const clearedBlank = lucClearIfStale_(entry, entry.prev, '', '');
+      lucTakeBeforeCopy_(entry, '', '', '', clearedBlank);
       return;
     }
 
@@ -2709,7 +2858,10 @@ function lucCheckBatch_(rows, deadlineAt) {
   const responses = lucRetryFailures_(jobs, firstPass, deadlineAt);
 
   // Status for every URL. (A second pass that followed CHTR redirects for
-  // the date read was removed 2026-10-04 with the date read.)
+  // the date read was removed 2026-10-04 with the date read. Redirects are
+  // followed again from 2026-10-06, for the fingerprint -- see the landing
+  // wave after this loop.)
+  const landings = [];   // { j, entry, target } for the landing-page wave
 
   jobs.forEach(function (j, i) {
     const resp = responses[i];
@@ -2774,6 +2926,7 @@ function lucCheckBatch_(rows, deadlineAt) {
       entry.fields[LUC_F_CODE]     = 'Bisect abandoned';
       entry.fields[LUC_F_REDIRECT] = '';
       lucClearIfStale_(entry, entry.prev, j.url, 'Unreachable');
+      // No before copy: nothing was read. An existing one is left alone.
       return;
     }
 
@@ -2781,8 +2934,9 @@ function lucCheckBatch_(rows, deadlineAt) {
     entry.fields[LUC_F_CODE] = interpreted.code;
     entry.fields[LUC_F_REDIRECT] = interpreted.redirectTarget;
 
-    // Hash only where there is a readable body. Redirects, 401/403/5xx and
-    // unreachable leave the stored hash alone -- see lucContentHash_.
+    // Hash only where there is a readable body. 401/403/5xx and unreachable
+    // leave the stored hash alone -- see lucContentHash_. Redirects get their
+    // hash from the landing page, in the wave below.
     if (interpreted.status === 'Live' && resp) {
       const h = lucContentHash_(resp);
       if (h) entry.fields[LUC_F_HASH] = h;
@@ -2790,10 +2944,174 @@ function lucCheckBatch_(rows, deadlineAt) {
       entry.fields[LUC_F_HASH] = '';
     }
 
-    lucClearIfStale_(entry, entry.prev, j.url, interpreted.code);
+    entry.cleared = lucClearIfStale_(entry, entry.prev, j.url, interpreted.code);
+    entry.checkedUrl = j.url;
+
+    if (interpreted.status === 'Redirected' && interpreted.redirectTarget) {
+      landings.push({ entry: entry, target: interpreted.redirectTarget });
+    } else {
+      lucTakeBeforeCopy_(entry, j.url, interpreted.code,
+        entry.fields[LUC_F_HASH] || '', entry.cleared);
+    }
+  });
+
+  // ---- THE LANDING-PAGE WAVE (added 2026-10-06) --------------------------
+  lucFollowRedirects_(landings, deadlineAt);
+  landings.forEach(function (l) {
+    const e = l.entry;
+    lucTakeBeforeCopy_(e, e.checkedUrl, e.fields[LUC_F_CODE],
+      e.landingHash || '', e.cleared);
   });
 
   return results.filter(function (e) { return !e.skip; });
+}
+
+/**
+ * Fetches the page each redirect lands on, following every hop, and
+ * fingerprints it. Tracker #36 part 3: a redirect to the same content (http to
+ * https) is not a change; a redirect to different content (a moved page with
+ * new text, or the home page) is.
+ *
+ * Link status stays "Redirected" -- a reviewer still checks where it lands --
+ * with two exceptions: a landing page that is a sign-in page becomes "Login
+ * required" (this is what catches SharePoint's second hop, which the
+ * status check never sees), and nothing else about the row changes.
+ *
+ * WHAT IS NOT FETCHED: a target that is malformed, on a known-unfetchable host,
+ * or login-shaped by address (already Login required). And nothing at all
+ * once the slice's deadline has passed -- those rows keep their old hash and
+ * get a landing fetch on the next check.
+ *
+ * Sets entry.landingHash when the landing page answered 2xx with a readable
+ * body that is not a sign-in page. Otherwise the stored Content hash is left
+ * alone: no information, not "the page is empty".
+ *
+ * Costs one extra request per redirected row (57 of 2,721 on 2026-10-06), in
+ * one batched wave, so about as long as the slowest of them.
+ */
+function lucFollowRedirects_(landings, deadlineAt) {
+  const todo = landings.filter(function (l) {
+    if (!lucIsFetchableUrl_(l.target)) return false;
+    if (lucIsKnownUnfetchable_(l.target)) {
+      Logger.log('Redirect target on a known-unfetchable host, not followed -- ' +
+        l.entry.label + ': ' + l.target);
+      return false;
+    }
+    if (l.entry.fields[LUC_F_STATUS] === 'Login required') return false;
+    return true;
+  });
+  if (!todo.length) return;
+
+  if (deadlineAt && Date.now() > deadlineAt) {
+    Logger.log('Past deadline; ' + todo.length + ' redirect(s) not followed this time. ' +
+      'Their stored fingerprint is left alone.');
+    return;
+  }
+
+  const resps = lucFetchAllSafe_(
+    todo.map(function (l) { return lucRequest_(l.target, 'get', true); }), deadlineAt);
+
+  todo.forEach(function (l, i) {
+    const resp = resps[i];
+    const e = l.entry;
+    if (!resp) {
+      Logger.log('REDIRECT not followed (no answer) -- ' + e.label + ' -> ' + l.target);
+      return;
+    }
+    const code = resp.getResponseCode();
+    if (code < 200 || code >= 300) {
+      Logger.log('REDIRECT lands on HTTP ' + code + ' -- ' + e.label + ' -> ' + l.target +
+        '. Fingerprint left alone.');
+      return;
+    }
+    const signal = lucLoginWallSignal_(resp, l.target, '', 'Live');
+    if (signal) {
+      Logger.log('LOGIN WALL (' + signal + ', after following the redirect) -- ' +
+        e.label + ' -> ' + l.target + ', recorded as Login required.');
+      e.fields[LUC_F_STATUS] = 'Login required';
+      return;
+    }
+    const h = lucContentHash_(resp);
+    if (h) {
+      e.fields[LUC_F_HASH] = h;
+      e.landingHash = h;
+    }
+  });
+}
+
+/**
+ * Takes, keeps or discards the before copy for one checked row. Tracker #36
+ * part 2; see "PAGE-CHANGE WATCHING, STEP 1" in the header for why the
+ * snapshot trio is used and why all three are written together.
+ *
+ *   url, code    what this check read (code is the HTTP code, or 'Unreachable')
+ *   freshHash    the fingerprint taken THIS check, or '' if none
+ *   cleared      true if lucClearIfStale_ just cleared the review
+ *
+ * REVIEWED ROW (has a determination, not cleared): the automation owns the
+ * trio. The only write is filling a blank Content hash snapshot while the
+ * review is still valid -- the same rule lucRestampSnapshots used. A review
+ * with no URL/status snapshot at all (from before the automation) is left
+ * alone: there is nothing to test "still valid" against.
+ *
+ * UNREVIEWED ROW (or one whose review was just cleared):
+ *   - existing copy still describes this address and status class: kept;
+ *   - otherwise, with a fresh fingerprint: a new copy is taken now;
+ *   - otherwise (unreadable this time): a copy for a different address or
+ *     status class is discarded, so the next readable check takes a new one.
+ */
+function lucTakeBeforeCopy_(entry, url, code, freshHash, cleared) {
+  const p = entry.prev;
+  const det = cleared ? '' : p.determination;
+  const snapUrl    = cleared ? '' : p.snapUrl;
+  const snapStatus = cleared ? '' : p.snapStatus;
+  const snapHash   = cleared ? '' : p.snapHash;
+
+  const sameUrl   = snapUrl === (url || '');
+  const sameClass = lucStatusClass_(snapStatus) === lucStatusClass_(code);
+
+  if (det) {
+    if (!snapHash && freshHash && snapUrl && sameUrl && sameClass) {
+      entry.fields[LUC_F_SNAP_HASH] = freshHash;
+      Logger.log('Before copy: filled the missing Content hash snapshot on reviewed row ' +
+        entry.label + '.');
+    }
+    return;
+  }
+
+  const hasCopy = !!(snapUrl || snapStatus || snapHash);
+  if (snapHash && sameUrl && sameClass) return;   // still valid, keep it
+
+  if (freshHash) {
+    entry.fields[LUC_F_SNAP_URL]    = url;
+    entry.fields[LUC_F_SNAP_STATUS] = String(code || '');
+    entry.fields[LUC_F_SNAP_HASH]   = freshHash;
+    Logger.log('Before copy ' + (hasCopy ? 'RETAKEN' : 'taken') + ' -- ' + entry.label +
+      (hasCopy && !sameUrl ? ' (address changed)' : '') +
+      (hasCopy && sameUrl && !sameClass ? ' (page came back)' : '') + '.');
+    return;
+  }
+
+  if (hasCopy && (!sameUrl || !sameClass)) {
+    lucDropBeforeCopy_(entry);
+    Logger.log('Before copy discarded -- ' + entry.label + ': ' +
+      (!sameUrl ? 'the address changed' : 'the page is gone') +
+      '; a new one is taken on the next readable check.');
+  }
+}
+
+/**
+ * Empties the before copy on an UNREVIEWED row. Never touches a reviewed row's
+ * snapshots -- those belong to the review and are cleared only by
+ * lucClearIfStale_.
+ */
+function lucDropBeforeCopy_(entry) {
+  const p = entry.prev;
+  if (p.determination) return;
+  if (!(p.snapUrl || p.snapStatus || p.snapHash)) return;
+  entry.fields[LUC_F_SNAP_URL]    = '';
+  entry.fields[LUC_F_SNAP_STATUS] = '';
+  entry.fields[LUC_F_SNAP_HASH]   = '';
 }
 
 // =========================================================================
