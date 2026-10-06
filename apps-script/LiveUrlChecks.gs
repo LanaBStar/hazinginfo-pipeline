@@ -334,6 +334,17 @@
 // the old page's date. Existing CHTRs are released by the backlog step. The
 // sweep email also counts yearly report form checks and CHTR date checks due
 // (lucCountDueLooks_).
+//
+// -------------------------------------------------------------------------
+// THE BACKLOG, STEP 6  (added 2026-10-06, tracker #36)
+// -------------------------------------------------------------------------
+// Many existing pages were added by hand and never judged against the current
+// standard. Once a day, lucRunBacklog_ sends LUC_BACKLOG_PER_DAY of them as
+// "Backlog check" rows in Candidate URLs (published CHTRs, then published
+// policies, then below-standard ones), marks them in "Standard last judged",
+// and releases each published CHTR's date check. Page change and Manual entry
+// rows fill "Standard last judged" too, so nothing is checked twice. It stops
+// by itself when no page is left.
 // =========================================================================
 
 
@@ -389,6 +400,8 @@ const LUC_F_CHTR_DATE     = 'fldBTIggpm9UTeQyC';   // CHTR update date (text)
 const LUC_F_DATE_ON       = 'fldaD7TWCyznzbkNV';   // Date is on (single select)
 const LUC_F_FIRST_DATE    = 'fldp2DeV1IN3MiORF';   // First date check (date)
 const LUC_F_WHY           = 'fldSBlEfYkBLqST4F';   // Why it's here (formula)
+// Backlog (added 2026-10-06, step 6).
+const LUC_F_STD_JUDGED    = 'fldKCwXLVg3tpcHpX';   // Standard last judged (date)
 
 // ---- Candidate URLs, for Page change rows (added 2026-10-06) ------------
 const LUC_CAND_TABLE      = 'tblIL5opnHj0lhvvg';
@@ -404,6 +417,22 @@ const LUC_C_OUTCOME       = 'fldZsxzEJBKBQhiKI';   // Re-check outcome (formula;
 // created without typecast, so a missing option fails the batch (logged).
 const LUC_SOURCE_PAGE_CHANGE = 'Page change';
 const LUC_SOURCE_MANUAL      = 'Manual entry';   // step 4, 2026-10-06
+const LUC_SOURCE_BACKLOG     = 'Backlog check';  // step 6, 2026-10-06
+// THE BACKLOG PACE: how many existing pages are sent for a standards check
+// each day. One number; change it here. At 3 a day the ~1,800 CHTR and policy
+// pages take about 18 months.
+const LUC_BACKLOG_PER_DAY    = 3;
+// Most rows a backlog run will look at before giving up for the day, so a long
+// run of already-backed pages cannot eat a slice. Backed rows are marked
+// judged, so the next day starts past them.
+const LUC_BACKLOG_MAX_LOOKS  = 30;
+const LUC_BACKLOG_DAY_KEY    = 'LUC_BACKLOG_LAST_DAY';
+// Order: published CHTRs, then published hazing policies, then below-standard.
+const LUC_BACKLOG_ORDER = [
+  ['Transparency Report'],
+  ['Hazing Policy'],
+  ['Transparency Report (below standard)', 'Hazing Policy (below standard)']
+];
 // Rows created before this moment are never treated as a new address on their
 // first read (midnight 2026-10-07 Pacific). See "MANUAL ENTRY ROWS, STEP 4".
 const LUC_MANUAL_SINCE       = '2026-10-07T07:00:00.000Z';
@@ -1622,6 +1651,7 @@ function lucRunSlice_(budgetMs) {
           budgetMs - (Date.now() - toppedStartedAt), 'between sweeps');
 
         // Read any Page change rows still waiting (2026-10-06).
+        lucRunBacklog_(pat, budgetMs - (Date.now() - toppedStartedAt));
         lucCapturePageChanges_(pat, budgetMs - (Date.now() - toppedStartedAt));
 
         Logger.log('No full sweep due for ' +
@@ -1823,6 +1853,7 @@ function lucRunSlice_(budgetMs) {
     // scheduled run. Either way one execution is one execution.
     // Read the Page change rows this slice created, with what is left of its
     // budget (2026-10-06). Before the email, so its counts are current.
+    lucRunBacklog_(pat, budgetMs - (Date.now() - startedAt));
     lucCapturePageChanges_(pat, budgetMs - (Date.now() - startedAt));
 
     if (done) {
@@ -1983,7 +2014,8 @@ function lucCountDueLooks_(pat) {
  */
 function lucRecheckSourceClause_() {
   return 'OR({' + LUC_C_SOURCE + '} = "' + LUC_SOURCE_PAGE_CHANGE + '", ' +
-    '{' + LUC_C_SOURCE + '} = "' + LUC_SOURCE_MANUAL + '")';
+    '{' + LUC_C_SOURCE + '} = "' + LUC_SOURCE_MANUAL + '", ' +
+    '{' + LUC_C_SOURCE + '} = "' + LUC_SOURCE_BACKLOG + '")';
 }
 
 /**
@@ -3485,6 +3517,7 @@ function lucCreateManualEntryRows_(pat, results) {
       if (lucManualEntryIsBacked_(pat, e)) {
         Logger.log('New address backed by an accepted candidate row, no Manual entry row -- ' +
           e.label + ': ' + e.manualEntry.url + '.');
+        e.fields[LUC_F_STD_JUDGED] = lucToday_();
         e.manualEntry = null;
         return;
       }
@@ -3522,6 +3555,7 @@ function lucCreateManualEntryRows_(pat, results) {
     if (resp.getResponseCode() === 200) {
       created += batch.length;
       batch.forEach(function (e) {
+        e.fields[LUC_F_STD_JUDGED] = lucToday_();
         Logger.log('MANUAL ENTRY -- ' + e.label + ': ' + e.manualEntry.reason +
           '; Candidate URLs row created (' + e.manualEntry.category + ', ' +
           e.manualEntry.url + ').');
@@ -3585,6 +3619,7 @@ function lucCreatePageChangeRows_(pat, results) {
     if (resp.getResponseCode() === 200) {
       created += batch.length;
       batch.forEach(function (e) {
+        e.fields[LUC_F_STD_JUDGED] = lucToday_();
         Logger.log('PAGE CHANGED -- ' + e.label + ': Candidate URLs row created (' +
           e.pageChange.category + ', ' + e.pageChange.url + ').');
       });
@@ -3601,6 +3636,163 @@ function lucCreatePageChangeRows_(pat, results) {
     }
   }
   return created;
+}
+
+/** Today's date in the script's time zone, as YYYY-MM-DD. */
+function lucToday_() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
+// =========================================================================
+// THE BACKLOG  (added 2026-10-06, tracker #36 step 6)
+// =========================================================================
+/**
+ * Once a day, sends LUC_BACKLOG_PER_DAY existing CHTR and hazing policy pages
+ * for a standards check, as "Backlog check" rows in Candidate URLs. Called from
+ * every scheduled slice; does nothing after the day's quota is met.
+ *
+ * WHICH ROWS: watched (Link status not blank), with an address, no "Standard
+ * last judged" date, and created before LUC_MANUAL_SINCE (later rows are
+ * judged as they arrive, by Manual entry or their own candidate row). Taken in
+ * LUC_BACKLOG_ORDER. A row whose address an accepted candidate row already
+ * backs is marked judged and skipped, so no AI check is spent on it.
+ *
+ * EACH ROW SENT: a Candidate URLs row is created (Source "Backlog check",
+ * "Not yet fetched"; the end of the slice captures it), then the Live URL
+ * Checks row gets Standard last judged = today, and a published CHTR also gets
+ * First date check = today, so its date check comes up the same day.
+ *
+ * If the Candidate URLs rows cannot be created, nothing is marked and the day
+ * is not counted as done, so the next slice tries again. Never throws.
+ */
+function lucRunBacklog_(pat, budgetMs) {
+  if (budgetMs < LUC_CAPTURE_MIN_MS) return { sent: 0, skipped: true };
+  const props = PropertiesService.getScriptProperties();
+  const today = lucToday_();
+  if (props.getProperty(LUC_BACKLOG_DAY_KEY) === today) return { sent: 0, alreadyToday: true };
+
+  const startedAt = Date.now();
+  const picked = [];
+  const judgedOnly = [];
+  let looks = 0;
+  let anyLeft = false;
+
+  try {
+    for (let g = 0; g < LUC_BACKLOG_ORDER.length && picked.length < LUC_BACKLOG_PER_DAY; g++) {
+      const names = LUC_BACKLOG_ORDER[g];
+      const formula = 'AND(OR(' + names.map(function (n) {
+          return '{' + LUC_F_TRACKED + '} = ' + lucFormulaString_(n); }).join(', ') + '), ' +
+        '{' + LUC_F_STATUS + '} != "", {' + LUC_F_URL + '} != "", ' +
+        '{' + LUC_F_STD_JUDGED + '} = BLANK(), ' +
+        "IS_BEFORE(CREATED_TIME(), DATETIME_PARSE('" + LUC_MANUAL_SINCE + "')))";
+      const json = lucList_(pat, LUC_CHECKS_TABLE, {
+        pageSize: Math.min(100, LUC_BACKLOG_MAX_LOOKS),
+        returnFieldsByFieldId: true,
+        fields: [LUC_F_URL, LUC_F_TRACKED, LUC_F_UNITID, LUC_F_INSTITUTION],
+        filterByFormula: formula });
+      Utilities.sleep(210);
+      const rows = json.records || [];
+      if (rows.length) anyLeft = true;
+
+      for (let i = 0; i < rows.length && picked.length < LUC_BACKLOG_PER_DAY; i++) {
+        if (looks >= LUC_BACKLOG_MAX_LOOKS || Date.now() - startedAt > budgetMs - 20000) break;
+        looks++;
+        const r = rows[i];
+        const tracked = lucTrackedByName_(r.fields[LUC_F_TRACKED] || '');
+        const e = {
+          id: r.id,
+          label: (r.fields[LUC_F_UNITID] || r.id) + ' / ' + (r.fields[LUC_F_TRACKED] || '?'),
+          tracked: tracked,
+          unitid: String(r.fields[LUC_F_UNITID] || ''),
+          instId: ((r.fields[LUC_F_INSTITUTION] || [])[0]) || '',
+          manualEntry: { url: String(r.fields[LUC_F_URL] || '').trim(),
+                         category: tracked ? tracked.candCategory : '' }
+        };
+        if (!tracked || !e.instId || !e.manualEntry.url) continue;
+        if (lucManualEntryIsBacked_(pat, e)) { judgedOnly.push(e); continue; }
+        picked.push(e);
+      }
+    }
+
+    // Rows already backed: mark judged, no Candidate row.
+    lucBacklogMark_(pat, judgedOnly, today, false);
+
+    if (!picked.length) {
+      if (!anyLeft) Logger.log('Backlog: finished. No CHTR or policy page is left without a ' +
+        'standards check.');
+      else Logger.log('Backlog: nothing sent this time (' + judgedOnly.length +
+        ' already backed by an accepted candidate row, now marked judged).');
+      if (!anyLeft || looks < LUC_BACKLOG_MAX_LOOKS) props.setProperty(LUC_BACKLOG_DAY_KEY, today);
+      return { sent: 0, judgedOnly: judgedOnly.length };
+    }
+
+    const payload = { records: picked.map(function (e) {
+      const f = {};
+      f[LUC_C_UNITID]      = e.unitid;
+      f[LUC_C_INSTITUTION] = [e.instId];
+      f[LUC_C_CATEGORY]    = e.manualEntry.category;
+      f[LUC_C_URL]         = e.manualEntry.url;
+      f[LUC_C_SOURCE]      = LUC_SOURCE_BACKLOG;
+      f[LUC_C_FETCH]       = LUC_FETCH_NOT_YET;
+      return { fields: f };
+    }) };
+    const resp = UrlFetchApp.fetch(
+      'https://api.airtable.com/v0/' + LUC_BASE_ID + '/' + LUC_CAND_TABLE,
+      { method: 'post',
+        headers: { Authorization: 'Bearer ' + pat, 'Content-Type': 'application/json' },
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true });
+    Utilities.sleep(210);
+    if (resp.getResponseCode() !== 200) {
+      Logger.log('Backlog: could not create ' + picked.length + ' row(s) (HTTP ' +
+        resp.getResponseCode() + '): ' + resp.getContentText().slice(0, 300) +
+        ' -- if this names an option, check that Source has "' + LUC_SOURCE_BACKLOG +
+        '". Will try again on the next slice.');
+      return { sent: 0, failed: true };
+    }
+
+    lucBacklogMark_(pat, picked, today, true);
+    props.setProperty(LUC_BACKLOG_DAY_KEY, today);
+    picked.forEach(function (e) {
+      Logger.log('BACKLOG CHECK -- ' + e.label + ': Candidate URLs row created (' +
+        e.manualEntry.category + ', ' + e.manualEntry.url + ')' +
+        (e.tracked.name === 'Transparency Report' ? '; CHTR date check released' : '') + '.');
+    });
+    return { sent: picked.length, judgedOnly: judgedOnly.length };
+  } catch (err) {
+    Logger.log('Backlog step stopped, ignored: ' + err);
+    return { sent: 0, failed: true };
+  }
+}
+
+/**
+ * Writes Standard last judged = today on the given Live URL Checks rows, and
+ * First date check = today on published CHTR rows when releaseDates is true.
+ * Patches only these fields, so Last checked is not touched.
+ */
+function lucBacklogMark_(pat, entries, today, releaseDates) {
+  for (let i = 0; i < entries.length; i += LUC_WRITE_BATCH) {
+    const batch = entries.slice(i, i + LUC_WRITE_BATCH);
+    const resp = UrlFetchApp.fetch(
+      'https://api.airtable.com/v0/' + LUC_BASE_ID + '/' + LUC_CHECKS_TABLE,
+      { method: 'patch',
+        headers: { Authorization: 'Bearer ' + pat, 'Content-Type': 'application/json' },
+        payload: JSON.stringify({ records: batch.map(function (e) {
+          const f = {};
+          f[LUC_F_STD_JUDGED] = today;
+          if (releaseDates && e.tracked && e.tracked.name === 'Transparency Report') {
+            f[LUC_F_FIRST_DATE] = today;
+          }
+          return { id: e.id, fields: f };
+        }) }),
+        muteHttpExceptions: true });
+    Utilities.sleep(210);
+    if (resp.getResponseCode() !== 200) {
+      Logger.log('Backlog: could not mark ' + batch.length + ' row(s) as judged (HTTP ' +
+        resp.getResponseCode() + '): ' + resp.getContentText().slice(0, 300) +
+        '. They may be sent again tomorrow.');
+    }
+  }
 }
 
 /**
