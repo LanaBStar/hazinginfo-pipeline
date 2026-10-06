@@ -445,7 +445,8 @@ const LUC_UNFETCHABLE_HOSTS = [
   'hazing.ucsc.edu',                // UC Santa Cruz    110714  Hazing Policy + Transparency Report
   'unlreport.unl.edu',              // Nebraska         181464  Report Form
   'usu.edu',                        // Utah State       230728  Transparency Report + Hazing Policy
-  'osccr.sites.northeastern.edu'    // Northeastern     167358  Hazing Policy
+  'osccr.sites.northeastern.edu',    // Northeastern     167358  Hazing Policy
+  'hazefree.mit.edu'                // MIT              166683  Transparency Report + Hazing Policy (hangs ~100s in a batch, 2026-10-06)
 ];
 
 /** The host part of a URL, lowercased, or '' if it cannot be read. */
