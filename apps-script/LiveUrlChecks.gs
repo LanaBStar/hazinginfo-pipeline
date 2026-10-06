@@ -285,10 +285,42 @@
 // page. Rows not reached stay "Not yet fetched"; the next slice, or the
 // pipeline, reads them.
 //
-// WHO LOOKS: the "Page change outcome" formula in Candidate URLs says
-// "Needs a person", "No review needed", "Waiting for AI" or "Waiting for
-// capture". The AI check is run by hand on Passed rows. The sweep email counts
-// rows needing a person and rows waiting for the AI.
+// WHO LOOKS: the "Re-check outcome" formula in Candidate URLs (named "Page
+// change outcome" until 2026-10-06) says "Needs a person", "No review
+// needed", "Waiting for AI" or "Waiting for capture". The AI check is run by
+// hand on Passed rows. The sweep email counts rows needing a person and rows
+// waiting for the AI.
+//
+// -------------------------------------------------------------------------
+// MANUAL ENTRY ROWS, STEP 4  (added 2026-10-06, tracker #36)
+// -------------------------------------------------------------------------
+// A CHTR or hazing policy address can reach 50 States without anyone judging
+// it against the standard: typed in by hand, or applied by write-back from a
+// reviewer's "Fixed - new URL". When a check finds such an address, this file
+// creates a Candidate URLs row for it with Source "Manual entry", which then
+// goes through capture, the pre-filter and the AI check like a Page change row.
+//
+// WHAT COUNTS AS A NEW ADDRESS:
+//   - a row whose snapshot address differs from its Current URL (the address
+//     changed since the before copy or the review), or
+//   - a row created after LUC_MANUAL_SINCE that is being read for the first
+//     time (a school gained a link, or a page was moved to its record field).
+//   Rows that existed before LUC_MANUAL_SINCE and have no snapshot yet are
+//   NOT new: their first before copy is just catching up.
+// WHAT IS SKIPPED: report forms (trusted as entered; the AI does not judge
+// them), and any address an accepted candidate row already backs (Accept or
+// Hold on a Candidate URLs row for the same school and category, matching its
+// Candidate URL, Reviewer-proposed URL or Review URL). Promote's own writes
+// are always backed this way.
+//
+// UNREADABLE PAGES: so that a new address on a page this checker can never
+// read (403 and similar) is still noticed, an unreviewed row with no readable
+// page now records the address and status in the snapshot fields with a blank
+// Content hash snapshot. "Page changed since review" needs a fingerprint on
+// both sides, so it is unaffected.
+//
+// If the row cannot be created, the snapshot is left as it was, so the next
+// check sees the same new address and tries again.
 // =========================================================================
 
 
@@ -347,10 +379,20 @@ const LUC_C_URL           = 'fldzInwsPk3pI4PoT';   // Candidate URL
 const LUC_C_SOURCE        = 'fldDgMOzWYGMEL4Xd';
 const LUC_C_FETCH         = 'fldhrl2Cfiiw8pAng';   // Fetch status
 const LUC_C_DETERMINATION = 'flds5qRgFKkdvLjK0';
-const LUC_C_OUTCOME       = 'fldZsxzEJBKBQhiKI';   // Page change outcome (formula)
+const LUC_C_OUTCOME       = 'fldZsxzEJBKBQhiKI';   // Re-check outcome (formula; was Page change outcome)
 // Must match the Source option and the Fetch status option EXACTLY: rows are
 // created without typecast, so a missing option fails the batch (logged).
 const LUC_SOURCE_PAGE_CHANGE = 'Page change';
+const LUC_SOURCE_MANUAL      = 'Manual entry';   // step 4, 2026-10-06
+// Rows created before this moment are never treated as a new address on their
+// first read (midnight 2026-10-07 Pacific). See "MANUAL ENTRY ROWS, STEP 4".
+const LUC_MANUAL_SINCE       = '2026-10-07T07:00:00.000Z';
+// Only these Candidate URLs categories get Manual entry rows.
+const LUC_MANUAL_CATEGORIES  = ['CHTR', 'Hazing Policy'];
+const LUC_C_PROPOSED_URL     = 'fldnX2cl803TQJrNY';   // Reviewer-proposed URL
+const LUC_C_REVIEW_URL       = 'fld91PUEMATcrMOWU';   // Review URL (formula)
+const LUC_DET_ACCEPT         = 'Accept - meets standard';
+const LUC_DET_HOLD           = 'Hold - correct page below standard';
 const LUC_FETCH_NOT_YET      = 'Not yet fetched';
 const LUC_CAPTURE_MIN_MS     = 30000;   // below this, leave capture to the next slice
 // The reviewer's below-standard ticks, one per category (added 2026-10-04).
@@ -1836,20 +1878,20 @@ function lucEmailReviewQueue_(pat, state) {
       (state && state.finishedAt ? ' (' + state.finishedAt.slice(0, 10) + ')' : '') + '.</p>';
 
     if (pc.needsPerson || pc.waitingForAi) {
-      body += '<p><b>Pages that changed since they were reviewed</b> (Candidate URLs, ' +
-        'Source "Page change"):</p><ul>' +
+      body += '<p><b>Pages to re-check against the standard</b> (Candidate URLs, Source ' +
+        '"Page change" or "Manual entry"):</p><ul>' +
         (pc.waitingForAi ? '<li><b>Waiting for the AI check: ' + pc.waitingForAi + '</b> &mdash; ' +
-          'open the rows whose Page change outcome is "Waiting for AI" and run the AI ' +
+          'open the rows whose Re-check outcome is "Waiting for AI" and run the AI ' +
           'Review field on them.</li>' : '') +
         (pc.needsPerson ? '<li><b>Need a person: ' + pc.needsPerson + '</b> &mdash; ' +
-          'Page change outcome "Needs a person" with no Reviewer determination. Review them ' +
+          'Re-check outcome "Needs a person" with no Reviewer determination. Review them ' +
           'in Candidate URL Review like any other candidate.</li>' : '') +
         '</ul>';
     }
 
     if (!toReview) {
       lucNotify_('Live URL Checks: ' + (pc.needsPerson + pc.waitingForAi) +
-        ' changed page(s) to look at', body);
+        ' page(s) to re-check', body);
       return;
     }
 
@@ -1877,14 +1919,23 @@ function lucEmailReviewQueue_(pat, state) {
 }
 
 /**
+ * Airtable formula clause matching the rows this file creates in Candidate
+ * URLs to re-check a page: Source "Page change" or "Manual entry".
+ */
+function lucRecheckSourceClause_() {
+  return 'OR({' + LUC_C_SOURCE + '} = "' + LUC_SOURCE_PAGE_CHANGE + '", ' +
+    '{' + LUC_C_SOURCE + '} = "' + LUC_SOURCE_MANUAL + '")';
+}
+
+/**
  * Counts Page change rows by what they are waiting for (added 2026-10-06).
- * Reads the "Page change outcome" formula. Never throws: on an error it
+ * Reads the "Re-check outcome" formula. Never throws: on an error it
  * returns zeros and logs, so the sweep email still goes out.
  */
 function lucCountPageChanges_(pat) {
   const out = { needsPerson: 0, waitingForAi: 0 };
   try {
-    const formula = 'AND({' + LUC_C_SOURCE + '} = "' + LUC_SOURCE_PAGE_CHANGE + '", ' +
+    const formula = 'AND(' + lucRecheckSourceClause_() + ', ' +
       '{' + LUC_C_DETERMINATION + '} = "", ' +
       'OR({' + LUC_C_OUTCOME + '} = "Needs a person", {' + LUC_C_OUTCOME + '} = "Waiting for AI"))';
     lucListAll_(pat, LUC_CAND_TABLE, [LUC_C_OUTCOME], formula).forEach(function (r) {
@@ -2857,7 +2908,8 @@ function lucCheckBatch_(rows, deadlineAt) {
         notes: r.fields[LUC_F_NOTES] || '',
         changeFp: r.fields[LUC_F_CHANGE_FP] || ''
       },
-      // For a Page change row (2026-10-06).
+      // For a Page change or Manual entry row (2026-10-06).
+      createdTime: r.createdTime || '',
       unitid: String(r.fields[LUC_F_UNITID] || ''),
       instId: ((r.fields[LUC_F_INSTITUTION] || [])[0]) || ''
     };
@@ -3062,6 +3114,7 @@ function lucCheckBatch_(rows, deadlineAt) {
     } else {
       const fresh = entry.fields[LUC_F_HASH] || '';
       lucNotePageChange_(entry, j.url, interpreted.code, fresh, entry.cleared);
+      lucNoteManualEntry_(entry, j.url);
       lucTakeBeforeCopy_(entry, j.url, interpreted.code, fresh, entry.cleared);
     }
   });
@@ -3071,6 +3124,7 @@ function lucCheckBatch_(rows, deadlineAt) {
   landings.forEach(function (l) {
     const e = l.entry;
     lucNotePageChange_(e, e.checkedUrl, e.fields[LUC_F_CODE], e.landingHash || '', e.cleared);
+    lucNoteManualEntry_(e, e.checkedUrl);
     lucTakeBeforeCopy_(e, e.checkedUrl, e.fields[LUC_F_CODE],
       e.landingHash || '', e.cleared);
   });
@@ -3169,8 +3223,9 @@ function lucFollowRedirects_(landings, deadlineAt) {
  * UNREVIEWED ROW (or one whose review was just cleared):
  *   - existing copy still describes this address and status class: kept;
  *   - otherwise, with a fresh fingerprint: a new copy is taken now;
- *   - otherwise (unreadable this time): a copy for a different address or
- *     status class is discarded, so the next readable check takes a new one.
+ *   - otherwise (unreadable this time): the address and status are recorded
+ *     with a blank fingerprint, so a later change of address is still seen;
+ *     a blank address empties the copy.
  */
 function lucTakeBeforeCopy_(entry, url, code, freshHash, cleared) {
   const p = entry.prev;
@@ -3204,11 +3259,24 @@ function lucTakeBeforeCopy_(entry, url, code, freshHash, cleared) {
     return;
   }
 
-  if (hasCopy && (!sameUrl || !sameClass)) {
-    lucDropBeforeCopy_(entry);
-    Logger.log('Before copy discarded -- ' + entry.label + ': ' +
-      (!sameUrl ? 'the address changed' : 'the page is gone') +
-      '; a new one is taken on the next readable check.');
+  // No readable page this time. A blank address (No URL) empties the copy.
+  // Otherwise the address and status are recorded with a blank fingerprint
+  // (added 2026-10-06, step 4), so a later change of address is still noticed
+  // on a page this checker cannot read. The next readable check fills in the
+  // fingerprint.
+  if (!url) {
+    if (hasCopy) {
+      lucDropBeforeCopy_(entry);
+      Logger.log('Before copy discarded -- ' + entry.label + ': the address is now blank.');
+    }
+    return;
+  }
+  if (!hasCopy || !sameUrl || !sameClass) {
+    entry.fields[LUC_F_SNAP_URL]    = url;
+    entry.fields[LUC_F_SNAP_STATUS] = String(code || '');
+    entry.fields[LUC_F_SNAP_HASH]   = '';
+    Logger.log('Before copy: address recorded without a fingerprint (page not readable) -- ' +
+      entry.label + (hasCopy && !sameUrl ? ' (address changed)' : '') + '.');
   }
 }
 
@@ -3252,6 +3320,147 @@ function lucNotePageChange_(entry, url, code, freshHash, cleared) {
   entry.fields[LUC_F_CHANGE_FP]   = freshHash;
   entry.fields[LUC_F_CHANGE_DATE] =
     Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
+/**
+ * Decides whether this check found a NEW CHTR or hazing policy address, and if
+ * so marks the entry so lucWriteBack_ can create a Manual entry row (after
+ * checking that no accepted candidate row backs it). See "MANUAL ENTRY ROWS,
+ * STEP 4" in the header. Compares against the snapshot as it was when the row
+ * was read, so it must be called BEFORE lucTakeBeforeCopy_.
+ */
+function lucNoteManualEntry_(entry, url) {
+  const t = entry.tracked;
+  if (!url || !t || LUC_MANUAL_CATEGORIES.indexOf(t.candCategory) === -1) return;
+  if (!entry.instId) return;
+  const p = entry.prev;
+  let reason = '';
+  if (p.snapUrl) {
+    if (p.snapUrl !== url) reason = 'address changed (was ' + p.snapUrl + ')';
+  } else if (!p.snapStatus && entry.createdTime && entry.createdTime > LUC_MANUAL_SINCE) {
+    reason = 'new link, first read';
+  }
+  if (!reason) return;
+  entry.manualEntry = { url: url, category: t.candCategory, reason: reason };
+}
+
+/** The address in the forms a stored copy may use: as is, and with or without a trailing slash. */
+function lucUrlVariants_(url) {
+  const u = String(url || '').trim();
+  const out = [u];
+  if (/\/$/.test(u)) out.push(u.replace(/\/+$/, ''));
+  else out.push(u + '/');
+  return out;
+}
+
+/** Escapes a value for a double-quoted Airtable formula string. */
+function lucFormulaString_(s) {
+  return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+}
+
+/**
+ * True if an accepted candidate row (Accept or Hold) for this school and
+ * category already backs this address. Throws on an Airtable error, so the
+ * caller can treat "could not tell" as "try again next check".
+ */
+function lucManualEntryIsBacked_(pat, entry) {
+  const m = entry.manualEntry;
+  const urlTests = [];
+  lucUrlVariants_(m.url).forEach(function (u) {
+    [LUC_C_URL, LUC_C_PROPOSED_URL, LUC_C_REVIEW_URL].forEach(function (f) {
+      urlTests.push('{' + f + '} = ' + lucFormulaString_(u));
+    });
+  });
+  const formula = 'AND(' +
+    '{' + LUC_C_UNITID + '} = ' + lucFormulaString_(entry.unitid) + ', ' +
+    '{' + LUC_C_CATEGORY + '} = ' + lucFormulaString_(m.category) + ', ' +
+    'OR({' + LUC_C_DETERMINATION + '} = ' + lucFormulaString_(LUC_DET_ACCEPT) + ', ' +
+       '{' + LUC_C_DETERMINATION + '} = ' + lucFormulaString_(LUC_DET_HOLD) + '), ' +
+    'OR(' + urlTests.join(', ') + '))';
+  const json = lucList_(pat, LUC_CAND_TABLE, {
+    pageSize: 1, returnFieldsByFieldId: true, fields: [LUC_C_UNITID], filterByFormula: formula });
+  Utilities.sleep(210);
+  return (json.records || []).length > 0;
+}
+
+/**
+ * Creates Manual entry rows for entries marked by lucNoteManualEntry_ that no
+ * accepted candidate row backs. Runs BEFORE the Live URL Checks write. If a
+ * row cannot be created (or backing cannot be checked), the snapshot writes
+ * for that entry are withdrawn, so the next check sees the same new address
+ * and tries again.
+ */
+function lucCreateManualEntryRows_(pat, results) {
+  const todo = [];
+  results.forEach(function (e) {
+    if (!e.manualEntry) return;
+    try {
+      if (lucManualEntryIsBacked_(pat, e)) {
+        Logger.log('New address backed by an accepted candidate row, no Manual entry row -- ' +
+          e.label + ': ' + e.manualEntry.url + '.');
+        e.manualEntry = null;
+        return;
+      }
+      todo.push(e);
+    } catch (err) {
+      Logger.log('Could not check candidate rows for ' + e.label + ' (' + err +
+        '); will try again next check.');
+      lucWithdrawSnapshotWrites_(e);
+      e.manualEntry = null;
+    }
+  });
+  if (!todo.length) return 0;
+
+  let created = 0;
+  for (let i = 0; i < todo.length; i += LUC_CREATE_BATCH) {
+    const batch = todo.slice(i, i + LUC_CREATE_BATCH);
+    const payload = { records: batch.map(function (e) {
+      const f = {};
+      f[LUC_C_UNITID]      = e.unitid;
+      f[LUC_C_INSTITUTION] = [e.instId];
+      f[LUC_C_CATEGORY]    = e.manualEntry.category;
+      f[LUC_C_URL]         = e.manualEntry.url;
+      f[LUC_C_SOURCE]      = LUC_SOURCE_MANUAL;
+      f[LUC_C_FETCH]       = LUC_FETCH_NOT_YET;
+      return { fields: f };
+    }) };
+    const resp = UrlFetchApp.fetch(
+      'https://api.airtable.com/v0/' + LUC_BASE_ID + '/' + LUC_CAND_TABLE,
+      { method: 'post',
+        headers: { Authorization: 'Bearer ' + pat, 'Content-Type': 'application/json' },
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true });
+    Utilities.sleep(210);
+
+    if (resp.getResponseCode() === 200) {
+      created += batch.length;
+      batch.forEach(function (e) {
+        Logger.log('MANUAL ENTRY -- ' + e.label + ': ' + e.manualEntry.reason +
+          '; Candidate URLs row created (' + e.manualEntry.category + ', ' +
+          e.manualEntry.url + ').');
+      });
+    } else {
+      Logger.log('Could not create ' + batch.length + ' Manual entry row(s) (HTTP ' +
+        resp.getResponseCode() + '): ' + resp.getContentText().slice(0, 300) +
+        ' -- if this names an option, check that Source has "' + LUC_SOURCE_MANUAL +
+        '". They will be tried again on the next check.');
+      batch.forEach(function (e) {
+        lucWithdrawSnapshotWrites_(e);
+        e.manualEntry = null;
+      });
+    }
+  }
+  return created;
+}
+
+/**
+ * Removes this check's writes to the three snapshot fields from an entry, so
+ * the row keeps the snapshot it had and the next check repeats the decision.
+ */
+function lucWithdrawSnapshotWrites_(entry) {
+  delete entry.fields[LUC_F_SNAP_URL];
+  delete entry.fields[LUC_F_SNAP_STATUS];
+  delete entry.fields[LUC_F_SNAP_HASH];
 }
 
 /**
@@ -3329,7 +3538,7 @@ function lucCapturePageChanges_(pat, budgetMs) {
   const startedAt = Date.now();
   let captured = 0;
   try {
-    const formula = 'AND({' + LUC_C_SOURCE + '} = "' + LUC_SOURCE_PAGE_CHANGE + '", ' +
+    const formula = 'AND(' + lucRecheckSourceClause_() + ', ' +
       'OR({' + LUC_C_FETCH + '} = "", {' + LUC_C_FETCH + '} = "' + LUC_FETCH_NOT_YET + '"))';
     while (Date.now() - startedAt < budgetMs - 15000) {
       const json = lucList_(pat, LUC_CAND_TABLE, {
@@ -3432,9 +3641,11 @@ function lucWriteBack_(pat, results) {
   const writeErrors = [];
   const failedIds = [];
 
-  // Page change rows first (2026-10-06): see lucCreatePageChangeRows_ for why
-  // the order matters.
+  // Page change and Manual entry rows first (2026-10-06): see
+  // lucCreatePageChangeRows_ and lucCreateManualEntryRows_ for why the order
+  // matters.
   lucCreatePageChangeRows_(pat, results);
+  lucCreateManualEntryRows_(pat, results);
 
   for (let i = 0; i < results.length; i += LUC_WRITE_BATCH) {
     const batch = results.slice(i, i + LUC_WRITE_BATCH);
