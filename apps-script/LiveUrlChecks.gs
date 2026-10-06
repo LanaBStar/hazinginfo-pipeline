@@ -321,6 +321,19 @@
 //
 // If the row cannot be created, the snapshot is left as it was, so the next
 // check sees the same new address and tries again.
+//
+// -------------------------------------------------------------------------
+// CHTR DATE CHECKS, STEP 5  (added 2026-10-06, tracker #36)
+// -------------------------------------------------------------------------
+// People record each published CHTR's date on the CHTR links page ("CHTR
+// update date", "Date is on"); formulas turn it into "Date check due" and the
+// "Needs a date" / "Freshness check" labels in "Why it's here". This file does
+// two small things for it (lucNoteChtrAddress_): on a published CHTR row that
+// is new or whose address changed, it sets "First date check" to today so the
+// row comes up as "Needs a date" at once, and on an address change it empties
+// the old page's date. Existing CHTRs are released by the backlog step. The
+// sweep email also counts yearly report form checks and CHTR date checks due
+// (lucCountDueLooks_).
 // =========================================================================
 
 
@@ -369,6 +382,13 @@ const LUC_F_SRC_FORM      = 'fldiDcJy8vyOhxkYv';   // src Report Form
 // Which page version was last sent to Candidate URLs (added 2026-10-06).
 const LUC_F_CHANGE_FP     = 'fldb9cXfQiKeHAxVV';   // Page change reported fingerprint
 const LUC_F_CHANGE_DATE   = 'fldhAVUhmffZQpjEZ';   // Page change reported date
+// CHTR date checks (added 2026-10-06, step 5). Typed by reviewers on the CHTR
+// links page; this file only clears the first two when a CHTR row's address
+// changes, and sets First date check on a new or changed CHTR row.
+const LUC_F_CHTR_DATE     = 'fldBTIggpm9UTeQyC';   // CHTR update date (text)
+const LUC_F_DATE_ON       = 'fldaD7TWCyznzbkNV';   // Date is on (single select)
+const LUC_F_FIRST_DATE    = 'fldp2DeV1IN3MiORF';   // First date check (date)
+const LUC_F_WHY           = 'fldSBlEfYkBLqST4F';   // Why it's here (formula)
 
 // ---- Candidate URLs, for Page change rows (added 2026-10-06) ------------
 const LUC_CAND_TABLE      = 'tblIL5opnHj0lhvvg';
@@ -1869,13 +1889,31 @@ function lucEmailReviewQueue_(pat, state) {
     Logger.log('Review queue after the sweep: ' + toReview + ' link(s) to check; ' +
       'page changes: ' + pc.needsPerson + ' need a person, ' + pc.waitingForAi +
       ' waiting for the AI check.');
-    if (!toReview && !pc.needsPerson && !pc.waitingForAi) {
+    // Yearly report form looks and CHTR date checks due (2026-10-06).
+    const due = lucCountDueLooks_(pat);
+    const dueTotal = due.yearly + due.needsDate + due.freshness;
+    Logger.log('Due for a look: ' + due.yearly + ' yearly report form check(s), ' +
+      due.needsDate + ' CHTR(s) needing a date, ' + due.freshness + ' CHTR freshness check(s).');
+
+    if (!toReview && !pc.needsPerson && !pc.waitingForAi && !dueTotal) {
       Logger.log('Nothing needs a person -- no email sent.');
       return;
     }
 
     let body = '<p>The Live URL Checks sweep finished' +
       (state && state.finishedAt ? ' (' + state.finishedAt.slice(0, 10) + ')' : '') + '.</p>';
+
+    if (dueTotal) {
+      body += '<p><b>Due for a look</b> (Live URL Checks, \"To review\" on each link page):</p><ul>' +
+        (due.needsDate ? '<li><b>CHTRs needing a date: ' + due.needsDate + '</b> &mdash; ' +
+          'record CHTR update date and Date is on (CHTR links page).</li>' : '') +
+        (due.freshness ? '<li><b>CHTR freshness checks: ' + due.freshness + '</b> &mdash; ' +
+          'the recorded date is 12 months old: type the newer date, or tick ' +
+          '\"CHTR older than 12 months\".</li>' : '') +
+        (due.yearly ? '<li><b>Yearly report form checks: ' + due.yearly + '</b> &mdash; ' +
+          'open the form, then tick \"Yearly report form check\" (Report form links page).</li>' : '') +
+        '</ul>';
+    }
 
     if (pc.needsPerson || pc.waitingForAi) {
       body += '<p><b>Pages to re-check against the standard</b> (Candidate URLs, Source ' +
@@ -1890,8 +1928,8 @@ function lucEmailReviewQueue_(pat, state) {
     }
 
     if (!toReview) {
-      lucNotify_('Live URL Checks: ' + (pc.needsPerson + pc.waitingForAi) +
-        ' page(s) to re-check', body);
+      lucNotify_('Live URL Checks: ' + (pc.needsPerson + pc.waitingForAi + dueTotal) +
+        ' item(s) to look at', body);
       return;
     }
 
@@ -1916,6 +1954,27 @@ function lucEmailReviewQueue_(pat, state) {
     // Never let the email take down the slice that finished the sweep.
     Logger.log('Review-queue email skipped: ' + e);
   }
+}
+
+/**
+ * Counts Live URL Checks rows due a yearly report form check or a CHTR date
+ * check, from the "Why it's here" labels (added 2026-10-06). Never throws.
+ */
+function lucCountDueLooks_(pat) {
+  const out = { yearly: 0, needsDate: 0, freshness: 0 };
+  try {
+    const formula = 'OR(FIND("Yearly look", {' + LUC_F_WHY + '}), ' +
+      'FIND("Needs a date", {' + LUC_F_WHY + '}), FIND("Freshness check", {' + LUC_F_WHY + '}))';
+    lucListAll_(pat, LUC_CHECKS_TABLE, [LUC_F_WHY], formula).forEach(function (r) {
+      const w = String((r.fields || {})[LUC_F_WHY] || '');
+      if (w.indexOf('Yearly look') === 0) out.yearly++;
+      else if (w.indexOf('Needs a date') === 0) out.needsDate++;
+      else if (w.indexOf('Freshness check') === 0) out.freshness++;
+    });
+  } catch (e) {
+    Logger.log('Could not count due looks: ' + e);
+  }
+  return out;
 }
 
 /**
@@ -3115,6 +3174,7 @@ function lucCheckBatch_(rows, deadlineAt) {
       const fresh = entry.fields[LUC_F_HASH] || '';
       lucNotePageChange_(entry, j.url, interpreted.code, fresh, entry.cleared);
       lucNoteManualEntry_(entry, j.url);
+      lucNoteChtrAddress_(entry, j.url);
       lucTakeBeforeCopy_(entry, j.url, interpreted.code, fresh, entry.cleared);
     }
   });
@@ -3125,6 +3185,7 @@ function lucCheckBatch_(rows, deadlineAt) {
     const e = l.entry;
     lucNotePageChange_(e, e.checkedUrl, e.fields[LUC_F_CODE], e.landingHash || '', e.cleared);
     lucNoteManualEntry_(e, e.checkedUrl);
+    lucNoteChtrAddress_(e, e.checkedUrl);
     lucTakeBeforeCopy_(e, e.checkedUrl, e.fields[LUC_F_CODE],
       e.landingHash || '', e.cleared);
   });
@@ -3342,6 +3403,32 @@ function lucNoteManualEntry_(entry, url) {
   }
   if (!reason) return;
   entry.manualEntry = { url: url, category: t.candCategory, reason: reason };
+}
+
+/**
+ * CHTR date checks (step 5, 2026-10-06). On a published CHTR row that is new
+ * (created after LUC_MANUAL_SINCE, read for the first time) or whose address
+ * changed, sets First date check to today so it comes up as "Needs a date" at
+ * once. On an address change it also empties CHTR update date and Date is on,
+ * because they described the old page. Uses the same test for "new or changed"
+ * as lucNoteManualEntry_, so it must also run BEFORE lucTakeBeforeCopy_.
+ */
+function lucNoteChtrAddress_(entry, url) {
+  if (!url || !entry.tracked || entry.tracked.name !== 'Transparency Report') return;
+  const p = entry.prev;
+  const changed = !!p.snapUrl && p.snapUrl !== url;
+  const isNew = !p.snapUrl && !p.snapStatus && entry.createdTime &&
+                entry.createdTime > LUC_MANUAL_SINCE;
+  if (!changed && !isNew) return;
+  entry.fields[LUC_F_FIRST_DATE] =
+    Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  if (changed) {
+    entry.fields[LUC_F_CHTR_DATE] = '';
+    entry.fields[LUC_F_DATE_ON]   = null;   // single select: null, '' is a 422
+  }
+  Logger.log('CHTR date check -- ' + entry.label + ': ' +
+    (changed ? 'address changed, old date cleared' : 'new CHTR') +
+    '; comes up as "Needs a date" today.');
 }
 
 /** The address in the forms a stored copy may use: as is, and with or without a trailing slash. */
