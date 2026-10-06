@@ -259,6 +259,36 @@
 //    page with new content (or a redirect to a home page) shows as a change,
 //    and one that only moved from http to https does not. If the landing page
 //    is a sign-in page, the row becomes "Login required".
+//
+// -------------------------------------------------------------------------
+// PAGE-CHANGE ROWS, STEP 2  (added 2026-10-06, tracker #36)
+// -------------------------------------------------------------------------
+// When a check reads a page whose fingerprint differs from its before copy,
+// this file creates a new Candidate URLs row for the address being checked,
+// with Source "Page change", so the pre-filter and the AI check can judge the
+// page again. The original candidate row, if any, is left alone as history.
+//
+// ONE CHANGE, ONE ROW. "Page change reported fingerprint" remembers which
+// version was sent. A row is created only when the new fingerprint differs
+// from the before copy AND from the last one reported. The before copy is not
+// moved, so "Page changed since review" stays on until someone reviews again.
+//
+// WHEN NOTHING IS SENT: no readable page this check; no before copy yet; the
+// before copy was for a different address or status class (that is a new
+// page, not a changed one); or a review was cleared this check.
+//
+// CAPTURED AT ONCE. At the end of each slice, Page change rows still "Not yet
+// fetched" are read with the capture code in SitemapFinder.gs (capOneRow_),
+// which also sets Pre-filter result. Otherwise they would wait for the
+// pipeline's capture stage, which can be weeks away. Capture is told the row
+// has a decision so its stub chase never moves the address off the published
+// page. Rows not reached stay "Not yet fetched"; the next slice, or the
+// pipeline, reads them.
+//
+// WHO LOOKS: the "Page change outcome" formula in Candidate URLs says
+// "Needs a person", "No review needed", "Waiting for AI" or "Waiting for
+// capture". The AI check is run by hand on Passed rows. The sweep email counts
+// rows needing a person and rows waiting for the AI.
 // =========================================================================
 
 
@@ -304,6 +334,25 @@ const LUC_F_SNAP_HASH     = 'fldcxODB0EsN4pvOg';
 const LUC_F_SRC_CHTR      = 'fldBiCRimNasigH0O';   // src Transparency Report
 const LUC_F_SRC_POLICY    = 'fldVLVitM6kQOrSOO';   // src Hazing Policy
 const LUC_F_SRC_FORM      = 'fldiDcJy8vyOhxkYv';   // src Report Form
+// Which page version was last sent to Candidate URLs (added 2026-10-06).
+const LUC_F_CHANGE_FP     = 'fldb9cXfQiKeHAxVV';   // Page change reported fingerprint
+const LUC_F_CHANGE_DATE   = 'fldhAVUhmffZQpjEZ';   // Page change reported date
+
+// ---- Candidate URLs, for Page change rows (added 2026-10-06) ------------
+const LUC_CAND_TABLE      = 'tblIL5opnHj0lhvvg';
+const LUC_C_UNITID        = 'fldRicdqQxfBxUGBH';
+const LUC_C_INSTITUTION   = 'fldhbnSdGI8PFQQc7';   // link -> Institutions (same table as ours)
+const LUC_C_CATEGORY      = 'fld5QoBkGbSZNla35';
+const LUC_C_URL           = 'fldzInwsPk3pI4PoT';   // Candidate URL
+const LUC_C_SOURCE        = 'fldDgMOzWYGMEL4Xd';
+const LUC_C_FETCH         = 'fldhrl2Cfiiw8pAng';   // Fetch status
+const LUC_C_DETERMINATION = 'flds5qRgFKkdvLjK0';
+const LUC_C_OUTCOME       = 'fldZsxzEJBKBQhiKI';   // Page change outcome (formula)
+// Must match the Source option and the Fetch status option EXACTLY: rows are
+// created without typecast, so a missing option fails the batch (logged).
+const LUC_SOURCE_PAGE_CHANGE = 'Page change';
+const LUC_FETCH_NOT_YET      = 'Not yet fetched';
+const LUC_CAPTURE_MIN_MS     = 30000;   // below this, leave capture to the next slice
 // The reviewer's below-standard ticks, one per category (added 2026-10-04).
 // Write-back reads them; this file only ever empties them, alongside the
 // determination, when a review goes stale -- so a ticked reason can never be
@@ -363,9 +412,13 @@ const LUC_I_NAME   = 'fldHvefXrrPxibBsZ';
  * needs to change.
  */
 const LUC_TRACKED = [
-  { name: 'Transparency Report', instField: 'fldGJPC0iyuPcWtlK', check: true, srcField: LUC_F_SRC_CHTR },
-  { name: 'Hazing Policy',       instField: 'fldD9gEpDcw2l35II', check: true, srcField: LUC_F_SRC_POLICY },
-  { name: 'Report Form',         instField: 'fldIrTzWzi87nD7EU', check: true, srcField: LUC_F_SRC_FORM },
+  // `candCategory` is the Candidate URLs Category a Page change row gets.
+  { name: 'Transparency Report', instField: 'fldGJPC0iyuPcWtlK', check: true, srcField: LUC_F_SRC_CHTR,
+    candCategory: 'CHTR' },
+  { name: 'Hazing Policy',       instField: 'fldD9gEpDcw2l35II', check: true, srcField: LUC_F_SRC_POLICY,
+    candCategory: 'Hazing Policy' },
+  { name: 'Report Form',         instField: 'fldIrTzWzi87nD7EU', check: true, srcField: LUC_F_SRC_FORM,
+    candCategory: 'Report Form' },
 
   // BELOW-STANDARD PAGES (added 2026-10-06). `watchOf` names the published
   // entry this one shadows. instField is the RECORD field. A row exists and
@@ -379,11 +432,11 @@ const LUC_TRACKED = [
   // fldxMck8O1gNpEdDF. The names below must also exist as Tracked field
   // options, or lucCreateRows_ fails (no typecast).
   { name: 'Transparency Report (below standard)', instField: 'fldqQrSD83OVoteFx', check: true,
-    watchOf: 'Transparency Report', email: false },
+    watchOf: 'Transparency Report', email: false, candCategory: 'CHTR' },
   { name: 'Hazing Policy (below standard)',       instField: 'fldKyIAd65Yfn5g0V', check: true,
-    watchOf: 'Hazing Policy',       email: false },
+    watchOf: 'Hazing Policy',       email: false, candCategory: 'Hazing Policy' },
   { name: 'Report Form (below standard)',         instField: 'fldeBRiCU8dnIKsYk', check: true,
-    watchOf: 'Report Form',         email: false }
+    watchOf: 'Report Form',         email: false, candCategory: 'Report Form' }
 ];
 
 // THE located_* ENTRIES WERE REMOVED FROM THIS ARRAY ON 2026-08-28, after
@@ -1506,6 +1559,9 @@ function lucRunSlice_(budgetMs) {
         const cleaned = lucCleanUpAbandoned_(
           budgetMs - (Date.now() - toppedStartedAt), 'between sweeps');
 
+        // Read any Page change rows still waiting (2026-10-06).
+        lucCapturePageChanges_(pat, budgetMs - (Date.now() - toppedStartedAt));
+
         Logger.log('No full sweep due for ' +
           Math.ceil(LUC_MIN_SWEEP_INTERVAL_DAYS - age) + ' more days (last finished ' +
           state.finishedAt + ').' +
@@ -1703,6 +1759,10 @@ function lucRunSlice_(budgetMs) {
     // sweep-completing slice usually has minutes spare; when it does not,
     // this is skipped and the not-due branch below picks it up on the next
     // scheduled run. Either way one execution is one execution.
+    // Read the Page change rows this slice created, with what is left of its
+    // budget (2026-10-06). Before the email, so its counts are current.
+    lucCapturePageChanges_(pat, budgetMs - (Date.now() - startedAt));
+
     if (done) {
       lucCleanUpAbandoned_(budgetMs - (Date.now() - startedAt), 'after the sweep');
       // ONE EMAIL PER FINISHED SWEEP, and only if a person has something to
@@ -1726,12 +1786,10 @@ function lucRunSlice_(budgetMs) {
 // status. Only the three tracked fields the sweep checks are counted (see
 // lucCheckedClause_); the retired located_* rows are not.
 //
-// DELIBERATELY LEFT OUT: "Page changed since review". Acting on a content
-// change belongs to the content-change phase (target-state spec phase 3),
-// which is not built. Until it is, there is no clean way for a reviewer to
-// re-confirm an unchanged verdict -- the snapshot automation only fires
-// when the determination value changes -- so counting those rows here would
-// ask people for work they cannot properly record.
+// "Page changed since review" rows are not counted as Live URL Checks work.
+// A changed page becomes a "Page change" row in Candidate URLs (see the
+// header), and the email counts those instead: rows needing a person and rows
+// waiting for the AI check (lucCountPageChanges_).
 const LUC_REVIEW_VIEW_URL =
   'https://airtable.com/appEvOdPi94MzZ6Db/tblgX19rRaysxSlNu/viwnFpM7grpz26dpi';
 const LUC_STATUS_ORDER = ['Dead link', 'Site error', 'Unconfirmed', 'Login required',
@@ -1762,15 +1820,40 @@ function lucEmailReviewQueue_(pat, state) {
     });
     const toReview = rows.length;
 
-    Logger.log('Review queue after the sweep: ' + toReview + ' link(s) to check.');
-    if (!toReview) {
+    // Page change rows in Candidate URLs (2026-10-06): undecided rows that
+    // need a person, and rows waiting for someone to run the AI check.
+    const pc = lucCountPageChanges_(pat);
+
+    Logger.log('Review queue after the sweep: ' + toReview + ' link(s) to check; ' +
+      'page changes: ' + pc.needsPerson + ' need a person, ' + pc.waitingForAi +
+      ' waiting for the AI check.');
+    if (!toReview && !pc.needsPerson && !pc.waitingForAi) {
       Logger.log('Nothing needs a person -- no email sent.');
       return;
     }
 
     let body = '<p>The Live URL Checks sweep finished' +
-      (state && state.finishedAt ? ' (' + state.finishedAt.slice(0, 10) + ')' : '') +
-      '. <b>' + toReview + ' link(s) need checking:</b></p><ul>';
+      (state && state.finishedAt ? ' (' + state.finishedAt.slice(0, 10) + ')' : '') + '.</p>';
+
+    if (pc.needsPerson || pc.waitingForAi) {
+      body += '<p><b>Pages that changed since they were reviewed</b> (Candidate URLs, ' +
+        'Source "Page change"):</p><ul>' +
+        (pc.waitingForAi ? '<li><b>Waiting for the AI check: ' + pc.waitingForAi + '</b> &mdash; ' +
+          'open the rows whose Page change outcome is "Waiting for AI" and run the AI ' +
+          'Review field on them.</li>' : '') +
+        (pc.needsPerson ? '<li><b>Need a person: ' + pc.needsPerson + '</b> &mdash; ' +
+          'Page change outcome "Needs a person" with no Reviewer determination. Review them ' +
+          'in Candidate URL Review like any other candidate.</li>' : '') +
+        '</ul>';
+    }
+
+    if (!toReview) {
+      lucNotify_('Live URL Checks: ' + (pc.needsPerson + pc.waitingForAi) +
+        ' changed page(s) to look at', body);
+      return;
+    }
+
+    body += '<p><b>' + toReview + ' link(s) need checking:</b></p><ul>';
     const seen = {};
     LUC_STATUS_ORDER.concat(Object.keys(byStatus)).forEach(function (st) {
       if (!byStatus[st] || seen[st]) return;
@@ -1791,6 +1874,28 @@ function lucEmailReviewQueue_(pat, state) {
     // Never let the email take down the slice that finished the sweep.
     Logger.log('Review-queue email skipped: ' + e);
   }
+}
+
+/**
+ * Counts Page change rows by what they are waiting for (added 2026-10-06).
+ * Reads the "Page change outcome" formula. Never throws: on an error it
+ * returns zeros and logs, so the sweep email still goes out.
+ */
+function lucCountPageChanges_(pat) {
+  const out = { needsPerson: 0, waitingForAi: 0 };
+  try {
+    const formula = 'AND({' + LUC_C_SOURCE + '} = "' + LUC_SOURCE_PAGE_CHANGE + '", ' +
+      '{' + LUC_C_DETERMINATION + '} = "", ' +
+      'OR({' + LUC_C_OUTCOME + '} = "Needs a person", {' + LUC_C_OUTCOME + '} = "Waiting for AI"))';
+    lucListAll_(pat, LUC_CAND_TABLE, [LUC_C_OUTCOME], formula).forEach(function (r) {
+      const o = (r.fields || {})[LUC_C_OUTCOME] || '';
+      if (o === 'Needs a person') out.needsPerson++;
+      else if (o === 'Waiting for AI') out.waitingForAi++;
+    });
+  } catch (e) {
+    Logger.log('Could not count Page change rows: ' + e);
+  }
+  return out;
 }
 
 function lucNotify_(subject, htmlBody) {
@@ -1986,7 +2091,8 @@ const LUC_READ_FIELDS = [
   LUC_F_URL, LUC_F_TRACKED, LUC_F_UNITID, LUC_F_INSTITUTION,
   LUC_F_SNAP_URL, LUC_F_SNAP_STATUS, LUC_F_SNAP_HASH, LUC_F_DETERMINATION,
   LUC_F_PROPOSED_URL, LUC_F_NOTES,
-  LUC_F_SRC_CHTR, LUC_F_SRC_POLICY, LUC_F_SRC_FORM
+  LUC_F_SRC_CHTR, LUC_F_SRC_POLICY, LUC_F_SRC_FORM,
+  LUC_F_CHANGE_FP   // added 2026-10-06, for Page change rows
 ];
 
 /**
@@ -2748,8 +2854,12 @@ function lucCheckBatch_(rows, deadlineAt) {
         snapHash: r.fields[LUC_F_SNAP_HASH] || '',
         determination: r.fields[LUC_F_DETERMINATION] || '',
         proposedUrl: r.fields[LUC_F_PROPOSED_URL] || '',
-        notes: r.fields[LUC_F_NOTES] || ''
-      }
+        notes: r.fields[LUC_F_NOTES] || '',
+        changeFp: r.fields[LUC_F_CHANGE_FP] || ''
+      },
+      // For a Page change row (2026-10-06).
+      unitid: String(r.fields[LUC_F_UNITID] || ''),
+      instId: ((r.fields[LUC_F_INSTITUTION] || [])[0]) || ''
     };
     results.push(entry);
 
@@ -2950,8 +3060,9 @@ function lucCheckBatch_(rows, deadlineAt) {
     if (interpreted.status === 'Redirected' && interpreted.redirectTarget) {
       landings.push({ entry: entry, target: interpreted.redirectTarget });
     } else {
-      lucTakeBeforeCopy_(entry, j.url, interpreted.code,
-        entry.fields[LUC_F_HASH] || '', entry.cleared);
+      const fresh = entry.fields[LUC_F_HASH] || '';
+      lucNotePageChange_(entry, j.url, interpreted.code, fresh, entry.cleared);
+      lucTakeBeforeCopy_(entry, j.url, interpreted.code, fresh, entry.cleared);
     }
   });
 
@@ -2959,6 +3070,7 @@ function lucCheckBatch_(rows, deadlineAt) {
   lucFollowRedirects_(landings, deadlineAt);
   landings.forEach(function (l) {
     const e = l.entry;
+    lucNotePageChange_(e, e.checkedUrl, e.fields[LUC_F_CODE], e.landingHash || '', e.cleared);
     lucTakeBeforeCopy_(e, e.checkedUrl, e.fields[LUC_F_CODE],
       e.landingHash || '', e.cleared);
   });
@@ -3115,6 +3227,145 @@ function lucDropBeforeCopy_(entry) {
 }
 
 // =========================================================================
+// PAGE-CHANGE ROWS  (added 2026-10-06, tracker #36 step 2)
+// =========================================================================
+/**
+ * Decides whether this check found a changed page, and if so marks the entry
+ * so lucWriteBack_ creates a Candidate URLs row for it. See "PAGE-CHANGE ROWS,
+ * STEP 2" in the header. Must be called BEFORE lucTakeBeforeCopy_, because it
+ * compares against the before copy as it stood when the row was read.
+ */
+function lucNotePageChange_(entry, url, code, freshHash, cleared) {
+  if (!freshHash || cleared || !entry.tracked) return;
+  const p = entry.prev;
+  if (!p.snapHash) return;                                   // no before copy
+  if (p.snapUrl !== url) return;                             // a different page
+  if (lucStatusClass_(p.snapStatus) !== lucStatusClass_(code)) return;
+  if (freshHash === p.snapHash) return;                      // unchanged
+  if (freshHash === p.changeFp) return;                      // already sent
+  if (!entry.tracked.candCategory || !entry.instId) {
+    Logger.log('PAGE CHANGED but no Candidate row made -- ' + entry.label +
+      ': ' + (!entry.instId ? 'no Institution link on the row' : 'no category mapping') + '.');
+    return;
+  }
+  entry.pageChange = { url: url, category: entry.tracked.candCategory };
+  entry.fields[LUC_F_CHANGE_FP]   = freshHash;
+  entry.fields[LUC_F_CHANGE_DATE] =
+    Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
+/**
+ * Creates the Candidate URLs rows for every entry marked by lucNotePageChange_.
+ * Runs BEFORE the Live URL Checks write, so a row that could not be created
+ * does not record its fingerprint as reported, and is tried again next check.
+ * The reverse failure (row created, Live URL Checks write lost) can make one
+ * duplicate row; that is the cheaper way to fail.
+ */
+function lucCreatePageChangeRows_(pat, results) {
+  const todo = results.filter(function (e) { return e.pageChange; });
+  if (!todo.length) return 0;
+  let created = 0;
+
+  for (let i = 0; i < todo.length; i += LUC_CREATE_BATCH) {
+    const batch = todo.slice(i, i + LUC_CREATE_BATCH);
+    const payload = { records: batch.map(function (e) {
+      const f = {};
+      f[LUC_C_UNITID]      = e.unitid;
+      f[LUC_C_INSTITUTION] = [e.instId];
+      f[LUC_C_CATEGORY]    = e.pageChange.category;
+      f[LUC_C_URL]         = e.pageChange.url;
+      f[LUC_C_SOURCE]      = LUC_SOURCE_PAGE_CHANGE;
+      f[LUC_C_FETCH]       = LUC_FETCH_NOT_YET;
+      return { fields: f };
+    }) };
+    const resp = UrlFetchApp.fetch(
+      'https://api.airtable.com/v0/' + LUC_BASE_ID + '/' + LUC_CAND_TABLE,
+      { method: 'post',
+        headers: { Authorization: 'Bearer ' + pat, 'Content-Type': 'application/json' },
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true });
+    Utilities.sleep(210);
+
+    if (resp.getResponseCode() === 200) {
+      created += batch.length;
+      batch.forEach(function (e) {
+        Logger.log('PAGE CHANGED -- ' + e.label + ': Candidate URLs row created (' +
+          e.pageChange.category + ', ' + e.pageChange.url + ').');
+      });
+    } else {
+      Logger.log('Could not create ' + batch.length + ' Page change row(s) (HTTP ' +
+        resp.getResponseCode() + '): ' + resp.getContentText().slice(0, 300) +
+        ' -- if this names an option, check that Source has "' + LUC_SOURCE_PAGE_CHANGE +
+        '". They will be tried again on the next check.');
+      batch.forEach(function (e) {
+        delete e.fields[LUC_F_CHANGE_FP];
+        delete e.fields[LUC_F_CHANGE_DATE];
+        e.pageChange = null;
+      });
+    }
+  }
+  return created;
+}
+
+/**
+ * Reads (captures) Page change rows that are still "Not yet fetched", using
+ * SitemapFinder.gs's capture code, until the budget runs out. Never throws:
+ * a capture problem must not fail the slice that called it.
+ *
+ * The record handed to capOneRow_ carries a placeholder determination. That
+ * is what stops capture's one-hop stub chase, which on an undecided Hazing
+ * Policy or Report Form row would replace Candidate URL with a document the
+ * page links to. Here the address must stay the published page, or "Page
+ * change outcome" could no longer tell it is the published one. Nothing is
+ * written to Reviewer determination.
+ */
+function lucCapturePageChanges_(pat, budgetMs) {
+  if (budgetMs < LUC_CAPTURE_MIN_MS) return { captured: 0, skipped: true };
+  if (typeof capOneRow_ !== 'function' || typeof capWriteBack_ !== 'function') {
+    Logger.log('Page change capture skipped: capOneRow_ / capWriteBack_ not found ' +
+      '(SitemapFinder.gs). The pipeline capture stage will read these rows.');
+    return { captured: 0, skipped: true };
+  }
+  const startedAt = Date.now();
+  let captured = 0;
+  try {
+    const formula = 'AND({' + LUC_C_SOURCE + '} = "' + LUC_SOURCE_PAGE_CHANGE + '", ' +
+      'OR({' + LUC_C_FETCH + '} = "", {' + LUC_C_FETCH + '} = "' + LUC_FETCH_NOT_YET + '"))';
+    while (Date.now() - startedAt < budgetMs - 15000) {
+      const json = lucList_(pat, LUC_CAND_TABLE, {
+        pageSize: 10, returnFieldsByFieldId: true,
+        fields: [LUC_C_URL, LUC_C_CATEGORY], filterByFormula: formula });
+      Utilities.sleep(210);
+      const rows = json.records || [];
+      if (!rows.length) break;
+
+      const results = [];
+      for (let i = 0; i < rows.length; i++) {
+        if (Date.now() - startedAt >= budgetMs - 15000) break;
+        const rec = { id: rows[i].id, fields: {} };
+        rec.fields[LUC_C_URL] = rows[i].fields[LUC_C_URL] || '';
+        rec.fields[LUC_C_CATEGORY] = rows[i].fields[LUC_C_CATEGORY] || '';
+        rec.fields[LUC_C_DETERMINATION] = '(page change: no stub chase)';
+        results.push(capOneRow_(rec));
+        Utilities.sleep(250);
+      }
+      if (!results.length) break;
+      const failedBatches = capWriteBack_(pat, results);
+      captured += results.length;
+      if (failedBatches) {
+        Logger.log('Page change capture: ' + failedBatches + ' write batch(es) failed; ' +
+          'those rows stay "Not yet fetched". Stopping for this slice.');
+        break;
+      }
+    }
+  } catch (e) {
+    Logger.log('Page change capture stopped, ignored: ' + e);
+  }
+  if (captured) Logger.log('Page change rows captured: ' + captured + '.');
+  return { captured: captured };
+}
+
+// =========================================================================
 // WRITING BACK
 // =========================================================================
 function lucPatch_(pat, entries, today) {
@@ -3180,6 +3431,10 @@ function lucWriteBack_(pat, results) {
   const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
   const writeErrors = [];
   const failedIds = [];
+
+  // Page change rows first (2026-10-06): see lucCreatePageChangeRows_ for why
+  // the order matters.
+  lucCreatePageChangeRows_(pat, results);
 
   for (let i = 0; i < results.length; i += LUC_WRITE_BATCH) {
     const batch = results.slice(i, i + LUC_WRITE_BATCH);
