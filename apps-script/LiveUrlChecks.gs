@@ -345,6 +345,38 @@
 // and releases each published CHTR's date check. Page change and Manual entry
 // rows fill "Standard last judged" too, so nothing is checked twice. It stops
 // by itself when no page is left.
+//
+// -------------------------------------------------------------------------
+// REPORT LINKS, STEP 7  (added 2026-10-06, tracker #36)
+// -------------------------------------------------------------------------
+// The hazing incidents dashboard needs to know when a school posts or takes
+// down a report on its CHTR page. On every CHTR row (published or below
+// standard) whose page is read, this file lists the links that look like
+// hazing reports, using the same filter the AI check's capture uses
+// (rflReportLinks_ in SitemapFinder.gs, its CHTR rules), and compares the list
+// with "Report links snapshot":
+//   - no snapshot yet, or the page's address changed: the snapshot is taken
+//     quietly (nothing is "added" on a first read);
+//   - the same set of addresses: nothing changes (a link whose text alone
+//     changed only updates the snapshot);
+//   - a different set: "Report links added", "Report links removed" and
+//     "Report links changed date" are written, and the snapshot is replaced.
+// Links are compared by address, ignoring http/https, a trailing slash and
+// anything after "#". A page that could not be read this check is left alone.
+//
+// A LINK CHANGE DOES NOT CREATE A PAGE CHANGE ROW. Only a change in the page's
+// text does (step 2). A new report is offered for confirmation in the
+// dashboard instead, so a person does not see it twice and no AI check is
+// spent on it.
+//
+// THE COPY TO 50 STATES. Once a day, lucCopyReportLinks_ copies three values
+// for each school onto its 50 States row: "CHTR page changed" (the later of
+// Page change reported date and Report links changed date), "Report links
+// added" and "Report links removed". It uses the CHTR row whose address is the
+// school's chtr_index_url, because that is the page the dashboard reads. The
+// copy is ON by default. To pause it, add the Script Property
+// LUC_REPORT_LINKS_COPY with the value "off"; delete it (or set "on") to
+// resume. Run lucCopyReportLinksDryRun() to see what it would write.
 // =========================================================================
 
 
@@ -402,6 +434,27 @@ const LUC_F_FIRST_DATE    = 'fldp2DeV1IN3MiORF';   // First date check (date)
 const LUC_F_WHY           = 'fldSBlEfYkBLqST4F';   // Why it's here (formula)
 // Backlog (added 2026-10-06, step 6).
 const LUC_F_STD_JUDGED    = 'fldKCwXLVg3tpcHpX';   // Standard last judged (date)
+// Report links, CHTR rows only (added 2026-10-06, step 7).
+const LUC_F_LINKS_SNAP    = 'fldQBJBHmvBNBgZUL';   // Report links snapshot (long text)
+const LUC_F_LINKS_ADDED   = 'fldBwude8Ob8DGYI2';   // Report links added (long text)
+const LUC_F_LINKS_REMOVED = 'flduYiLux7dBsh55O';   // Report links removed (long text)
+const LUC_F_LINKS_DATE    = 'fldxw3BQX9htLIo7q';   // Report links changed date (date)
+const LUC_F_SRC_CHTR_REC  = 'fldDP0cUAhDifB8gd';   // src chtr_index_url (lookup)
+const LUC_LINKS_NONE      = '(none)';               // a snapshot of a page with no report links
+
+// ---- 50 States, for the daily copy of the report-link fields (step 7) ---
+const LUC_STATES_BASE_ID      = 'appJbAvuFOxhWOID2';
+const LUC_STATES_TABLE        = 'tblI3LZvxRu4bgK3r';
+const LUC_S_UNITID            = 'fldSOdX8KWnxZ3wFv';
+const LUC_S_CHTR_CHANGED      = 'fldvFKWKCHmS34Mjg';   // CHTR page changed (date)
+const LUC_S_LINKS_ADDED       = 'fldtCtO6gHIctTJgY';   // Report links added (long text)
+const LUC_S_LINKS_REMOVED     = 'fldtTXC62fb7TTMCm';   // Report links removed (long text)
+// The copy runs unless this Script Property is "off" (Project Settings,
+// Script Properties). Missing or any other value: it runs.
+const LUC_LINKS_COPY_PROP     = 'LUC_REPORT_LINKS_COPY';
+const LUC_LINKS_COPY_DAY_KEY  = 'LUC_REPORT_LINKS_COPY_LAST_DAY';
+// A run that would change more schools than this stops and says so.
+const LUC_LINKS_COPY_MAX      = 400;
 
 // ---- Candidate URLs, for Page change rows (added 2026-10-06) ------------
 const LUC_CAND_TABLE      = 'tblIL5opnHj0lhvvg';
@@ -1652,6 +1705,7 @@ function lucRunSlice_(budgetMs) {
 
         // Read any Page change rows still waiting (2026-10-06).
         lucRunBacklog_(pat, budgetMs - (Date.now() - toppedStartedAt));
+        lucCopyReportLinks_(pat, budgetMs - (Date.now() - toppedStartedAt), {});
         lucCapturePageChanges_(pat, budgetMs - (Date.now() - toppedStartedAt));
 
         Logger.log('No full sweep due for ' +
@@ -1854,6 +1908,7 @@ function lucRunSlice_(budgetMs) {
     // Read the Page change rows this slice created, with what is left of its
     // budget (2026-10-06). Before the email, so its counts are current.
     lucRunBacklog_(pat, budgetMs - (Date.now() - startedAt));
+    lucCopyReportLinks_(pat, budgetMs - (Date.now() - startedAt), {});
     lucCapturePageChanges_(pat, budgetMs - (Date.now() - startedAt));
 
     if (done) {
@@ -2234,7 +2289,8 @@ const LUC_READ_FIELDS = [
   LUC_F_SNAP_URL, LUC_F_SNAP_STATUS, LUC_F_SNAP_HASH, LUC_F_DETERMINATION,
   LUC_F_PROPOSED_URL, LUC_F_NOTES,
   LUC_F_SRC_CHTR, LUC_F_SRC_POLICY, LUC_F_SRC_FORM,
-  LUC_F_CHANGE_FP   // added 2026-10-06, for Page change rows
+  LUC_F_CHANGE_FP,  // added 2026-10-06, for Page change rows
+  LUC_F_LINKS_SNAP, LUC_F_LINKS_ADDED, LUC_F_LINKS_REMOVED   // step 7, report links
 ];
 
 /**
@@ -2997,7 +3053,10 @@ function lucCheckBatch_(rows, deadlineAt) {
         determination: r.fields[LUC_F_DETERMINATION] || '',
         proposedUrl: r.fields[LUC_F_PROPOSED_URL] || '',
         notes: r.fields[LUC_F_NOTES] || '',
-        changeFp: r.fields[LUC_F_CHANGE_FP] || ''
+        changeFp: r.fields[LUC_F_CHANGE_FP] || '',
+        linksSnap: r.fields[LUC_F_LINKS_SNAP] || '',
+        linksAdded: r.fields[LUC_F_LINKS_ADDED] || '',
+        linksRemoved: r.fields[LUC_F_LINKS_REMOVED] || ''
       },
       // For a Page change or Manual entry row (2026-10-06).
       createdTime: r.createdTime || '',
@@ -3193,6 +3252,7 @@ function lucCheckBatch_(rows, deadlineAt) {
     if (interpreted.status === 'Live' && resp) {
       const h = lucContentHash_(resp);
       if (h) entry.fields[LUC_F_HASH] = h;
+      entry.freshLinks = lucReportLinksOf_(entry, resp, j.url);   // step 7
     } else if (interpreted.status === 'Dead link') {
       entry.fields[LUC_F_HASH] = '';
     }
@@ -3207,6 +3267,7 @@ function lucCheckBatch_(rows, deadlineAt) {
       lucNotePageChange_(entry, j.url, interpreted.code, fresh, entry.cleared);
       lucNoteManualEntry_(entry, j.url);
       lucNoteChtrAddress_(entry, j.url);
+      lucNoteReportLinks_(entry, j.url, entry.cleared);
       lucTakeBeforeCopy_(entry, j.url, interpreted.code, fresh, entry.cleared);
     }
   });
@@ -3218,6 +3279,7 @@ function lucCheckBatch_(rows, deadlineAt) {
     lucNotePageChange_(e, e.checkedUrl, e.fields[LUC_F_CODE], e.landingHash || '', e.cleared);
     lucNoteManualEntry_(e, e.checkedUrl);
     lucNoteChtrAddress_(e, e.checkedUrl);
+    lucNoteReportLinks_(e, e.checkedUrl, e.cleared);
     lucTakeBeforeCopy_(e, e.checkedUrl, e.fields[LUC_F_CODE],
       e.landingHash || '', e.cleared);
   });
@@ -3295,6 +3357,7 @@ function lucFollowRedirects_(landings, deadlineAt) {
       e.fields[LUC_F_HASH] = h;
       e.landingHash = h;
     }
+    e.freshLinks = lucReportLinksOf_(e, resp, l.target);   // step 7
   });
 }
 
@@ -3851,6 +3914,308 @@ function lucCapturePageChanges_(pat, budgetMs) {
   }
   if (captured) Logger.log('Page change rows captured: ' + captured + '.');
   return { captured: captured };
+}
+
+// =========================================================================
+// REPORT LINKS  (added 2026-10-06, tracker #36 step 7)
+// =========================================================================
+// See "REPORT LINKS, STEP 7" in the header.
+
+let lucRflMissingLogged_ = false;
+
+/**
+ * The links on a CHTR page that look like hazing reports, as [{text, url}],
+ * or null when there is nothing to compare (not a CHTR row, no readable body,
+ * or the filter is missing). Uses SitemapFinder.gs's rflReportLinks_ with its
+ * CHTR rules, so this list matches what the AI check is shown.
+ */
+function lucReportLinksOf_(entry, resp, pageUrl) {
+  if (!entry || !entry.tracked || entry.tracked.candCategory !== 'CHTR' || !resp) return null;
+  if (typeof rflReportLinks_ !== 'function') {
+    if (!lucRflMissingLogged_) {
+      Logger.log('Report links skipped: rflReportLinks_ not found (SitemapFinder.gs).');
+      lucRflMissingLogged_ = true;
+    }
+    return null;
+  }
+  let html;
+  try { html = resp.getContentText(); } catch (e) { return null; }
+  if (!html) return null;
+  try {
+    return rflReportLinks_(html, pageUrl, false).map(function (l) {
+      return { text: String(l.text || ''), url: String(l.url || '') };
+    }).filter(function (l) { return l.url; });
+  } catch (e) {
+    Logger.log('Report links not read -- ' + entry.label + ': ' + e);
+    return null;
+  }
+}
+
+/** Compares addresses ignoring case, http/https, a trailing slash and "#...". */
+function lucLinkKey_(url) {
+  return String(url || '').trim().toLowerCase()
+    .replace(/#.*$/, '').replace(/^http:/, 'https:').replace(/\/+$/, '');
+}
+
+/** [{text, url}] as stored: one "link text | address" per line, sorted by address. */
+function lucLinksText_(links) {
+  if (!links.length) return '';
+  const seen = {};
+  return links.filter(function (l) {
+    const k = lucLinkKey_(l.url);
+    if (seen[k]) return false;
+    seen[k] = true;
+    return true;
+  }).sort(function (a, b) {
+    const ka = lucLinkKey_(a.url), kb = lucLinkKey_(b.url);
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  }).map(function (l) {
+    const text = String(l.text || '').replace(/\s*\|\s*/g, ' / ').trim() || '(no link text)';
+    return text + ' | ' + l.url;
+  }).join('\n');
+}
+
+/** The reverse of lucLinksText_. "(none)" and blank both read as no links. */
+function lucParseLinks_(text) {
+  const out = [];
+  String(text || '').split('\n').forEach(function (line) {
+    const s = line.trim();
+    if (!s || s === LUC_LINKS_NONE) return;
+    const at = s.lastIndexOf(' | ');
+    if (at === -1) out.push({ text: '', url: s });
+    else out.push({ text: s.slice(0, at), url: s.slice(at + 3).trim() });
+  });
+  return out;
+}
+
+/**
+ * Compares this check's report links with the snapshot and sets the PAGES
+ * fields. Uses the before copy as it was when the row was read, so it must be
+ * called BEFORE lucTakeBeforeCopy_.
+ */
+function lucNoteReportLinks_(entry, url, cleared) {
+  if (!entry.tracked || entry.tracked.candCategory !== 'CHTR') return;
+  const fresh = entry.freshLinks;
+  if (!fresh) return;                         // page not read this check
+  const p = entry.prev;
+  const freshText = lucLinksText_(fresh) || LUC_LINKS_NONE;
+  const before = p.linksSnap || '';
+  const addressChanged = !!cleared || (!!p.snapUrl && p.snapUrl !== url);
+
+  // First read, or a different page: take the snapshot quietly.
+  if (!before || addressChanged) {
+    if (before !== freshText) entry.fields[LUC_F_LINKS_SNAP] = freshText;
+    if (addressChanged && (p.linksAdded || p.linksRemoved)) {
+      entry.fields[LUC_F_LINKS_ADDED] = '';     // they described the old page
+      entry.fields[LUC_F_LINKS_REMOVED] = '';
+    }
+    if (addressChanged && before) {
+      Logger.log('Report links snapshot retaken -- ' + entry.label + ' (address changed).');
+    }
+    return;
+  }
+
+  const old = lucParseLinks_(before);
+  const oldKeys = {}, newKeys = {};
+  old.forEach(function (l) { oldKeys[lucLinkKey_(l.url)] = true; });
+  fresh.forEach(function (l) { newKeys[lucLinkKey_(l.url)] = true; });
+  const added = fresh.filter(function (l) { return !oldKeys[lucLinkKey_(l.url)]; });
+  const removed = old.filter(function (l) { return !newKeys[lucLinkKey_(l.url)]; });
+
+  if (!added.length && !removed.length) {
+    if (before !== freshText) entry.fields[LUC_F_LINKS_SNAP] = freshText;   // text only
+    return;
+  }
+
+  entry.fields[LUC_F_LINKS_ADDED]   = lucLinksText_(added);
+  entry.fields[LUC_F_LINKS_REMOVED] = lucLinksText_(removed);
+  entry.fields[LUC_F_LINKS_DATE]    = lucToday_();
+  entry.fields[LUC_F_LINKS_SNAP]    = freshText;
+  Logger.log('REPORT LINKS CHANGED -- ' + entry.label + ': ' + added.length + ' added, ' +
+    removed.length + ' removed.');
+}
+
+/** Lists every record of a table in any base (the 50 States copy reads another base). */
+function lucListBaseAll_(pat, baseId, tableId, fields, formula) {
+  const out = [];
+  let offset = null;
+  let guard = 0;
+  do {
+    const body = { pageSize: 100, returnFieldsByFieldId: true, fields: fields };
+    if (formula) body.filterByFormula = formula;
+    if (offset) body.offset = offset;
+    const resp = UrlFetchApp.fetch(
+      'https://api.airtable.com/v0/' + baseId + '/' + tableId + '/listRecords',
+      { method: 'post',
+        headers: { Authorization: 'Bearer ' + pat, 'Content-Type': 'application/json' },
+        payload: JSON.stringify(body), muteHttpExceptions: true });
+    if (resp.getResponseCode() !== 200) {
+      throw new Error('Airtable list error on ' + baseId + '/' + tableId + ' (HTTP ' +
+        resp.getResponseCode() + '): ' + resp.getContentText().slice(0, 300));
+    }
+    const json = JSON.parse(resp.getContentText());
+    (json.records || []).forEach(function (r) { out.push(r); });
+    offset = json.offset || null;
+    Utilities.sleep(210);
+  } while (offset && ++guard < 400);
+  return out;
+}
+
+/** Shows what the daily copy to 50 States would write. Writes nothing. */
+function lucCopyReportLinksDryRun() {
+  return lucCopyReportLinks_(lucRequirePat_(), 300000, { dryRun: true, force: true });
+}
+
+/**
+ * Runs the copy to 50 States now, even if the Script Property is "off" and
+ * even if it already ran today. Run lucCopyReportLinksDryRun() first.
+ */
+function lucCopyReportLinksNow() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(1000)) {
+    Logger.log('Another LiveUrlChecks run holds the lock. Nothing done.');
+    return { blocked: true };
+  }
+  try {
+    return lucCopyReportLinks_(lucRequirePat_(), 300000, { force: true });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Once a day, copies each school's CHTR change date and report-link lists from
+ * Live URL Checks to its 50 States row. See "REPORT LINKS, STEP 7".
+ *
+ *   opts.dryRun   log what would change, write nothing
+ *   opts.force    ignore the "off" switch and the once-a-day rule
+ *
+ * WHICH ROW: the CHTR row (published or below standard) whose address is the
+ * school's chtr_index_url. A below-standard row that is "Not watched" (blank
+ * Link status) is never used; if two rows still qualify, the published one
+ * wins. A school with no such row gets the three fields emptied.
+ *
+ * Writes only schools whose values differ. Stops without writing if the
+ * Live URL Checks read comes back empty, or if more than LUC_LINKS_COPY_MAX
+ * schools would change. Never throws.
+ */
+function lucCopyReportLinks_(pat, budgetMs, opts) {
+  opts = opts || {};
+  const props = PropertiesService.getScriptProperties();
+  const today = lucToday_();
+  if (!opts.force) {
+    if (budgetMs < 60000) return { skipped: true };
+    if (String(props.getProperty(LUC_LINKS_COPY_PROP) || '').trim().toLowerCase() === 'off') {
+      return { off: true };
+    }
+    if (props.getProperty(LUC_LINKS_COPY_DAY_KEY) === today) return { alreadyToday: true };
+  }
+
+  try {
+    // ---- 1. what PAGES says, per school ------------------------------------
+    const chtrNames = LUC_TRACKED.filter(function (t) { return t.candCategory === 'CHTR'; })
+      .map(function (t) { return t.name; });
+    const formula = 'OR(' + chtrNames.map(function (n) {
+      return '{' + LUC_F_TRACKED + '} = ' + lucFormulaString_(n); }).join(', ') + ')';
+    const rows = lucListAll_(pat, LUC_CHECKS_TABLE,
+      [LUC_F_UNITID, LUC_F_TRACKED, LUC_F_URL, LUC_F_STATUS, LUC_F_SRC_CHTR_REC,
+       LUC_F_CHANGE_DATE, LUC_F_LINKS_DATE, LUC_F_LINKS_ADDED, LUC_F_LINKS_REMOVED], formula);
+    if (!rows.length) {
+      Logger.log('Report links copy: no CHTR rows read from Live URL Checks. Nothing written.');
+      return { failed: true };
+    }
+
+    const want = {};   // unitid -> { date, added, removed, published }
+    rows.forEach(function (r) {
+      const f = r.fields;
+      const unitid = String(f[LUC_F_UNITID] || '').trim();
+      if (!unitid) return;
+      const src = f[LUC_F_SRC_CHTR_REC];
+      const record = lucFirstUrl_(Array.isArray(src) ? src.join('') : String(src || ''));
+      const current = lucFirstUrl_(String(f[LUC_F_URL] || ''));
+      if (!record || current !== record) return;
+      const tracked = lucTrackedByName_(f[LUC_F_TRACKED] || '');
+      const published = !!tracked && !tracked.watchOf;
+      if (!published && !f[LUC_F_STATUS]) return;   // a below-standard row not watched
+      if (want[unitid] && want[unitid].published && !published) return;
+      const d1 = String(f[LUC_F_CHANGE_DATE] || '');
+      const d2 = String(f[LUC_F_LINKS_DATE] || '');
+      want[unitid] = {
+        date: d1 > d2 ? d1 : d2,
+        added: String(f[LUC_F_LINKS_ADDED] || '').trim(),
+        removed: String(f[LUC_F_LINKS_REMOVED] || '').trim(),
+        published: published
+      };
+    });
+
+    // ---- 2. what 50 States holds now -----------------------------------------
+    const schools = lucListBaseAll_(pat, LUC_STATES_BASE_ID, LUC_STATES_TABLE,
+      [LUC_S_UNITID, LUC_S_CHTR_CHANGED, LUC_S_LINKS_ADDED, LUC_S_LINKS_REMOVED], '');
+
+    const changes = [];
+    schools.forEach(function (s) {
+      const unitid = String(s.fields[LUC_S_UNITID] || '').trim();
+      if (!unitid) return;
+      const w = want[unitid] || { date: '', added: '', removed: '' };
+      const haveDate = String(s.fields[LUC_S_CHTR_CHANGED] || '');
+      const haveAdded = String(s.fields[LUC_S_LINKS_ADDED] || '').trim();
+      const haveRemoved = String(s.fields[LUC_S_LINKS_REMOVED] || '').trim();
+      if (haveDate === w.date && haveAdded === w.added && haveRemoved === w.removed) return;
+      const fields = {};
+      fields[LUC_S_CHTR_CHANGED] = w.date || null;
+      fields[LUC_S_LINKS_ADDED] = w.added;
+      fields[LUC_S_LINKS_REMOVED] = w.removed;
+      changes.push({ id: s.id, unitid: unitid, fields: fields,
+                     was: haveDate + ' / ' + (haveAdded ? 'added list' : 'no added') + ' / ' +
+                          (haveRemoved ? 'removed list' : 'no removed'),
+                     now: (w.date || '(blank)') + ' / ' + (w.added ? 'added list' : 'no added') +
+                          ' / ' + (w.removed ? 'removed list' : 'no removed') });
+    });
+
+    Logger.log('Report links copy: ' + Object.keys(want).length + ' school(s) have a CHTR row ' +
+      'matching chtr_index_url; ' + schools.length + ' 50 States row(s) read; ' +
+      changes.length + ' to change.');
+    changes.slice(0, 25).forEach(function (c) {
+      Logger.log('  ' + c.unitid + ': ' + c.was + '  ->  ' + c.now);
+    });
+    if (changes.length > 25) Logger.log('  ... and ' + (changes.length - 25) + ' more.');
+
+    if (changes.length > LUC_LINKS_COPY_MAX) {
+      Logger.log('Report links copy STOPPED: ' + changes.length + ' schools would change, more ' +
+        'than LUC_LINKS_COPY_MAX (' + LUC_LINKS_COPY_MAX + '). Nothing written. Check the dry ' +
+        'run, then raise the limit deliberately if this is right.');
+      return { stopped: true, changes: changes.length };
+    }
+    if (opts.dryRun) {
+      Logger.log('DRY RUN -- nothing written.');
+      return { dryRun: true, changes: changes.length };
+    }
+
+    // ---- 3. write ------------------------------------------------------------
+    let written = 0, failed = 0;
+    for (let i = 0; i < changes.length; i += LUC_WRITE_BATCH) {
+      const batch = changes.slice(i, i + LUC_WRITE_BATCH);
+      const resp = UrlFetchApp.fetch(
+        'https://api.airtable.com/v0/' + LUC_STATES_BASE_ID + '/' + LUC_STATES_TABLE,
+        { method: 'patch',
+          headers: { Authorization: 'Bearer ' + pat, 'Content-Type': 'application/json' },
+          payload: JSON.stringify({ records: batch.map(function (c) {
+            return { id: c.id, fields: c.fields }; }) }),
+          muteHttpExceptions: true });
+      Utilities.sleep(210);
+      if (resp.getResponseCode() === 200) { written += batch.length; continue; }
+      failed += batch.length;
+      Logger.log('Report links copy: a batch of ' + batch.length + ' would not save (HTTP ' +
+        resp.getResponseCode() + '): ' + resp.getContentText().slice(0, 300));
+    }
+    if (!failed) props.setProperty(LUC_LINKS_COPY_DAY_KEY, today);
+    Logger.log('Report links copy: wrote ' + written + ' school(s) to 50 States' +
+      (failed ? '; ' + failed + ' failed and will be tried again on the next slice.' : '.'));
+    return { written: written, failed: failed };
+  } catch (err) {
+    Logger.log('Report links copy stopped, ignored: ' + err);
+    return { failed: true };
+  }
 }
 
 // =========================================================================
